@@ -11,11 +11,41 @@ use anyhow::Result;
 use crossterm::event::KeyEvent;
 
 use crate::config::Config;
-use crate::git::{FileEntry, Repo, Scope, StageState};
+use crate::git::{ChangeKind, CommitInfo, FileEntry, Repo, Scope, StageState};
 use crate::keymap::{Action, Keymap};
 
 /// How long a transient footer message stays on screen.
 const STATUS_TTL: Duration = Duration::from_secs(3);
+
+/// How many commits the history view loads.
+const LOG_LIMIT: usize = 200;
+
+/// What the list is currently showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Working-tree / branch changes (the normal view).
+    Files,
+    /// `git log` — pick a commit to inspect.
+    Log,
+    /// The files changed by the selected commit.
+    CommitFiles,
+}
+
+/// One visual row of the list. Sections group entries VSCode-style: a file
+/// with both staged and unstaged changes appears in *both* sections, and the
+/// section decides which diff the preview shows (`staged` → `--cached`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListRow {
+    Header(&'static str),
+    Entry { idx: usize, staged: bool },
+    Commit(usize),
+}
+
+impl ListRow {
+    pub fn selectable(&self) -> bool {
+        !matches!(self, ListRow::Header(_))
+    }
+}
 
 /// A centered overlay that captures all keys while open.
 pub enum Modal {
@@ -37,11 +67,19 @@ pub struct App {
     pub cfg: Config,
     pub keys: Keymap,
 
+    pub mode: Mode,
     pub scope: Scope,
-    /// unstaged↔staged diff view (worktree scope); wired in phase 3.
-    pub cached_view: bool,
 
+    /// Entries backing the current Files/CommitFiles view.
     pub entries: Vec<FileEntry>,
+    /// Commits backing the Log view.
+    pub commits: Vec<CommitInfo>,
+    /// The commit whose files the CommitFiles view shows.
+    pub commit: Option<CommitInfo>,
+
+    /// Visual rows derived from the vectors above; `cursor` indexes this and
+    /// always sits on a selectable row.
+    pub rows: Vec<ListRow>,
     pub cursor: usize,
     pub list_offset: usize,
 
@@ -57,8 +95,8 @@ pub struct App {
     pub status_msg: Option<(String, Instant)>,
     pub should_quit: bool,
     pub modal: Option<Modal>,
-    /// Header text while the preview PTY is busy (editor or commit): all list
-    /// input is refused until EditDone/GitDone.
+    /// Header text while the preview PTY is busy (editor or commit): actions
+    /// that need that PTY are refused until EditDone/GitDone.
     pub busy: Option<String>,
     /// Set when the shown diff's *content* changed without the selection
     /// changing (stage toggle, discard, edit) — the run loop re-Shows and
@@ -77,13 +115,16 @@ impl App {
     /// Used by render tests and by `new`.
     pub fn from_entries(repo: Repo, cfg: Config, keys: Keymap, entries: Vec<FileEntry>) -> App {
         let branch = repo.head_branch();
-        App {
+        let mut app = App {
             repo,
             cfg,
             keys,
+            mode: Mode::Files,
             scope: Scope::Worktree,
-            cached_view: false,
             entries,
+            commits: Vec::new(),
+            commit: None,
+            rows: Vec::new(),
             cursor: 0,
             list_offset: 0,
             base: String::new(),
@@ -94,6 +135,89 @@ impl App {
             modal: None,
             busy: None,
             needs_reshow: false,
+        };
+        app.rebuild_rows();
+        app
+    }
+
+    // ---- row derivation ---------------------------------------------------
+
+    /// Rebuild `rows` from the current mode's backing vector, keeping the
+    /// cursor on a selectable row.
+    pub fn rebuild_rows(&mut self) {
+        self.rows = match self.mode {
+            Mode::Log => (0..self.commits.len()).map(ListRow::Commit).collect(),
+            Mode::CommitFiles => (0..self.entries.len())
+                .map(|idx| ListRow::Entry { idx, staged: false })
+                .collect(),
+            Mode::Files if self.scope == Scope::Branch => (0..self.entries.len())
+                .map(|idx| ListRow::Entry { idx, staged: false })
+                .collect(),
+            Mode::Files => self.grouped_rows(),
+        };
+        self.snap_cursor();
+    }
+
+    /// Worktree sections: conflicts, staged, changes. A partially staged file
+    /// appears under both "staged" and "changes".
+    fn grouped_rows(&self) -> Vec<ListRow> {
+        let mut rows = Vec::new();
+        let section =
+            |title, rows: &mut Vec<ListRow>, filter: &dyn Fn(&FileEntry) -> bool, staged| {
+                let idxs: Vec<usize> = self
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| filter(e))
+                    .map(|(i, _)| i)
+                    .collect();
+                if !idxs.is_empty() {
+                    rows.push(ListRow::Header(title));
+                    rows.extend(idxs.into_iter().map(|idx| ListRow::Entry { idx, staged }));
+                }
+            };
+        section(
+            "merge conflicts",
+            &mut rows,
+            &|e| e.kind == ChangeKind::Conflicted,
+            false,
+        );
+        section(
+            "staged changes",
+            &mut rows,
+            &|e| {
+                e.kind != ChangeKind::Conflicted
+                    && matches!(e.stage, StageState::Staged | StageState::Partial)
+            },
+            true,
+        );
+        section(
+            "changes",
+            &mut rows,
+            &|e| {
+                e.kind != ChangeKind::Conflicted
+                    && matches!(
+                        e.stage,
+                        StageState::Unstaged | StageState::Partial | StageState::Untracked
+                    )
+            },
+            false,
+        );
+        rows
+    }
+
+    /// The selected entry and whether it sits in the staged section.
+    pub fn selected_entry(&self) -> Option<(&FileEntry, bool)> {
+        match self.rows.get(self.cursor)? {
+            ListRow::Entry { idx, staged } => Some((self.entries.get(*idx)?, *staged)),
+            _ => None,
+        }
+    }
+
+    pub fn selected_commit(&self) -> Option<&CommitInfo> {
+        match self.rows.get(self.cursor)? {
+            ListRow::Commit(idx) => self.commits.get(*idx),
+            _ => None,
         }
     }
 
@@ -110,9 +234,10 @@ impl App {
             return;
         };
 
-        // Editor/commit lockout: refuse everything (incl. quit — tearing
-        // down the view would orphan nvim on the preview PTY).
-        if self.busy.is_some() {
+        // Only actions that need the preview PTY (or would tear the view down
+        // under nvim's feet) are locked while it is busy; browsing and staging
+        // keep working.
+        if self.busy.is_some() && matches!(action, Action::Edit | Action::Commit | Action::Quit) {
             self.set_status("editor is open — close it first");
             return;
         }
@@ -120,17 +245,14 @@ impl App {
         match action {
             Action::Down => self.move_cursor(1),
             Action::Up => self.move_cursor(-1),
-            Action::Top => self.cursor = 0,
-            Action::Bottom => {
-                if !self.entries.is_empty() {
-                    self.cursor = self.entries.len() - 1;
-                }
-            }
+            Action::Top => self.cursor_to_edge(true),
+            Action::Bottom => self.cursor_to_edge(false),
             Action::ToggleScope => self.toggle_scope(),
-            Action::ToggleCached => self.toggle_cached(),
+            Action::ToggleCached => self.set_status("staged/unstaged now follow the list sections"),
             Action::Refresh => self.force_refresh(),
             Action::Help => self.modal = Some(Modal::Help),
-            Action::Quit => self.should_quit = true,
+            Action::Log => self.toggle_log(),
+            Action::Quit => self.back_or_quit(),
             Action::Stage => self.stage_toggle(),
             Action::Discard => self.open_discard_confirm(),
 
@@ -149,6 +271,67 @@ impl App {
                 self.set_status("needs the preview pane (run inside herdr)")
             }
         }
+    }
+
+    // ---- history view -----------------------------------------------------
+
+    /// `l`: enter the log view; `l` again (or q/esc) returns to files.
+    fn toggle_log(&mut self) {
+        match self.mode {
+            Mode::Files => match self.repo.log_commits(LOG_LIMIT) {
+                Ok(commits) if commits.is_empty() => self.set_status("no commits yet"),
+                Ok(commits) => {
+                    self.commits = commits;
+                    self.mode = Mode::Log;
+                    self.cursor = 0;
+                    self.rebuild_rows();
+                }
+                Err(err) => self.set_status(format!("log failed: {err}")),
+            },
+            Mode::Log | Mode::CommitFiles => self.leave_history(),
+        }
+    }
+
+    /// Enter on a commit: show its files.
+    pub fn open_commit(&mut self) {
+        let Some(info) = self.selected_commit().cloned() else {
+            return;
+        };
+        match self.repo.commit_files(&info.sha) {
+            Ok(entries) => {
+                self.entries = entries;
+                self.commit = Some(info);
+                self.mode = Mode::CommitFiles;
+                self.cursor = 0;
+                self.rebuild_rows();
+            }
+            Err(err) => self.set_status(format!("commit files failed: {err}")),
+        }
+    }
+
+    /// q/esc: CommitFiles → Log → Files → actually quit.
+    fn back_or_quit(&mut self) {
+        match self.mode {
+            Mode::CommitFiles => {
+                self.commit = None;
+                self.mode = Mode::Log;
+                self.entries = Vec::new();
+                self.cursor = 0;
+                self.rebuild_rows();
+                // Restore the cursor onto the commit we came from? The log
+                // vector is unchanged, so position 0 is fine and predictable.
+            }
+            Mode::Log => self.leave_history(),
+            Mode::Files => self.should_quit = true,
+        }
+    }
+
+    fn leave_history(&mut self) {
+        self.mode = Mode::Files;
+        self.commit = None;
+        self.cursor = 0;
+        self.force_refresh();
+        self.rebuild_rows();
     }
 
     // ---- modals -----------------------------------------------------------
@@ -175,23 +358,19 @@ impl App {
 
     // ---- stage / discard (worktree scope) ---------------------------------
 
-    /// `s`: stage the selected entry (or unstage when fully staged), then
-    /// reload synchronously so the dot flips immediately.
+    /// `s`: section-aware — in "staged changes" it unstages, in "changes" it
+    /// stages. The file then moves to the other section (VSCode-style).
     fn stage_toggle(&mut self) {
-        if self.scope != Scope::Worktree {
-            self.set_status("staging works in working-tree scope (w)");
+        if !self.can_stage() {
             return;
         }
-        let Some(entry) = self.entries.get(self.cursor) else {
+        let Some((entry, staged_section)) = self.selected_entry() else {
             return;
         };
-        if entry.kind == crate::git::ChangeKind::Conflicted {
-            self.set_status("resolve the conflict in the editor first");
-            return;
-        }
-        let result = match entry.stage {
-            StageState::Staged => self.repo.unstage(&entry.path),
-            _ => self.repo.stage(&entry.path),
+        let result = if staged_section {
+            self.repo.unstage(&entry.path)
+        } else {
+            self.repo.stage(&entry.path)
         };
         if let Err(err) = result {
             self.set_status(first_line(&err.to_string()));
@@ -208,17 +387,12 @@ impl App {
 
     /// `x`: ask before throwing changes away (refused for conflicts).
     fn open_discard_confirm(&mut self) {
-        if self.scope != Scope::Worktree {
-            self.set_status("discard works in working-tree scope (w)");
+        if !self.can_stage() {
             return;
         }
-        let Some(entry) = self.entries.get(self.cursor) else {
+        let Some((entry, _)) = self.selected_entry() else {
             return;
         };
-        if entry.kind == crate::git::ChangeKind::Conflicted {
-            self.set_status("resolve the conflict in the editor first");
-            return;
-        }
         self.modal = Some(Modal::Confirm {
             text: format!(
                 "Discard changes to {}? This cannot be undone. (y/n)",
@@ -228,8 +402,28 @@ impl App {
         });
     }
 
+    /// Shared guards for the mutating actions.
+    fn can_stage(&mut self) -> bool {
+        if self.mode != Mode::Files {
+            self.set_status("read-only in history view");
+            return false;
+        }
+        if self.scope != Scope::Worktree {
+            self.set_status("works in working-tree scope (w)");
+            return false;
+        }
+        match self.selected_entry() {
+            Some((e, _)) if e.kind == ChangeKind::Conflicted => {
+                self.set_status("resolve the conflict in the editor first");
+                false
+            }
+            Some(_) => true,
+            None => false,
+        }
+    }
+
     fn discard_selected(&mut self) {
-        let Some(entry) = self.entries.get(self.cursor) else {
+        let Some((entry, _)) = self.selected_entry() else {
             return;
         };
         if let Err(err) = self.repo.discard(entry) {
@@ -240,35 +434,41 @@ impl App {
         self.needs_reshow = true;
     }
 
-    /// Toggle the staged-diff view (worktree scope only). The preview re-Shows
-    /// with `cached = true`; if the entry has nothing staged, hint as much.
-    fn toggle_cached(&mut self) {
-        if self.scope != Scope::Worktree {
-            return; // staged view is meaningless in branch scope
-        }
-        self.cached_view = !self.cached_view;
-        if self.cached_view
-            && self
-                .entries
-                .get(self.cursor)
-                .map(|e| e.stage == StageState::Unstaged)
-                .unwrap_or(false)
-        {
-            self.set_status("no staged changes");
-        }
-    }
+    // ---- refresh ----------------------------------------------------------
 
     /// Replace the entry vector (from an auto-refresh or a forced reload),
-    /// keeping the cursor on the same path when possible, else clamped.
+    /// keeping the cursor on the same path+section when possible.
     pub fn apply_refresh(&mut self, entries: Vec<FileEntry>) {
-        let current = self.entries.get(self.cursor).map(|e| e.path.clone());
-        self.entries = entries;
-        if let Some(path) = current
-            && let Some(i) = self.entries.iter().position(|e| e.path == path)
-        {
-            self.cursor = i;
+        if self.mode != Mode::Files {
+            return; // history views are snapshots; ignore live refreshes
         }
-        self.clamp_cursor();
+        let keep = self.cursor_identity();
+        self.entries = entries;
+        self.rebuild_rows();
+        self.restore_cursor(keep);
+    }
+
+    /// Editor/commit finished: unlock, reload the status (files changed on
+    /// disk); cursor preservation handles moved entries.
+    pub fn on_edit_done(&mut self) {
+        self.busy = None;
+        self.force_refresh();
+        self.needs_reshow = true;
+    }
+
+    pub fn force_refresh(&mut self) {
+        if self.mode != Mode::Files {
+            return;
+        }
+        match self.load_entries() {
+            Ok(entries) => {
+                let keep = self.cursor_identity();
+                self.entries = entries;
+                self.rebuild_rows();
+                self.restore_cursor(keep);
+            }
+            Err(err) => self.set_status(format!("refresh failed: {err}")),
+        }
     }
 
     /// The footer message if one is set and still fresh.
@@ -281,23 +481,81 @@ impl App {
 
     // ---- internals --------------------------------------------------------
 
-    fn move_cursor(&mut self, delta: i32) {
-        if self.entries.is_empty() {
-            return;
-        }
-        let last = self.entries.len() as i32 - 1;
-        self.cursor = (self.cursor as i32 + delta).clamp(0, last) as usize;
+    /// What the cursor points at, in a refresh-stable form.
+    fn cursor_identity(&self) -> Option<(std::path::PathBuf, bool)> {
+        self.selected_entry()
+            .map(|(e, staged)| (e.path.clone(), staged))
     }
 
-    fn clamp_cursor(&mut self) {
-        if self.entries.is_empty() {
-            self.cursor = 0;
-        } else if self.cursor >= self.entries.len() {
-            self.cursor = self.entries.len() - 1;
+    fn restore_cursor(&mut self, keep: Option<(std::path::PathBuf, bool)>) {
+        if let Some((path, staged)) = keep {
+            // Same path + same section first; then same path anywhere.
+            let find = |want_staged: Option<bool>| {
+                self.rows.iter().position(|row| match row {
+                    ListRow::Entry { idx, staged: s } => {
+                        self.entries
+                            .get(*idx)
+                            .map(|e| e.path == path)
+                            .unwrap_or(false)
+                            && want_staged.map(|w| *s == w).unwrap_or(true)
+                    }
+                    _ => false,
+                })
+            };
+            if let Some(i) = find(Some(staged)).or_else(|| find(None)) {
+                self.cursor = i;
+                return;
+            }
         }
+        self.snap_cursor();
+    }
+
+    fn move_cursor(&mut self, delta: i32) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let mut i = self.cursor as i32;
+        loop {
+            i += delta;
+            if i < 0 || i >= self.rows.len() as i32 {
+                return; // hit an edge — stay where we were
+            }
+            if self.rows[i as usize].selectable() {
+                self.cursor = i as usize;
+                return;
+            }
+        }
+    }
+
+    fn cursor_to_edge(&mut self, top: bool) {
+        let found = if top {
+            self.rows.iter().position(ListRow::selectable)
+        } else {
+            self.rows.iter().rposition(ListRow::selectable)
+        };
+        if let Some(i) = found {
+            self.cursor = i;
+        }
+    }
+
+    /// Clamp the cursor into range and off header rows.
+    fn snap_cursor(&mut self) {
+        if self.rows.is_empty() {
+            self.cursor = 0;
+            return;
+        }
+        let start = self.cursor.min(self.rows.len() - 1);
+        // Nearest selectable at or after `start`, else before it.
+        let after = (start..self.rows.len()).find(|i| self.rows[*i].selectable());
+        let before = (0..start).rev().find(|i| self.rows[*i].selectable());
+        self.cursor = after.or(before).unwrap_or(0);
     }
 
     fn toggle_scope(&mut self) {
+        if self.mode != Mode::Files {
+            self.set_status("read-only in history view");
+            return;
+        }
         match self.scope {
             Scope::Worktree => {
                 if self.merge_base.is_none() {
@@ -322,21 +580,6 @@ impl App {
             Scope::Branch => self.scope = Scope::Worktree,
         }
         self.force_refresh();
-    }
-
-    /// Editor/commit finished: unlock, reload the status (files changed on
-    /// disk); cursor preservation in `apply_refresh` handles moved entries.
-    pub fn on_edit_done(&mut self) {
-        self.busy = None;
-        self.force_refresh();
-        self.needs_reshow = true;
-    }
-
-    pub fn force_refresh(&mut self) {
-        match self.load_entries() {
-            Ok(entries) => self.apply_refresh(entries),
-            Err(err) => self.set_status(format!("refresh failed: {err}")),
-        }
     }
 
     fn load_entries(&self) -> Result<Vec<FileEntry>> {

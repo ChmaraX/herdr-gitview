@@ -74,28 +74,48 @@ fn markers_and_stats_render() {
     ]);
     let buf = draw(&mut app);
 
-    // Body rows start at y=1 (y=0 is the header).
-    let r0 = row_text(&buf, 1);
-    let r1 = row_text(&buf, 2);
-    let r2 = row_text(&buf, 3);
+    // Grouped VSCode-style layout: staged section first, then changes.
+    // y=0 header · y=1 "STAGED CHANGES" · y=2 new.rs · y=3 "CHANGES"
+    // · y=4 main.rs · y=5 notes.txt
+    assert!(row_text(&buf, 1).contains("STAGED CHANGES"));
+    let staged = row_text(&buf, 2);
+    assert!(row_text(&buf, 3).contains("CHANGES"));
+    let modified = row_text(&buf, 4);
+    let untracked = row_text(&buf, 5);
 
-    // Markers sit in column 1 (column 0 is the stage dot).
-    assert_eq!(buf[(1, 1)].symbol(), "M");
-    assert_eq!(buf[(1, 2)].symbol(), "A");
-    assert_eq!(buf[(1, 3)].symbol(), "?");
+    // Markers sit after the 2-column section indent.
+    assert_eq!(buf[(2, 2)].symbol(), "A");
+    assert_eq!(buf[(2, 4)].symbol(), "M");
+    assert_eq!(buf[(2, 5)].symbol(), "U");
 
-    // Staged file shows a filled dot in column 0.
-    assert_eq!(buf[(0, 2)].symbol(), "●");
-
-    // Stats are present and right-aligned (row ends with them).
-    assert!(r0.contains("+3 -1"), "row0: {r0:?}");
-    assert!(r1.contains("+10 -0"), "row1: {r1:?}");
-    assert!(r0.trim_end().ends_with("-1"), "row0: {r0:?}");
-    assert!(r1.trim_end().ends_with("-0"), "row1: {r1:?}");
-    assert!(r2.contains("+5 -0"), "row2: {r2:?}");
+    // Stats colored + right-aligned, zero sides dropped (− is unicode minus).
+    assert!(modified.contains("+3 −1"), "modified: {modified:?}");
+    assert!(staged.trim_end().ends_with("+10"), "staged: {staged:?}");
+    assert!(
+        untracked.trim_end().ends_with("+5"),
+        "untracked: {untracked:?}"
+    );
 
     // Basename is shown; directory prefix is dimmed but still present.
-    assert!(r0.contains("main.rs"), "row0: {r0:?}");
+    assert!(modified.contains("main.rs"), "modified: {modified:?}");
+}
+
+#[test]
+fn partial_file_appears_in_both_sections() {
+    let mut app = app_with(vec![entry(
+        "both.rs",
+        ChangeKind::Modified,
+        StageState::Partial,
+        2,
+        1,
+    )]);
+    let buf = draw(&mut app);
+    let body: String = (1..H - 1).map(|y| row_text(&buf, y) + "\n").collect();
+    let hits = body.matches("both.rs").count();
+    assert_eq!(
+        hits, 2,
+        "partial file should be in staged AND changes:\n{body}"
+    );
 }
 
 #[test]
@@ -104,15 +124,15 @@ fn selected_row_is_reversed() {
         entry("a.rs", ChangeKind::Modified, StageState::Unstaged, 1, 0),
         entry("b.rs", ChangeKind::Modified, StageState::Unstaged, 1, 0),
     ]);
-    app.cursor = 1;
+    // Rows: y=1 "CHANGES" header, y=2 a.rs (cursor row 1), y=3 b.rs (row 2).
+    app.cursor = 2;
     let buf = draw(&mut app);
 
-    // Selected row is index 1 → body y=2.
-    let selected = buf[(1, 2)]
+    let selected = buf[(1, 3)]
         .style()
         .add_modifier
         .contains(Modifier::REVERSED);
-    let other = buf[(1, 1)]
+    let other = buf[(1, 2)]
         .style()
         .add_modifier
         .contains(Modifier::REVERSED);

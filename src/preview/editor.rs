@@ -66,7 +66,7 @@ pub fn first_new_line(raw: &[u8]) -> Option<u32> {
 
 /// Remove ANSI escape sequences (CSI `ESC [ … final-byte` and the rare
 /// two-byte `ESC x` forms) with a plain byte scan — no regex dependency.
-fn strip_ansi(raw: &[u8]) -> Vec<u8> {
+pub(crate) fn strip_ansi(raw: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(raw.len());
     let mut i = 0;
     while i < raw.len() {

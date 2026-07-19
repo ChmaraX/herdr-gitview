@@ -1,6 +1,6 @@
 //! Rendering for the file-list pane: header / body / footer, plus the help
-//! overlay. Pure view code — it reads `App` and draws, mutating only
-//! `list_offset` (so the selected row stays visible across redraws).
+//! and confirm overlays. Pure view code — it reads `App` and draws, mutating
+//! only `list_offset` (so the selected row stays visible across redraws).
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -10,8 +10,8 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::App;
-use super::app::Modal;
-use crate::git::{ChangeKind, FileEntry, Scope, StageState};
+use super::app::{ListRow, Modal, Mode};
+use crate::git::{ChangeKind, CommitInfo, FileEntry, Scope};
 use crate::keymap::Action;
 
 /// Actions shown in the help overlay, in a sensible reading order.
@@ -22,10 +22,10 @@ const HELP_ACTIONS: &[(Action, &str)] = &[
     (Action::Bottom, "jump to bottom"),
     (Action::Edit, "open in editor"),
     (Action::ToggleScope, "worktree / branch"),
-    (Action::ToggleCached, "staged / unstaged view"),
-    (Action::Stage, "stage file"),
+    (Action::Stage, "stage / unstage file"),
     (Action::Discard, "discard changes"),
     (Action::Commit, "commit"),
+    (Action::Log, "commit history"),
     (Action::ScrollDown, "scroll diff down"),
     (Action::ScrollUp, "scroll diff up"),
     (Action::HalfPageDown, "half page down"),
@@ -34,7 +34,7 @@ const HELP_ACTIONS: &[(Action, &str)] = &[
     (Action::DiffBottom, "diff bottom"),
     (Action::Refresh, "refresh"),
     (Action::Help, "help"),
-    (Action::Quit, "quit"),
+    (Action::Quit, "back / quit"),
 ];
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -61,20 +61,31 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     let branch = app.branch.clone().unwrap_or_else(|| "DETACHED".to_string());
-    let scope_label = match app.scope {
-        Scope::Worktree => "working tree".to_string(),
-        Scope::Branch => format!("vs {}", base_label(app)),
+    let left = match (&app.busy, app.mode) {
+        (Some(what), _) => format!(" {what}"),
+        (None, Mode::Log) => format!(" log — {branch}"),
+        (None, Mode::CommitFiles) => match &app.commit {
+            Some(c) => format!(" {} {}", c.short, c.subject),
+            None => " commit".to_string(),
+        },
+        (None, Mode::Files) => {
+            let scope_label = match app.scope {
+                Scope::Worktree => "working tree".to_string(),
+                Scope::Branch => format!("vs {}", base_label(app)),
+            };
+            format!(" {branch}  {scope_label}")
+        }
     };
-    let left = match &app.busy {
-        Some(what) => format!(" {what}"),
-        None => format!(" {branch}  {scope_label}"),
+    let right = match app.mode {
+        Mode::Log => format!("{} commits ", app.commits.len()),
+        _ => format!("{} files ", app.entries.len()),
     };
-    let right = format!("{} files ", app.entries.len());
 
     let width = area.width as usize;
+    let left = elide_tail(&left, width.saturating_sub(right.width() + 1));
     let pad = width.saturating_sub(left.width() + right.width());
     let line = Line::from(vec![
-        Span::raw(left),
+        Span::styled(left, Style::new().add_modifier(Modifier::BOLD)),
         Span::raw(" ".repeat(pad)),
         Span::styled(right, dim()),
     ]);
@@ -84,10 +95,12 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
 // ---- body -----------------------------------------------------------------
 
 fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
-    if app.entries.is_empty() {
-        let msg = match app.scope {
-            Scope::Worktree => "working tree clean".to_string(),
-            Scope::Branch => format!("no changes vs {}", base_label(app)),
+    if app.rows.is_empty() {
+        let msg = match (app.mode, app.scope) {
+            (Mode::Log, _) => "no commits".to_string(),
+            (Mode::CommitFiles, _) => "empty commit".to_string(),
+            (_, Scope::Worktree) => "working tree clean".to_string(),
+            (_, Scope::Branch) => format!("no changes vs {}", base_label(app)),
         };
         let mid = Rect {
             x: area.x,
@@ -104,7 +117,25 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let items: Vec<ListItem> = app.entries.iter().map(|e| row(e, area.width)).collect();
+    let items: Vec<ListItem> = app
+        .rows
+        .iter()
+        .map(|row| match row {
+            ListRow::Header(title) => header_row(title),
+            ListRow::Entry { idx, .. } => match app.entries.get(*idx) {
+                Some(e) => entry_row(
+                    e,
+                    area.width,
+                    app.mode == Mode::Files && app.scope == Scope::Worktree,
+                ),
+                None => ListItem::new(""),
+            },
+            ListRow::Commit(idx) => match app.commits.get(*idx) {
+                Some(c) => commit_row(c, area.width),
+                None => ListItem::new(""),
+            },
+        })
+        .collect();
     let list = List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED));
 
     let mut state = ListState::default().with_offset(app.list_offset);
@@ -113,65 +144,100 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
     app.list_offset = state.offset();
 }
 
-/// One row: `<stage-dot><marker> <path>  <+a -d>` (stats flush right).
-fn row(entry: &FileEntry, width: u16) -> ListItem<'static> {
+fn header_row(title: &str) -> ListItem<'static> {
+    ListItem::new(Line::from(Span::styled(
+        format!(" {}", title.to_uppercase()),
+        Style::new().add_modifier(Modifier::BOLD | Modifier::DIM),
+    )))
+}
+
+/// One file row: `  <marker> <path>  <+a −d>` — marker colored by kind, dirs
+/// dimmed, stats colored green/red flush right (reviewr's look). `indent`
+/// only in the grouped worktree view.
+fn entry_row(entry: &FileEntry, width: u16, grouped: bool) -> ListItem<'static> {
     let width = width as usize;
-    let stats = stats_str(entry);
-    let stats_w = stats.width();
-    let prefix_w = 3; // dot + marker + space
-    let min_gap = 1;
+    let indent = if grouped { "  " } else { " " };
+    let (stats_text, stats_spans) = stats(entry);
+    let gap = if stats_text.is_empty() { 0 } else { 2 };
+    let marker_w = 2; // letter + space
+    let fixed = indent.len() + marker_w + stats_text.width() + gap;
 
     let path_text = path_text(entry);
-    let avail = width.saturating_sub(prefix_w + stats_w + min_gap);
-    let shown = truncate_left(&path_text, avail);
-    let shown_w = shown.width();
-    let pad = width.saturating_sub(prefix_w + shown_w + stats_w);
-
-    let (marker_char, marker_style) = marker(entry.kind);
+    let shown = elide_head(&path_text, width.saturating_sub(fixed).max(1));
     let (dir, base) = split_dir(&shown);
 
+    let (letter, color) = marker(entry.kind);
     let mut spans = vec![
-        dot_span(entry.stage),
-        Span::styled(marker_char.to_string(), marker_style),
-        Span::raw(" "),
+        Span::raw(indent.to_string()),
+        Span::styled(format!("{letter} "), Style::new().fg(color)),
     ];
     if !dir.is_empty() {
         spans.push(Span::styled(dir.to_string(), dim()));
     }
     spans.push(Span::raw(base.to_string()));
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(stats, dim()));
-
+    if !stats_text.is_empty() {
+        let used: usize = spans.iter().map(Span::width).sum();
+        let pad = width.saturating_sub(used + stats_text.width());
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.extend(stats_spans);
+    }
     ListItem::new(Line::from(spans))
 }
 
-fn dot_span(stage: StageState) -> Span<'static> {
-    match stage {
-        StageState::Staged => Span::styled("●", Style::new().fg(Color::Green)),
-        StageState::Partial => Span::styled("◐", Style::new().fg(Color::Yellow)),
-        _ => Span::raw(" "),
-    }
+/// One commit row: `<short> <subject>  <date>`.
+fn commit_row(c: &CommitInfo, width: u16) -> ListItem<'static> {
+    let width = width as usize;
+    let short = format!(" {} ", c.short);
+    let date = format!("{} ", c.date);
+    let avail = width.saturating_sub(short.width() + date.width() + 1);
+    let subject = elide_tail(&c.subject, avail);
+    let pad = width.saturating_sub(short.width() + subject.width() + date.width());
+    ListItem::new(Line::from(vec![
+        Span::styled(short, Style::new().fg(Color::Yellow)),
+        Span::raw(subject),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(date, dim()),
+    ]))
 }
 
-fn marker(kind: ChangeKind) -> (char, Style) {
+fn marker(kind: ChangeKind) -> (char, Color) {
     match kind {
-        ChangeKind::Modified => ('M', Style::new().fg(Color::Yellow)),
-        ChangeKind::Added => ('A', Style::new().fg(Color::Green)),
-        ChangeKind::Deleted => ('D', Style::new().fg(Color::Red)),
-        ChangeKind::Renamed => ('R', Style::new().fg(Color::Cyan)),
-        ChangeKind::Untracked => ('?', Style::new().fg(Color::Magenta)),
-        ChangeKind::Conflicted => (
-            'U',
-            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ),
+        ChangeKind::Modified => ('M', Color::Yellow),
+        ChangeKind::Added => ('A', Color::Green),
+        ChangeKind::Deleted => ('D', Color::Red),
+        ChangeKind::Renamed => ('R', Color::Cyan),
+        ChangeKind::Untracked => ('U', Color::Green),
+        ChangeKind::Conflicted => ('!', Color::Red),
     }
 }
 
-fn stats_str(entry: &FileEntry) -> String {
-    match (entry.adds, entry.dels) {
-        (Some(a), Some(d)) => format!("+{a} -{d}"),
-        _ => "bin".to_string(),
+/// The `+a −d` stats: text (for width) and colored spans, zero sides dropped.
+fn stats(entry: &FileEntry) -> (String, Vec<Span<'static>>) {
+    let (adds, dels) = match (entry.adds, entry.dels) {
+        (Some(a), Some(d)) => (a, d),
+        _ => return ("bin".into(), vec![Span::styled("bin", dim())]),
+    };
+    let mut text = String::new();
+    let mut spans = Vec::new();
+    if adds > 0 || dels == 0 {
+        text.push_str(&format!("+{adds}"));
+        spans.push(Span::styled(
+            format!("+{adds}"),
+            Style::new().fg(Color::Green),
+        ));
     }
+    if dels > 0 {
+        if !text.is_empty() {
+            text.push(' ');
+            spans.push(Span::raw(" "));
+        }
+        text.push_str(&format!("−{dels}"));
+        spans.push(Span::styled(
+            format!("−{dels}"),
+            Style::new().fg(Color::Red),
+        ));
+    }
+    (text, spans)
 }
 
 fn path_text(entry: &FileEntry) -> String {
@@ -190,7 +256,7 @@ fn split_dir(s: &str) -> (&str, &str) {
 }
 
 /// Left-truncate to `max` display columns, prefixing `…` when cut.
-fn truncate_left(s: &str, max: usize) -> String {
+fn elide_head(s: &str, max: usize) -> String {
     if s.width() <= max {
         return s.to_string();
     }
@@ -213,6 +279,28 @@ fn truncate_left(s: &str, max: usize) -> String {
     format!("…{tail}")
 }
 
+/// Right-truncate to `max` display columns, suffixing `…` when cut.
+fn elide_tail(s: &str, max: usize) -> String {
+    if s.width() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let budget = max - 1;
+    let mut acc = 0;
+    let mut kept = String::new();
+    for ch in s.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if acc + cw > budget {
+            break;
+        }
+        acc += cw;
+        kept.push(ch);
+    }
+    format!("{kept}…")
+}
+
 // ---- footer ---------------------------------------------------------------
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
@@ -228,16 +316,31 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
 
 fn footer_hints(app: &App) -> String {
     let k = |a| sym(app.keys.hint(a));
-    format!(
-        " {} edit  {} stage  {} discard  {} commit  {} scope  {} help  {} quit",
-        k(Action::Edit),
-        k(Action::Stage),
-        k(Action::Discard),
-        k(Action::Commit),
-        k(Action::ToggleScope),
-        k(Action::Help),
-        k(Action::Quit),
-    )
+    match app.mode {
+        Mode::Log => format!(
+            " {} show commit  {} back  {} help",
+            k(Action::Edit),
+            k(Action::Quit),
+            k(Action::Help),
+        ),
+        Mode::CommitFiles => format!(
+            " {}/{} scroll diff  {} back  {} help",
+            k(Action::ScrollDown),
+            k(Action::ScrollUp),
+            k(Action::Quit),
+            k(Action::Help),
+        ),
+        Mode::Files => format!(
+            " {} edit  {} stage  {} discard  {} commit  {} log  {} help  {} quit",
+            k(Action::Edit),
+            k(Action::Stage),
+            k(Action::Discard),
+            k(Action::Commit),
+            k(Action::Log),
+            k(Action::Help),
+            k(Action::Quit),
+        ),
+    }
 }
 
 /// Prettify a hint for the footer (`enter` → `↵`).
@@ -249,7 +352,7 @@ fn sym(hint: String) -> String {
     }
 }
 
-// ---- help overlay ---------------------------------------------------------
+// ---- overlays -------------------------------------------------------------
 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     let lines: Vec<Line> = HELP_ACTIONS

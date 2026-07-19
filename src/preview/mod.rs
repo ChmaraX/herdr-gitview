@@ -164,6 +164,7 @@ fn handle_ipc(app: &mut PreviewApp, msg: ToPreview, work_tx: &Sender<ShowReq>) {
             scope,
             cached,
             kind,
+            commit,
         } => {
             let req = ShowReq {
                 file,
@@ -171,6 +172,7 @@ fn handle_ipc(app: &mut PreviewApp, msg: ToPreview, work_tx: &Sender<ShowReq>) {
                 scope,
                 cached,
                 kind,
+                commit,
             };
             app.begin_show(req.clone());
             let _ = work_tx.send(req);
@@ -308,7 +310,7 @@ fn spawn_diff_worker(tx: Sender<Event>, repo: Repo) -> Sender<ShowReq> {
             }
             let entry = req.to_entry();
             let result = repo
-                .diff_ansi(&entry, req.scope, req.cached)
+                .diff_ansi(&entry, req.scope, req.cached, req.commit.as_deref())
                 .map_err(|err| first_line(&err.to_string()));
             if tx.send(Event::Diff { req, result }).is_err() {
                 break;

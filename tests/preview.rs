@@ -34,6 +34,7 @@ fn req(file: &str) -> ShowReq {
         scope: Scope::Worktree,
         cached: false,
         kind: ChangeKind::Modified,
+        commit: None,
     }
 }
 

@@ -12,6 +12,16 @@ pub enum Scope {
     Branch,
 }
 
+/// One entry of `git log` for the history view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitInfo {
+    pub sha: String,
+    pub short: String,
+    pub author: String,
+    pub date: String,
+    pub subject: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeKind {
@@ -221,8 +231,38 @@ impl Repo {
     /// Branch scope resolves its own merge base (via `detect_base` +
     /// `merge_base`) so the contract signature `diff_ansi(e, scope, cached)`
     /// is kept exactly.
-    pub fn diff_ansi(&self, e: &FileEntry, scope: Scope, cached: bool) -> Result<Vec<u8>> {
+    /// The diff for one entry. `commit: Some(sha)` shows that commit's change
+    /// to the file (history view) and ignores `scope`/`cached`.
+    pub fn diff_ansi(
+        &self,
+        e: &FileEntry,
+        scope: Scope,
+        cached: bool,
+        commit: Option<&str>,
+    ) -> Result<Vec<u8>> {
         let path = e.path.to_string_lossy().into_owned();
+        if let Some(sha) = commit {
+            // `show` handles root commits (no parent) transparently.
+            let mut args: Vec<String> = vec![
+                "-c".into(),
+                "color.diff=always".into(),
+                "-c".into(),
+                "core.pager=cat".into(),
+                "show".into(),
+                "--color=always".into(),
+                "--no-ext-diff".into(),
+                "--format=".into(),
+                "-M".into(),
+                sha.into(),
+                "--".into(),
+            ];
+            if let Some(orig) = &e.orig_path {
+                args.push(orig.to_string_lossy().into_owned());
+            }
+            args.push(path);
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            return self.git(&refs);
+        }
         let mut args: Vec<String> = vec![
             "-c".into(),
             "color.diff=always".into(),
@@ -270,6 +310,82 @@ impl Repo {
         } else {
             self.git(&refs)
         }
+    }
+
+    // ---- history ----------------------------------------------------------
+
+    /// Recent commits, newest first.
+    pub fn log_commits(&self, limit: usize) -> Result<Vec<CommitInfo>> {
+        let n = limit.to_string();
+        let raw = self.git(&[
+            "log",
+            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00",
+            "--date=short",
+            "-n",
+            &n,
+        ])?;
+        let text = String::from_utf8_lossy(&raw);
+        let mut fields = text.split('\0');
+        let mut commits = Vec::new();
+        while let (Some(sha), Some(short), Some(author), Some(date), Some(subject)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) {
+            let sha = sha.trim_start(); // leading \n from the previous record
+            if sha.is_empty() {
+                break;
+            }
+            commits.push(CommitInfo {
+                sha: sha.to_string(),
+                short: short.to_string(),
+                author: author.to_string(),
+                date: date.to_string(),
+                subject: subject.to_string(),
+            });
+        }
+        Ok(commits)
+    }
+
+    /// Files changed by one commit (vs its parent; root commits work too).
+    pub fn commit_files(&self, sha: &str) -> Result<Vec<FileEntry>> {
+        let raw = self.git(&[
+            "diff-tree",
+            "-r",
+            "--root",
+            "--name-status",
+            "-z",
+            "-M",
+            sha,
+        ])?;
+        // diff-tree prefixes its output with the commit id line; skip it.
+        let body = match raw.iter().position(|b| *b == 0) {
+            Some(i) if raw.get(..40).is_some_and(|s| !s.contains(&b'\t')) => &raw[i + 1..],
+            _ => &raw[..],
+        };
+        let mut entries = parse_name_status(body)?;
+
+        let numstat = self.git(&["diff-tree", "-r", "--root", "--numstat", "-z", "-M", sha])?;
+        let nbody = match numstat.iter().position(|b| *b == 0) {
+            Some(i) if numstat.get(..40).is_some_and(|s| !s.contains(&b'\t')) => &numstat[i + 1..],
+            _ => &numstat[..],
+        };
+        let mut stats: HashMap<PathBuf, Option<(u32, u32)>> = HashMap::new();
+        for (path, stat) in parse_numstat(nbody) {
+            merge_stat(&mut stats, path, stat);
+        }
+        for entry in &mut entries {
+            if let Some(stat) = stats.get(&entry.path) {
+                (entry.adds, entry.dels) = match stat {
+                    Some((a, d)) => (Some(*a), Some(*d)),
+                    None => (None, None),
+                };
+            }
+        }
+        sort_entries(&mut entries);
+        Ok(entries)
     }
 
     // ---- write side (phase 5) ---------------------------------------------

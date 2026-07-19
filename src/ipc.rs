@@ -33,6 +33,10 @@ pub enum ToPreview {
         scope: Scope,
         cached: bool,
         kind: ChangeKind,
+        /// History view: show this commit's change to the file instead of the
+        /// worktree/branch diff.
+        #[serde(default)]
+        commit: Option<String>,
     },
     /// Scroll the diff without switching pane focus. delta in lines;
     /// `i32::MIN`/`MAX` = home/end.
@@ -190,6 +194,7 @@ mod tests {
                 scope: Scope::Worktree,
                 cached: false,
                 kind: ChangeKind::Modified,
+                commit: Some("abc123".into()),
             },
             ToPreview::Scroll { delta: -3 },
             ToPreview::Page {

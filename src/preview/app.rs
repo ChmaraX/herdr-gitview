@@ -7,7 +7,6 @@
 
 use std::path::PathBuf;
 
-use ansi_to_tui::IntoText;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
@@ -29,6 +28,8 @@ pub struct ShowReq {
     pub scope: Scope,
     pub cached: bool,
     pub kind: ChangeKind,
+    /// History view: show this commit's change instead of a live diff.
+    pub commit: Option<String>,
 }
 
 impl ShowReq {
@@ -154,9 +155,7 @@ impl PreviewApp {
         }
 
         let (capped, hidden) = cap_lines(&self.raw, MAX_LINES);
-        let mut doc = capped
-            .into_text()
-            .unwrap_or_else(|_| Text::raw(String::from_utf8_lossy(&capped).into_owned()));
+        let mut doc = build_diff_doc(&capped);
         if hidden > 0 {
             doc.lines.push(Line::from(Span::styled(
                 format!("… diff truncated ({hidden} more lines)"),
@@ -234,6 +233,90 @@ impl PreviewApp {
             _ => {}
         }
     }
+}
+
+// ---- diff styling ---------------------------------------------------------
+//
+// git's own ANSI colors render inconsistently across terminal themes, so the
+// diff is re-styled here: strip the escapes, parse the unified-diff structure,
+// and paint each line kind deliberately — with an old/new line-number gutter
+// (the look borrows from persiyanov/herdr-reviewr).
+
+fn build_diff_doc(raw: &[u8]) -> Text<'static> {
+    let plain = super::editor::strip_ansi(raw);
+    let text = String::from_utf8_lossy(&plain);
+
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let green = Style::new().fg(Color::Green);
+    let red = Style::new().fg(Color::Red);
+    let cyan = Style::new().fg(Color::Cyan);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let mut old_no: u32 = 0;
+    let mut new_no: u32 = 0;
+    let mut first_hunk_seen = false;
+
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("@@") {
+            (old_no, new_no) = hunk_start(line).unwrap_or((0, 0));
+            if first_hunk_seen {
+                lines.push(Line::from(Span::styled("─".repeat(60), dim)));
+            }
+            first_hunk_seen = true;
+            // Keep the context hint after the second `@@`, drop the numbers.
+            let hint = rest.split_once("@@").map(|x| x.1).unwrap_or("").trim();
+            if !hint.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("… {hint}"),
+                    cyan.add_modifier(Modifier::DIM),
+                )));
+            }
+            continue;
+        }
+        if !first_hunk_seen {
+            // File header block: diff --git / index / --- / +++ / rename …
+            lines.push(Line::from(Span::styled(line.to_string(), dim)));
+            continue;
+        }
+        let (gutter, style, content) = match line.as_bytes().first() {
+            Some(b'+') => {
+                let g = format!("{:>4} {:>4} ", "", new_no);
+                new_no += 1;
+                (g, green, line.to_string())
+            }
+            Some(b'-') => {
+                let g = format!("{:>4} {:>4} ", old_no, "");
+                old_no += 1;
+                (g, red, line.to_string())
+            }
+            Some(b'\\') => ("          ".to_string(), dim, line.to_string()),
+            _ => {
+                let g = format!("{:>4} {:>4} ", old_no, new_no);
+                old_no += 1;
+                new_no += 1;
+                (g, Style::new(), line.to_string())
+            }
+        };
+        lines.push(Line::from(vec![
+            Span::styled(gutter, dim),
+            Span::styled(content, style),
+        ]));
+    }
+    Text::from(lines)
+}
+
+/// Parse `@@ -a[,b] +c[,d] @@` into the starting (old, new) line numbers.
+fn hunk_start(line: &str) -> Option<(u32, u32)> {
+    let mut old = None;
+    let mut new = None;
+    for tok in line.split(' ') {
+        if let Some(n) = tok.strip_prefix('-') {
+            old = n.split(',').next()?.parse().ok();
+        } else if let Some(n) = tok.strip_prefix('+') {
+            new = n.split(',').next()?.parse().ok();
+        }
+    }
+    Some((old?, new?))
 }
 
 /// Return the diff bytes truncated to at most `cap` lines, plus how many lines

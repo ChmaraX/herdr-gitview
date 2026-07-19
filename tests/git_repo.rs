@@ -202,7 +202,7 @@ fn diff_ansi_unstaged_has_color_and_line() {
     write(&t.dir, "base.txt", "one\ntwo\nthree\n");
     let entries = t.repo.worktree_status(true).unwrap();
     let e = find(&entries, "base.txt");
-    let out = t.repo.diff_ansi(e, Scope::Worktree, false).unwrap();
+    let out = t.repo.diff_ansi(e, Scope::Worktree, false, None).unwrap();
     // ANSI escape byte present + the newly added line shows up.
     assert!(out.contains(&0x1b), "expected ANSI escape bytes in diff");
     assert!(
@@ -219,9 +219,9 @@ fn diff_ansi_cached_vs_unstaged() {
     let entries = t.repo.worktree_status(true).unwrap();
     let e = find(&entries, "base.txt");
     // Staged view shows the change; unstaged view is empty (nothing left).
-    let cached = t.repo.diff_ansi(e, Scope::Worktree, true).unwrap();
+    let cached = t.repo.diff_ansi(e, Scope::Worktree, true, None).unwrap();
     assert!(String::from_utf8_lossy(&cached).contains("staged"));
-    let unstaged = t.repo.diff_ansi(e, Scope::Worktree, false).unwrap();
+    let unstaged = t.repo.diff_ansi(e, Scope::Worktree, false, None).unwrap();
     assert!(unstaged.is_empty(), "no unstaged changes expected");
 }
 
@@ -231,7 +231,7 @@ fn diff_ansi_untracked_full_add() {
     write(&t.dir, "fresh.txt", "alpha\nbeta\n");
     let entries = t.repo.worktree_status(true).unwrap();
     let e = find(&entries, "fresh.txt");
-    let out = t.repo.diff_ansi(e, Scope::Worktree, false).unwrap();
+    let out = t.repo.diff_ansi(e, Scope::Worktree, false, None).unwrap();
     let text = String::from_utf8_lossy(&out);
     assert!(
         text.contains("alpha") && text.contains("beta"),
@@ -249,7 +249,7 @@ fn diff_ansi_branch_scope() {
     let mb = t.repo.merge_base("main").unwrap();
     let entries = t.repo.branch_changes(&mb).unwrap();
     let e = find(&entries, "base.txt");
-    let out = t.repo.diff_ansi(e, Scope::Branch, false).unwrap();
+    let out = t.repo.diff_ansi(e, Scope::Branch, false, None).unwrap();
     assert!(
         String::from_utf8_lossy(&out).contains("branch"),
         "branch-scope change line"
@@ -270,7 +270,7 @@ fn diff_ansi_branch_rename() {
         .find(|e| e.kind == ChangeKind::Renamed)
         .expect("renamed entry");
     assert_eq!(e.orig_path, Some(PathBuf::from("base.txt")));
-    let out = t.repo.diff_ansi(e, Scope::Branch, false).unwrap();
+    let out = t.repo.diff_ansi(e, Scope::Branch, false, None).unwrap();
     let text = String::from_utf8_lossy(&out);
     // Rename diff references the paths (pathspec included both orig + new).
     assert!(

@@ -16,3 +16,5 @@ lint:
 release-dry: lint test
     cargo build --release
     @echo "ok — tag with: git tag v$(sed -n 's/^version *= *\"\\(.*\\)\"/\\1/p' herdr-plugin.toml | head -1) && git push --tags"
+
+# scratch note for gitview demo

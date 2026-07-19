@@ -21,6 +21,8 @@ pub enum Action {
     Stage,
     Discard,
     Commit,
+    /// Commit history view (list of commits → files → diffs).
+    Log,
     Refresh,
     Help,
     Quit,
@@ -44,6 +46,7 @@ pub const DEFAULT_KEYS: &[(Action, &str, &[&str])] = &[
     (Action::Stage, "stage", &["s"]),
     (Action::Discard, "discard", &["x"]),
     (Action::Commit, "commit", &["c"]),
+    (Action::Log, "log", &["l"]),
     (Action::Refresh, "refresh", &["r"]),
     (Action::Help, "help", &["?"]),
     (Action::Quit, "quit", &["q", "esc"]),

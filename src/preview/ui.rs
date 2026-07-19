@@ -34,9 +34,12 @@ pub fn render(frame: &mut Frame, app: &mut PreviewApp) {
 fn render_header(frame: &mut Frame, area: Rect, app: &PreviewApp) {
     let left = match &app.current {
         Some(req) => {
-            let scope = match req.scope {
-                Scope::Worktree => "worktree".to_string(),
-                Scope::Branch => format!("branch vs {}", app.base.as_deref().unwrap_or("base")),
+            let scope = match (&req.commit, req.scope) {
+                (Some(sha), _) => format!("commit {}", &sha[..sha.len().min(7)]),
+                (None, Scope::Worktree) => "worktree".to_string(),
+                (None, Scope::Branch) => {
+                    format!("branch vs {}", app.base.as_deref().unwrap_or("base"))
+                }
             };
             let staged = if req.cached && req.scope == Scope::Worktree {
                 " [staged]"

@@ -110,12 +110,19 @@ fn event_loop(
                 // overlay/lockout is active (App::on_key covers those cases).
                 let free = conn.is_some() && app.modal.is_none() && app.busy.is_none();
                 let action = app.keys.action(&key);
-                if free && action == Some(Action::Edit) {
+                // Enter picks a commit in the log view (no IPC needed).
+                if app.modal.is_none() && app.mode == app::Mode::Log && action == Some(Action::Edit)
+                {
+                    app.open_commit();
+                } else if free && action == Some(Action::Edit) && app.mode == app::Mode::Files {
                     start_edit(app, &mut conn);
-                } else if free && action == Some(Action::Commit) {
+                } else if free && action == Some(Action::Commit) && app.mode == app::Mode::Files {
                     start_commit(app, &mut conn);
-                // Diff scroll/page keys are forwarded straight to the preview.
-                } else if let Some(msg) = scroll_message(app, &key) {
+                // Diff scroll/page keys are forwarded straight to the preview
+                // (skipped while nvim owns that PTY).
+                } else if app.busy.is_none()
+                    && let Some(msg) = scroll_message(app, &key)
+                {
                     send(&mut conn, &msg);
                 } else {
                     let before = show_key(app);
@@ -206,8 +213,8 @@ fn connect_preview(app: &mut App, tx: &Sender<Event>) -> Option<Conn> {
 /// Enter on the selected entry: guard deleted files, then hand the preview
 /// pane the Edit and the focus. The lockout ends when `EditDone` arrives.
 fn start_edit(app: &mut App, conn: &mut Option<Conn>) {
-    let Some(entry) = app.entries.get(app.cursor) else {
-        return; // empty list
+    let Some((entry, _)) = app.selected_entry() else {
+        return; // empty list or header row
     };
     if entry.kind == crate::git::ChangeKind::Deleted {
         app.set_status("file is deleted — nothing to edit");
@@ -261,26 +268,32 @@ fn focus_self() {
     }
 }
 
-/// The Show message for the current selection, or `None` when the list is empty.
+/// The Show message for the current selection, or `None` when nothing
+/// diffable is selected (headers, commit rows, empty list).
 fn current_show(app: &App) -> Option<ToPreview> {
-    let e = app.entries.get(app.cursor)?;
+    let (e, staged) = app.selected_entry()?;
+    let commit = match app.mode {
+        app::Mode::CommitFiles => Some(app.commit.as_ref()?.sha.clone()),
+        _ => None,
+    };
     Some(ToPreview::Show {
         file: e.path.clone(),
         orig_path: e.orig_path.clone(),
         scope: app.scope,
-        cached: app.cached_view && app.scope == Scope::Worktree,
+        cached: staged && app.scope == Scope::Worktree,
         kind: e.kind,
+        commit,
     })
 }
 
 /// Identity of what the preview is showing; a change here means "re-Show".
-fn show_key(app: &App) -> Option<(PathBuf, Scope, bool)> {
-    let e = app.entries.get(app.cursor)?;
-    Some((
-        e.path.clone(),
-        app.scope,
-        app.cached_view && app.scope == Scope::Worktree,
-    ))
+fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
+    let (e, staged) = app.selected_entry()?;
+    let commit = match app.mode {
+        app::Mode::CommitFiles => app.commit.as_ref().map(|c| c.sha.clone()),
+        _ => None,
+    };
+    Some((e.path.clone(), app.scope, staged, commit))
 }
 
 /// Translate a diff scroll/page key into the message the preview understands,
