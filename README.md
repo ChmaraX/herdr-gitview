@@ -73,6 +73,7 @@ commented version):
 | `editor` | `["nvim"]` | editor argv; file and `+<line>` appended |
 | `poll_ms` | `2000` | auto-refresh interval; `0` disables |
 | `show_untracked` | `true` | include untracked files |
+| `theme` | `"dark"` | diff colors: `"dark"` or `"light"` (syntax theme + background tints) |
 | `[keybindings]` | — | `action = "key"` overrides (see example config) |
 
 ## How it works

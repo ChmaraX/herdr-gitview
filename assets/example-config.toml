@@ -24,6 +24,11 @@ poll_ms = 2000
 # Show untracked files in the worktree view.
 show_untracked = true
 
+# Diff colors: "dark" (default) or "light" — picks the syntax-highlighting
+# theme and the red/green line-background tints. Use "light" if your
+# terminal has a light background.
+theme = "dark"
+
 # Override any default keybinding: action = "key".
 # Key grammar: [ctrl+][alt+][shift+]<key>, where <key> is a single character
 # or: enter, esc, tab, space, up, down, left, right, pgup, pgdn, home, end.
