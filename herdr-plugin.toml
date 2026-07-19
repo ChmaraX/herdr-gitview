@@ -9,19 +9,19 @@ platforms = ["macos", "linux"]
 id = "preview"
 title = "gitview: diff"
 placement = "tab"
-command = ["sh", "-c", "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin\" exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-gitview\" preview"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" preview"]
 
 [[panes]]
 id = "list"
 title = "gitview: files"
 placement = "split"
-command = ["sh", "-c", "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin\" exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-gitview\" list"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" list"]
 
 [[actions]]
 id = "toggle"
 title = "gitview: toggle"
 contexts = ["pane", "workspace"]
-command = ["sh", "-c", "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin\" exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-gitview\" toggle"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle"]
 
 [[build]]
-command = ["cargo", "build", "--release"]
+command = ["bash", "herdr/install.sh"]
