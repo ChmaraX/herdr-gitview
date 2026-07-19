@@ -42,6 +42,9 @@ pub struct App {
     pub status_msg: Option<(String, Instant)>,
     pub should_quit: bool,
     pub show_help: bool,
+    /// `Some(file)` while the preview pane runs an editor on it: all list
+    /// input is refused until `EditDone` (the left PTY belongs to nvim).
+    pub editing: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -70,6 +73,7 @@ impl App {
             status_msg: None,
             should_quit: false,
             show_help: false,
+            editing: None,
         }
     }
 
@@ -79,6 +83,13 @@ impl App {
         let Some(action) = self.keys.action(&ev) else {
             return;
         };
+
+        // Editor lockout: refuse everything (incl. quit — tearing down the
+        // view would orphan nvim on the preview PTY).
+        if self.editing.is_some() {
+            self.set_status("editor is open — close it first");
+            return;
+        }
 
         // While the help overlay is up, any recognized key dismisses it.
         if self.show_help {
@@ -110,10 +121,12 @@ impl App {
             | Action::DiffTop
             | Action::DiffBottom => {}
 
-            // Not implemented until later phases; announce, don't crash.
-            Action::Edit | Action::Stage | Action::Discard | Action::Commit => {
-                self.set_status("(soon)")
-            }
+            // Edit is intercepted by the run loop (it needs the IPC link);
+            // reaching here means there is no preview connection.
+            Action::Edit => self.set_status("editor needs herdr (no preview pane)"),
+
+            // Not implemented until phase 5; announce, don't crash.
+            Action::Stage | Action::Discard | Action::Commit => self.set_status("(soon)"),
         }
     }
 
@@ -201,7 +214,14 @@ impl App {
         self.force_refresh();
     }
 
-    fn force_refresh(&mut self) {
+    /// Editor finished: unlock, reload the status (the file just changed on
+    /// disk); cursor preservation in `apply_refresh` handles moved entries.
+    pub fn on_edit_done(&mut self) {
+        self.editing = None;
+        self.force_refresh();
+    }
+
+    pub fn force_refresh(&mut self) {
         match self.load_entries() {
             Ok(entries) => self.apply_refresh(entries),
             Err(err) => self.set_status(format!("refresh failed: {err}")),
@@ -218,7 +238,7 @@ impl App {
         }
     }
 
-    fn set_status(&mut self, msg: impl Into<String>) {
+    pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = Some((msg.into(), Instant::now()));
     }
 }

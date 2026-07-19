@@ -62,7 +62,10 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         Scope::Worktree => "working tree".to_string(),
         Scope::Branch => format!("vs {}", base_label(app)),
     };
-    let left = format!(" {branch}  {scope_label}");
+    let left = match &app.editing {
+        Some(file) => format!(" editing {}…", file.display()),
+        None => format!(" {branch}  {scope_label}"),
+    };
     let right = format!("{} files ", app.entries.len());
 
     let width = area.width as usize;

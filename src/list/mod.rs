@@ -97,8 +97,17 @@ fn event_loop(
 
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Event::Key(key)) => {
+                // Enter needs the IPC link + focus handoff, so it is handled
+                // here — but only when a preview is connected and no overlay/
+                // lockout is active (App::on_key covers those cases).
+                if app.keys.action(&key) == Some(Action::Edit)
+                    && conn.is_some()
+                    && !app.show_help
+                    && app.editing.is_none()
+                {
+                    start_edit(app, &mut conn);
                 // Diff scroll/page keys are forwarded straight to the preview.
-                if let Some(msg) = scroll_message(app, &key) {
+                } else if let Some(msg) = scroll_message(app, &key) {
                     send(&mut conn, &msg);
                 } else {
                     let before = show_key(app);
@@ -121,7 +130,15 @@ fn event_loop(
                     app.status_msg = None;
                 }
             }
-            Ok(Event::Ipc(_)) => {} // EditDone / GitDone handled in later phases
+            Ok(Event::Ipc(ToList::EditDone { .. })) => {
+                app.on_edit_done();
+                show_dirty = true;
+                dirty_since = Instant::now();
+                if let Some(own) = std::env::var_os("HERDR_PANE_ID") {
+                    crate::herdr_cli::focus_pane(&own.to_string_lossy());
+                }
+            }
+            Ok(Event::Ipc(ToList::GitDone { .. })) => {} // used in phase 5
             Ok(Event::IpcClosed) => conn = None, // preview gone; keep list usable
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
@@ -158,6 +175,27 @@ fn connect_preview(app: &mut App, tx: &Sender<Event>) -> Option<Conn> {
             crate::logx::log(format!("list: preview connect failed: {err}"));
             None
         }
+    }
+}
+
+/// Enter on the selected entry: guard deleted files, then hand the preview
+/// pane the Edit and the focus. The lockout ends when `EditDone` arrives.
+fn start_edit(app: &mut App, conn: &mut Option<Conn>) {
+    let Some(entry) = app.entries.get(app.cursor) else {
+        return; // empty list
+    };
+    if entry.kind == crate::git::ChangeKind::Deleted {
+        app.set_status("file is deleted — nothing to edit");
+        return;
+    }
+    let file = entry.path.clone();
+    send(conn, &ToPreview::Edit { file: file.clone() });
+    if conn.is_none() {
+        return; // send failed — preview link just broke
+    }
+    app.editing = Some(file);
+    if let Some(preview) = std::env::var_os("GITVIEW_PREVIEW_PANE") {
+        crate::herdr_cli::focus_pane(&preview.to_string_lossy());
     }
 }
 

@@ -1,5 +1,6 @@
 pub mod config;
 pub mod git;
+pub mod herdr_cli;
 pub mod ipc;
 pub mod keymap;
 pub mod list;
