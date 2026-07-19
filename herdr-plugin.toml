@@ -1,0 +1,27 @@
+id = "adamchmara.gitview"
+name = "gitview"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Two-pane git view: changed files + diff, Enter opens nvim"
+platforms = ["macos", "linux"]
+
+[[panes]]
+id = "preview"
+title = "gitview: diff"
+placement = "tab"
+command = ["sh", "-c", "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin\" exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-gitview\" preview"]
+
+[[panes]]
+id = "list"
+title = "gitview: files"
+placement = "split"
+command = ["sh", "-c", "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin\" exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-gitview\" list"]
+
+[[actions]]
+id = "toggle"
+title = "gitview: toggle"
+contexts = ["pane", "workspace"]
+command = ["sh", "-c", "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin\" exec \"$HERDR_PLUGIN_ROOT/target/release/herdr-gitview\" toggle"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
