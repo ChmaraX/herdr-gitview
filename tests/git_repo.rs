@@ -265,3 +265,108 @@ fn fingerprint_changes_with_worktree() {
     std::fs::remove_file(t.dir.join("new.txt")).unwrap();
     assert_eq!(t.repo.fingerprint(), clean);
 }
+
+// ---- phase 5: write side ---------------------------------------------------
+
+fn entry_for<'a>(entries: &'a [herdr_gitview::git::FileEntry], p: &str) -> &'a herdr_gitview::git::FileEntry {
+    entries
+        .iter()
+        .find(|e| e.path == PathBuf::from(p))
+        .unwrap_or_else(|| panic!("no entry for {p}"))
+}
+
+fn status_len(t: &TempRepo) -> usize {
+    t.repo.worktree_status(true).unwrap().len()
+}
+
+#[test]
+fn stage_unstage_round_trip() {
+    let t = fixture("stage-round-trip");
+    write(&t.dir, "base.txt", "one\ntwo\nmore\n");
+
+    t.repo.stage(Path::new("base.txt")).unwrap();
+    let entries = t.repo.worktree_status(true).unwrap();
+    assert_eq!(entry_for(&entries, "base.txt").stage, StageState::Staged);
+    assert_eq!(t.repo.staged_count().unwrap(), 1);
+
+    t.repo.unstage(Path::new("base.txt")).unwrap();
+    let entries = t.repo.worktree_status(true).unwrap();
+    assert_eq!(entry_for(&entries, "base.txt").stage, StageState::Unstaged);
+    assert_eq!(t.repo.staged_count().unwrap(), 0);
+}
+
+#[test]
+fn discard_untracked_deletes_file() {
+    let t = fixture("discard-untracked");
+    write(&t.dir, "loose.txt", "x\n");
+    let entries = t.repo.worktree_status(true).unwrap();
+    t.repo.discard(entry_for(&entries, "loose.txt")).unwrap();
+    assert!(!t.dir.join("loose.txt").exists());
+    assert_eq!(status_len(&t), 0);
+}
+
+#[test]
+fn discard_unstaged_restores_head() {
+    let t = fixture("discard-unstaged");
+    write(&t.dir, "base.txt", "changed\n");
+    let entries = t.repo.worktree_status(true).unwrap();
+    t.repo.discard(entry_for(&entries, "base.txt")).unwrap();
+    assert_eq!(std::fs::read_to_string(t.dir.join("base.txt")).unwrap(), "one\ntwo\n");
+    assert_eq!(status_len(&t), 0);
+}
+
+#[test]
+fn discard_staged_and_partial_full_revert() {
+    let t = fixture("discard-staged");
+    // staged modification
+    write(&t.dir, "base.txt", "staged edit\n");
+    t.repo.stage(Path::new("base.txt")).unwrap();
+    // …then another unstaged edit on top → partial
+    write(&t.dir, "base.txt", "staged edit\nplus unstaged\n");
+
+    let entries = t.repo.worktree_status(true).unwrap();
+    assert_eq!(entry_for(&entries, "base.txt").stage, StageState::Partial);
+    t.repo.discard(entry_for(&entries, "base.txt")).unwrap();
+    assert_eq!(std::fs::read_to_string(t.dir.join("base.txt")).unwrap(), "one\ntwo\n");
+    assert_eq!(status_len(&t), 0);
+}
+
+#[test]
+fn discard_staged_new_file_removes_it() {
+    let t = fixture("discard-added");
+    write(&t.dir, "brand-new.txt", "n\n");
+    t.repo.stage(Path::new("brand-new.txt")).unwrap();
+    let entries = t.repo.worktree_status(true).unwrap();
+    t.repo.discard(entry_for(&entries, "brand-new.txt")).unwrap();
+    assert!(!t.dir.join("brand-new.txt").exists());
+    assert_eq!(status_len(&t), 0);
+}
+
+#[test]
+fn discard_rename_restores_old_path() {
+    let t = fixture("discard-rename");
+    git(&t.dir, &["mv", "base.txt", "moved.txt"]);
+    let entries = t.repo.worktree_status(true).unwrap();
+    t.repo.discard(entry_for(&entries, "moved.txt")).unwrap();
+    assert!(t.dir.join("base.txt").exists());
+    assert!(!t.dir.join("moved.txt").exists());
+    assert_eq!(status_len(&t), 0);
+}
+
+#[test]
+fn discard_conflicted_is_refused() {
+    let t = fixture("discard-conflict");
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "base.txt", "feature\n");
+    git(&t.dir, &["commit", "-q", "-am", "f"]);
+    git(&t.dir, &["checkout", "-q", "main"]);
+    write(&t.dir, "base.txt", "main\n");
+    git(&t.dir, &["commit", "-q", "-am", "m"]);
+    let _ = Command::new("git").arg("-C").arg(&t.dir).args(["merge", "feature"]).output().unwrap();
+
+    let entries = t.repo.worktree_status(true).unwrap();
+    let err = t.repo.discard(entry_for(&entries, "base.txt")).unwrap_err();
+    assert!(err.to_string().contains("conflict"), "got: {err}");
+    // file untouched by the refusal
+    assert!(std::fs::read_to_string(t.dir.join("base.txt")).unwrap().contains("<<<<<<<"));
+}

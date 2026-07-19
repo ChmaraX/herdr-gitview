@@ -17,6 +17,18 @@ use crate::keymap::{Action, Keymap};
 /// How long a transient footer message stays on screen.
 const STATUS_TTL: Duration = Duration::from_secs(3);
 
+/// A centered overlay that captures all keys while open.
+pub enum Modal {
+    Help,
+    /// Yes/no question; `y`/enter runs the pending action, `n`/esc cancels.
+    Confirm { text: String, pending: PendingAction },
+}
+
+/// What a confirmed modal should do.
+pub enum PendingAction {
+    Discard,
+}
+
 pub struct App {
     pub repo: Repo,
     pub cfg: Config,
@@ -41,10 +53,14 @@ pub struct App {
     /// Transient footer message + when it was set.
     pub status_msg: Option<(String, Instant)>,
     pub should_quit: bool,
-    pub show_help: bool,
-    /// `Some(file)` while the preview pane runs an editor on it: all list
-    /// input is refused until `EditDone` (the left PTY belongs to nvim).
-    pub editing: Option<std::path::PathBuf>,
+    pub modal: Option<Modal>,
+    /// Header text while the preview PTY is busy (editor or commit): all list
+    /// input is refused until EditDone/GitDone.
+    pub busy: Option<String>,
+    /// Set when the shown diff's *content* changed without the selection
+    /// changing (stage toggle, discard, edit) — the run loop re-Shows and
+    /// clears it.
+    pub needs_reshow: bool,
 }
 
 impl App {
@@ -72,28 +88,29 @@ impl App {
             branch,
             status_msg: None,
             should_quit: false,
-            show_help: false,
-            editing: None,
+            modal: None,
+            busy: None,
+            needs_reshow: false,
         }
     }
 
     // ---- event handling ---------------------------------------------------
 
     pub fn on_key(&mut self, ev: KeyEvent) {
+        // Modals capture all keys, recognized or not.
+        if self.modal.is_some() {
+            self.on_modal_key(ev);
+            return;
+        }
+
         let Some(action) = self.keys.action(&ev) else {
             return;
         };
 
-        // Editor lockout: refuse everything (incl. quit — tearing down the
-        // view would orphan nvim on the preview PTY).
-        if self.editing.is_some() {
+        // Editor/commit lockout: refuse everything (incl. quit — tearing
+        // down the view would orphan nvim on the preview PTY).
+        if self.busy.is_some() {
             self.set_status("editor is open — close it first");
-            return;
-        }
-
-        // While the help overlay is up, any recognized key dismisses it.
-        if self.show_help {
-            self.show_help = false;
             return;
         }
 
@@ -109,8 +126,10 @@ impl App {
             Action::ToggleScope => self.toggle_scope(),
             Action::ToggleCached => self.toggle_cached(),
             Action::Refresh => self.force_refresh(),
-            Action::Help => self.show_help = true,
+            Action::Help => self.modal = Some(Modal::Help),
             Action::Quit => self.should_quit = true,
+            Action::Stage => self.stage_toggle(),
+            Action::Discard => self.open_discard_confirm(),
 
             // Diff scroll keys are intercepted by the run loop and forwarded
             // to the preview pane over IPC, so they are no-ops here.
@@ -121,13 +140,101 @@ impl App {
             | Action::DiffTop
             | Action::DiffBottom => {}
 
-            // Edit is intercepted by the run loop (it needs the IPC link);
-            // reaching here means there is no preview connection.
-            Action::Edit => self.set_status("editor needs herdr (no preview pane)"),
-
-            // Not implemented until phase 5; announce, don't crash.
-            Action::Stage | Action::Discard | Action::Commit => self.set_status("(soon)"),
+            // Edit/Commit are intercepted by the run loop (they need the IPC
+            // link); reaching here means there is no preview connection.
+            Action::Edit | Action::Commit => {
+                self.set_status("needs the preview pane (run inside herdr)")
+            }
         }
+    }
+
+    // ---- modals -----------------------------------------------------------
+
+    /// Keys while a modal is open. Help: any key closes. Confirm: y/enter
+    /// runs the pending action, n/esc cancels, anything else is ignored.
+    fn on_modal_key(&mut self, ev: KeyEvent) {
+        use crossterm::event::KeyCode;
+        match self.modal.take() {
+            Some(Modal::Help) | None => {}
+            Some(Modal::Confirm { text, pending }) => match ev.code {
+                KeyCode::Char('y') | KeyCode::Enter => self.run_pending(pending),
+                KeyCode::Char('n') | KeyCode::Esc => {}
+                _ => self.modal = Some(Modal::Confirm { text, pending }), // keep open
+            },
+        }
+    }
+
+    fn run_pending(&mut self, pending: PendingAction) {
+        match pending {
+            PendingAction::Discard => self.discard_selected(),
+        }
+    }
+
+    // ---- stage / discard (worktree scope) ---------------------------------
+
+    /// `s`: stage the selected entry (or unstage when fully staged), then
+    /// reload synchronously so the dot flips immediately.
+    fn stage_toggle(&mut self) {
+        if self.scope != Scope::Worktree {
+            self.set_status("staging works in working-tree scope (w)");
+            return;
+        }
+        let Some(entry) = self.entries.get(self.cursor) else {
+            return;
+        };
+        if entry.kind == crate::git::ChangeKind::Conflicted {
+            self.set_status("resolve the conflict in the editor first");
+            return;
+        }
+        let result = match entry.stage {
+            StageState::Staged => self.repo.unstage(&entry.path),
+            _ => self.repo.stage(&entry.path),
+        };
+        if let Err(err) = result {
+            self.set_status(first_line(&err.to_string()));
+            return;
+        }
+        self.force_refresh();
+        self.needs_reshow = true;
+        let all_staged = !self.entries.is_empty()
+            && self.entries.iter().all(|e| e.stage == StageState::Staged);
+        if all_staged {
+            self.set_status("all changes staged — c to commit");
+        }
+    }
+
+    /// `x`: ask before throwing changes away (refused for conflicts).
+    fn open_discard_confirm(&mut self) {
+        if self.scope != Scope::Worktree {
+            self.set_status("discard works in working-tree scope (w)");
+            return;
+        }
+        let Some(entry) = self.entries.get(self.cursor) else {
+            return;
+        };
+        if entry.kind == crate::git::ChangeKind::Conflicted {
+            self.set_status("resolve the conflict in the editor first");
+            return;
+        }
+        self.modal = Some(Modal::Confirm {
+            text: format!(
+                "Discard changes to {}? This cannot be undone. (y/n)",
+                entry.path.display()
+            ),
+            pending: PendingAction::Discard,
+        });
+    }
+
+    fn discard_selected(&mut self) {
+        let Some(entry) = self.entries.get(self.cursor) else {
+            return;
+        };
+        if let Err(err) = self.repo.discard(entry) {
+            self.set_status(first_line(&err.to_string()));
+            return;
+        }
+        self.force_refresh();
+        self.needs_reshow = true;
     }
 
     /// Toggle the staged-diff view (worktree scope only). The preview re-Shows
@@ -214,11 +321,12 @@ impl App {
         self.force_refresh();
     }
 
-    /// Editor finished: unlock, reload the status (the file just changed on
+    /// Editor/commit finished: unlock, reload the status (files changed on
     /// disk); cursor preservation in `apply_refresh` handles moved entries.
     pub fn on_edit_done(&mut self) {
-        self.editing = None;
+        self.busy = None;
         self.force_refresh();
+        self.needs_reshow = true;
     }
 
     pub fn force_refresh(&mut self) {
@@ -241,4 +349,9 @@ impl App {
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = Some((msg.into(), Instant::now()));
     }
+}
+
+/// First line of an error (git errors embed stderr; the top line is the news).
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or(s).trim().to_string()
 }

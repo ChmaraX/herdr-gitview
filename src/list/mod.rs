@@ -97,15 +97,15 @@ fn event_loop(
 
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Event::Key(key)) => {
-                // Enter needs the IPC link + focus handoff, so it is handled
-                // here — but only when a preview is connected and no overlay/
-                // lockout is active (App::on_key covers those cases).
-                if app.keys.action(&key) == Some(Action::Edit)
-                    && conn.is_some()
-                    && !app.show_help
-                    && app.editing.is_none()
-                {
+                // Enter/commit need the IPC link + focus handoff, so they are
+                // handled here — but only when a preview is connected and no
+                // overlay/lockout is active (App::on_key covers those cases).
+                let free = conn.is_some() && app.modal.is_none() && app.busy.is_none();
+                let action = app.keys.action(&key);
+                if free && action == Some(Action::Edit) {
                     start_edit(app, &mut conn);
+                } else if free && action == Some(Action::Commit) {
+                    start_commit(app, &mut conn);
                 // Diff scroll/page keys are forwarded straight to the preview.
                 } else if let Some(msg) = scroll_message(app, &key) {
                     send(&mut conn, &msg);
@@ -117,6 +117,12 @@ fn event_loop(
                         show_dirty = true;
                         dirty_since = Instant::now();
                     }
+                }
+                // Content changed under the same selection (stage/discard).
+                if app.needs_reshow {
+                    app.needs_reshow = false;
+                    show_dirty = true;
+                    dirty_since = Instant::now();
                 }
             }
             Ok(Event::Refresh(entries)) => {
@@ -134,11 +140,22 @@ fn event_loop(
                 app.on_edit_done();
                 show_dirty = true;
                 dirty_since = Instant::now();
-                if let Some(own) = std::env::var_os("HERDR_PANE_ID") {
-                    crate::herdr_cli::focus_pane(&own.to_string_lossy());
+                focus_self();
+            }
+            Ok(Event::Ipc(ToList::GitDone { ok })) => {
+                app.on_edit_done();
+                show_dirty = true;
+                dirty_since = Instant::now();
+                focus_self();
+                if ok {
+                    match app.repo.last_commit_summary() {
+                        Some(s) => app.set_status(format!("committed {s}")),
+                        None => app.set_status("committed"),
+                    }
+                } else {
+                    app.set_status("commit aborted");
                 }
             }
-            Ok(Event::Ipc(ToList::GitDone { .. })) => {} // used in phase 5
             Ok(Event::IpcClosed) => conn = None, // preview gone; keep list usable
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
@@ -193,9 +210,46 @@ fn start_edit(app: &mut App, conn: &mut Option<Conn>) {
     if conn.is_none() {
         return; // send failed — preview link just broke
     }
-    app.editing = Some(file);
+    app.busy = Some(format!("editing {}…", file.display()));
+    focus_preview();
+}
+
+/// `c`: preflight the staged set, then run `git commit -e` on the preview PTY
+/// (nvim opens the commit template there). Same lockout as editing.
+fn start_commit(app: &mut App, conn: &mut Option<Conn>) {
+    match app.repo.staged_count() {
+        Ok(0) => {
+            app.set_status("nothing staged — s to stage files");
+            return;
+        }
+        Err(err) => {
+            app.set_status(format!("commit preflight failed: {err}"));
+            return;
+        }
+        Ok(_) => {}
+    }
+    send(
+        conn,
+        &ToPreview::GitInPane {
+            argv: vec!["commit".to_string(), "-e".to_string()],
+        },
+    );
+    if conn.is_none() {
+        return;
+    }
+    app.busy = Some("committing…".to_string());
+    focus_preview();
+}
+
+fn focus_preview() {
     if let Some(preview) = std::env::var_os("GITVIEW_PREVIEW_PANE") {
         crate::herdr_cli::focus_pane(&preview.to_string_lossy());
+    }
+}
+
+fn focus_self() {
+    if let Some(own) = std::env::var_os("HERDR_PANE_ID") {
+        crate::herdr_cli::focus_pane(&own.to_string_lossy());
     }
 }
 

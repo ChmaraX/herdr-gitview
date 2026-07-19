@@ -272,6 +272,72 @@ impl Repo {
         }
     }
 
+    // ---- write side (phase 5) ---------------------------------------------
+
+    pub fn stage(&self, p: &Path) -> Result<()> {
+        self.git(&["add", "--", &p.to_string_lossy()])?;
+        Ok(())
+    }
+
+    pub fn unstage(&self, p: &Path) -> Result<()> {
+        self.git(&["restore", "--staged", "--", &p.to_string_lossy()])?;
+        Ok(())
+    }
+
+    /// Throw away all changes to this entry (worktree + index), per kind.
+    pub fn discard(&self, e: &FileEntry) -> Result<()> {
+        let path = e.path.to_string_lossy().to_string();
+        match e.kind {
+            ChangeKind::Conflicted => {
+                bail!("resolve the conflict in the editor first")
+            }
+            ChangeKind::Untracked => {
+                self.git(&["clean", "-f", "--", &path])?;
+            }
+            ChangeKind::Renamed => {
+                // Unstage restores the old path in the index; then reset the
+                // old path's content and sweep the new-path remnant.
+                let orig = e
+                    .orig_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.clone());
+                self.git(&["restore", "--staged", "--", &orig, &path])?;
+                self.git(&["restore", "--", &orig])?;
+                self.git(&["clean", "-f", "--", &path])?;
+            }
+            _ => match e.stage {
+                StageState::Unstaged => {
+                    self.git(&["restore", "--", &path])?;
+                }
+                _ => {
+                    // Staged or partial: revert index first, then worktree.
+                    self.git(&["restore", "--staged", "--", &path])?;
+                    // Newly added files have no HEAD version to restore.
+                    if e.kind == ChangeKind::Added {
+                        self.git(&["clean", "-f", "--", &path])?;
+                    } else {
+                        self.git(&["restore", "--", &path])?;
+                    }
+                }
+            },
+        }
+        Ok(())
+    }
+
+    /// Number of files with staged changes.
+    pub fn staged_count(&self) -> Result<usize> {
+        let out = self.git(&["diff", "--cached", "--name-only", "-z"])?;
+        Ok(out.split(|b| *b == 0).filter(|s| !s.is_empty()).count())
+    }
+
+    /// `git log -1 --format=%h %s` — flavor text after a commit.
+    pub fn last_commit_summary(&self) -> Option<String> {
+        let out = self.git(&["log", "-1", "--format=%h %s"]).ok()?;
+        let s = String::from_utf8_lossy(&out).trim().to_string();
+        (!s.is_empty()).then_some(s)
+    }
+
     // ---- change detection -------------------------------------------------
 
     /// Cheap fingerprint of the working tree state; a change means the file

@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::App;
+use super::app::Modal;
 use crate::git::{ChangeKind, FileEntry, Scope, StageState};
 use crate::keymap::Action;
 
@@ -49,8 +50,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_body(frame, chunks[1], app);
     render_footer(frame, chunks[2], app);
 
-    if app.show_help {
-        render_help(frame, area, app);
+    match &app.modal {
+        Some(Modal::Help) => render_help(frame, area, app),
+        Some(Modal::Confirm { text, .. }) => render_confirm(frame, area, text),
+        None => {}
     }
 }
 
@@ -62,8 +65,8 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         Scope::Worktree => "working tree".to_string(),
         Scope::Branch => format!("vs {}", base_label(app)),
     };
-    let left = match &app.editing {
-        Some(file) => format!(" editing {}…", file.display()),
+    let left = match &app.busy {
+        Some(what) => format!(" {what}"),
         None => format!(" {branch}  {scope_label}"),
     };
     let right = format!("{} files ", app.entries.len());
@@ -266,6 +269,20 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines).block(Block::bordered().title(" keys ")),
+        popup,
+    );
+}
+
+/// Yes/no confirmation: centered bordered box, wrapped text, max 60×5.
+fn render_confirm(frame: &mut Frame, area: Rect, text: &str) {
+    let w = 60.min(area.width);
+    let h = 5.min(area.height);
+    let popup = centered_rect(area, w, h);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(text.to_string())
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(Block::bordered().title(" confirm ")),
         popup,
     );
 }
