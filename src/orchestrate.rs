@@ -134,24 +134,28 @@ fn open_pane(
 ) -> Result<String> {
     let before = pane_ids().unwrap_or_default();
 
-    let repo_env = format!("GITVIEW_REPO={}", repo.display());
-    let socket_env = format!("GITVIEW_SOCKET={}", socket.display());
-    let mut args: Vec<String> = [
-        "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", entrypoint,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    args.push("--cwd".into());
-    args.push(repo.display().to_string());
-    for env in [repo_env, socket_env]
-        .into_iter()
-        .chain(extra_env.iter().map(|(k, v)| format!("{k}={v}")))
-    {
+    let mut args: Vec<String> = vec![
+        "plugin".into(),
+        "pane".into(),
+        "open".into(),
+        "--plugin".into(),
+        PLUGIN_ID.into(),
+        "--entrypoint".into(),
+        entrypoint.into(),
+        "--cwd".into(),
+        repo.display().to_string(),
+        "--env".into(),
+        format!("GITVIEW_REPO={}", repo.display()),
+        "--env".into(),
+        format!("GITVIEW_SOCKET={}", socket.display()),
+    ];
+    for (key, value) in extra_env {
         args.push("--env".into());
-        args.push(env);
+        args.push(format!("{key}={value}"));
     }
-    args.extend(placement_args.iter().map(|s| s.to_string()));
+    for arg in placement_args {
+        args.push((*arg).to_string());
+    }
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let reply = herdr_json(&arg_refs)?;
