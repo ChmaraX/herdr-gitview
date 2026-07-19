@@ -12,8 +12,8 @@ use herdr_gitview::config::Config;
 use herdr_gitview::git::{ChangeKind, Repo, Scope};
 use herdr_gitview::keymap::Keymap;
 use herdr_gitview::preview::app::State;
-use herdr_gitview::preview::ui;
-use herdr_gitview::preview::{PreviewApp, ShowReq};
+use herdr_gitview::preview::highlight::Highlighter;
+use herdr_gitview::preview::{PreviewApp, ShowReq, render, ui};
 
 const W: u16 = 60;
 const H: u16 = 12;
@@ -38,13 +38,18 @@ fn req(file: &str) -> ShowReq {
     }
 }
 
-/// A colorized diff big enough to scroll (30 numbered lines).
-fn fake_diff(n: usize) -> Vec<u8> {
-    let mut s = String::from("\x1b[1mdiff --git a/f b/f\x1b[0m\n");
-    for i in 0..n {
-        s.push_str(&format!("\x1b[32m+line {i}\x1b[0m\n"));
-    }
-    s.into_bytes()
+/// A built diff doc with `n` inserted lines (plain-text path → no syntax
+/// highlighting cost, even at 20k lines).
+fn fake_diff(n: usize) -> render::DiffDoc {
+    let hl = Highlighter::new("dark");
+    let new: String = (0..n).map(|i| format!("line {i}\n")).collect();
+    render::build(&PathBuf::from("f.txt"), "", &new, &hl, "dark")
+}
+
+/// A built doc for identical content (the "no changes" case).
+fn empty_diff() -> render::DiffDoc {
+    let hl = Highlighter::new("dark");
+    render::build(&PathBuf::from("f.txt"), "same\n", "same\n", &hl, "dark")
 }
 
 fn draw(app: &mut PreviewApp) -> Buffer {
@@ -104,7 +109,7 @@ fn empty_diff_shows_no_changes() {
     let mut a = app();
     let r = req("x.rs");
     a.begin_show(r.clone());
-    a.apply_diff(&r, Ok(Vec::new()));
+    a.apply_diff(&r, Ok(empty_diff()));
     assert!(matches!(a.state, State::Empty));
 
     let buf = draw(&mut a);

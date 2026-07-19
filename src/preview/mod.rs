@@ -3,6 +3,8 @@
 
 pub mod app;
 pub mod editor;
+pub mod highlight;
+pub mod render;
 pub mod ui;
 
 pub use app::{PreviewApp, ShowReq};
@@ -18,7 +20,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event as CtEvent, KeyEvent, KeyEventKind};
 
 use crate::config::Config;
-use crate::git::Repo;
+use crate::git::{Repo, Scope};
 use crate::ipc::{Conn, ToList, ToPreview};
 use crate::keymap::Keymap;
 
@@ -31,10 +33,10 @@ enum Event {
     Ipc(ToPreview),
     /// The list pane went away (socket EOF).
     IpcClosed,
-    /// The diff worker produced a result for `req`.
+    /// The diff worker produced a built document for `req`.
     Diff {
         req: ShowReq,
-        result: Result<Vec<u8>, String>,
+        result: Result<render::DiffDoc, String>,
     },
 }
 
@@ -74,7 +76,7 @@ pub fn run() -> Result<()> {
 
     // Latest-wins diff worker. Each Show is pushed here; the worker drains to
     // the newest request before running git, so holding `j` never queues runs.
-    let work_tx = spawn_diff_worker(tx.clone(), Repo { root });
+    let work_tx = spawn_diff_worker(tx.clone(), Repo { root }, app.cfg.clone());
 
     let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, &mut app, &rx, &tx, &work_tx, &input_paused);
@@ -199,7 +201,7 @@ fn run_editor(
         .as_ref()
         .map(|c| c.file == *file)
         .unwrap_or(false);
-    if same_file && let Some(line) = editor::first_new_line(&app.raw) {
+    if same_file && let Some(line) = app.first_change {
         argv.push(format!("+{line}"));
     }
     argv.push(app.repo.root.join(file).display().to_string());
@@ -299,25 +301,68 @@ fn spawn_ipc_forwarder(ipc_rx: mpsc::Receiver<ToPreview>, tx: Sender<Event>) {
     });
 }
 
-/// Latest-wins diff runner. Returns the sender used to enqueue `ShowReq`s.
-fn spawn_diff_worker(tx: Sender<Event>, repo: Repo) -> Sender<ShowReq> {
+/// Latest-wins diff runner: fetches the old/new file contents for a request
+/// and builds the styled document (syntax highlighting + tints) off the UI
+/// thread. Returns the sender used to enqueue `ShowReq`s.
+fn spawn_diff_worker(tx: Sender<Event>, repo: Repo, cfg: Config) -> Sender<ShowReq> {
     let (work_tx, work_rx) = mpsc::channel::<ShowReq>();
     thread::spawn(move || {
+        // The highlighter is expensive to set up — build it once per process.
+        let hl = highlight::Highlighter::new(&cfg.theme);
         while let Ok(mut req) = work_rx.recv() {
             // Collapse a backlog to the newest request.
             while let Ok(newer) = work_rx.try_recv() {
                 req = newer;
             }
-            let entry = req.to_entry();
-            let result = repo
-                .diff_ansi(&entry, req.scope, req.cached, req.commit.as_deref())
-                .map_err(|err| first_line(&err.to_string()));
+            let result = fetch_contents(&repo, &cfg, &req)
+                .map(|(old, new)| render::build(&req.file, &old, &new, &hl, &cfg.theme));
             if tx.send(Event::Diff { req, result }).is_err() {
                 break;
             }
         }
     });
     work_tx
+}
+
+/// The (old, new) content pair a request diffs, per scope/staged/commit.
+fn fetch_contents(repo: &Repo, cfg: &Config, req: &ShowReq) -> Result<(String, String), String> {
+    let path = &req.file;
+    let old_path = req.orig_path.as_deref().unwrap_or(path);
+    let err = |e: anyhow::Error| first_line(&e.to_string());
+    let some =
+        |r: Result<Option<String>, anyhow::Error>| r.map_err(err).map(Option::unwrap_or_default);
+
+    if let Some(sha) = &req.commit {
+        // One commit's change: parent vs commit (root commit → empty old).
+        let old = some(repo.file_at(&format!("{sha}^"), old_path))?;
+        let new = some(repo.file_at(sha, path))?;
+        return Ok((old, new));
+    }
+    match req.scope {
+        Scope::Branch => {
+            let base = if cfg.base.is_empty() {
+                repo.detect_base()
+            } else {
+                cfg.base.clone()
+            };
+            let mb = repo.merge_base(&base).map_err(err)?;
+            let old = some(repo.file_at(&mb, old_path))?;
+            let new = repo.file_in_worktree(path).unwrap_or_default();
+            Ok((old, new))
+        }
+        Scope::Worktree if req.cached => {
+            // Staged view: HEAD vs index.
+            let old = some(repo.file_at("HEAD", old_path))?;
+            let new = some(repo.file_at(":0", path))?;
+            Ok((old, new))
+        }
+        Scope::Worktree => {
+            // Unstaged view: index vs working tree (untracked → empty old).
+            let old = some(repo.file_at(":0", path))?;
+            let new = repo.file_in_worktree(path).unwrap_or_default();
+            Ok((old, new))
+        }
+    }
 }
 
 /// First line of an error message (git failures embed stderr; we want the top).

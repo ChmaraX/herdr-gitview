@@ -312,6 +312,25 @@ impl Repo {
         }
     }
 
+    // ---- file content (for the structured diff renderer) ------------------
+
+    /// A file's content at `rev` (e.g. `HEAD`, a sha, `<sha>^`), or at the
+    /// index when `rev` is `":0"`. `None` when the path doesn't exist there.
+    pub fn file_at(&self, rev: &str, path: &Path) -> Result<Option<String>> {
+        let spec = format!("{rev}:{}", path.to_string_lossy());
+        let out = self.git_lenient(&["show", &spec])?;
+        if !out.status.success() {
+            return Ok(None); // path absent at that rev (add/delete/rename)
+        }
+        Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+    }
+
+    /// The working-tree content of a repo-relative path; `None` when missing.
+    pub fn file_in_worktree(&self, path: &Path) -> Option<String> {
+        let bytes = std::fs::read(self.root.join(path)).ok()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     // ---- history ----------------------------------------------------------
 
     /// Recent commits, newest first.

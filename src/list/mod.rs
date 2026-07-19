@@ -75,10 +75,10 @@ pub fn run() -> Result<()> {
 
     // Connect to the preview pane's socket, if we are running under herdr.
     // Standalone (`GITVIEW_SOCKET` unset) renders the list only — no IPC.
-    let conn = connect_preview(&mut app, &tx);
+    let conn = connect_preview(&mut app, &tx, Duration::from_secs(10));
 
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, &mut app, &rx, &shared, conn);
+    let result = event_loop(&mut terminal, &mut app, &rx, &tx, &shared, conn);
     ratatui::restore();
 
     if app.should_quit && std::env::var_os("HERDR_PANE_ID").is_some() {
@@ -91,6 +91,7 @@ fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     rx: &mpsc::Receiver<Event>,
+    tx: &Sender<Event>,
     shared: &Arc<Mutex<Shared>>,
     mut conn: Option<Conn>,
 ) -> Result<()> {
@@ -118,6 +119,15 @@ fn event_loop(
                     start_edit(app, &mut conn);
                 } else if free && action == Some(Action::Commit) && app.mode == app::Mode::Files {
                     start_commit(app, &mut conn);
+                // `r` with a dead preview link retries the connection too.
+                } else if action == Some(Action::Refresh) && conn.is_none() && app.modal.is_none() {
+                    conn = connect_preview(app, tx, Duration::from_secs(2));
+                    if conn.is_some() {
+                        app.set_status("preview reconnected");
+                        show_dirty = true;
+                        dirty_since = Instant::now();
+                    }
+                    app.on_key(key); // still do the refresh itself
                 // Diff scroll/page keys are forwarded straight to the preview
                 // (skipped while nvim owns that PTY).
                 } else if app.busy.is_none()
@@ -191,11 +201,11 @@ fn event_loop(
     }
 }
 
-/// Connect to the preview socket (10 s budget) and start reading `ToList`.
+/// Connect to the preview socket and start reading `ToList`.
 /// Returns `None` in standalone mode or on failure (list still runs).
-fn connect_preview(app: &mut App, tx: &Sender<Event>) -> Option<Conn> {
+fn connect_preview(app: &mut App, tx: &Sender<Event>, budget: Duration) -> Option<Conn> {
     let sock = std::env::var_os("GITVIEW_SOCKET").map(PathBuf::from)?;
-    match Conn::connect_retry(&sock, Duration::from_secs(10)) {
+    match Conn::connect_retry(&sock, budget) {
         Ok(conn) => {
             let (ipc_tx, ipc_rx) = mpsc::channel::<ToList>();
             let conn = conn.spawn_reader(ipc_tx);

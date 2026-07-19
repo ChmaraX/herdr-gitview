@@ -51,9 +51,11 @@ pub enum State {
     Splash(&'static str),
     /// A diff is loaded in `doc`.
     Diff,
-    /// The diff command produced no output.
+    /// The file has no changes in the requested view.
     Empty,
-    /// The diff command failed; holds the first stderr line.
+    /// The file is binary; no diff to render.
+    Binary,
+    /// The diff build failed; holds the first stderr line.
     Error(String),
 }
 
@@ -64,10 +66,10 @@ pub struct PreviewApp {
 
     /// Last Show request (what the header/stale-guard describe).
     pub current: Option<ShowReq>,
-    /// Raw ANSI bytes of the current diff (kept for phase-4 line lookup).
-    pub raw: Vec<u8>,
-    /// Parsed, capped diff text (plus a truncation notice line when capped).
+    /// Styled, capped diff text (plus a truncation notice line when capped).
     pub doc: Text<'static>,
+    /// First inserted line's new-file number (editor jump target).
+    pub first_change: Option<u32>,
     /// Extra lines hidden by the cap (0 = not truncated).
     pub truncated: usize,
 
@@ -92,8 +94,8 @@ impl PreviewApp {
             repo,
             keys,
             current: None,
-            raw: Vec::new(),
             doc: Text::default(),
+            first_change: None,
             truncated: 0,
             scroll: 0,
             viewport_h: 0,
@@ -134,19 +136,25 @@ impl PreviewApp {
 
     /// Apply a worker result, dropping it if it is stale (the selection moved
     /// on while the diff was computing).
-    pub fn apply_diff(&mut self, req: &ShowReq, result: Result<Vec<u8>, String>) {
+    pub fn apply_diff(&mut self, req: &ShowReq, result: Result<super::render::DiffDoc, String>) {
         if self.current.as_ref() != Some(req) {
             return; // stale — a newer Show already superseded this one
         }
         match result {
-            Ok(bytes) => self.set_diff(bytes),
+            Ok(doc) => self.set_diff(doc),
             Err(msg) => self.state = State::Error(msg),
         }
     }
 
-    fn set_diff(&mut self, bytes: Vec<u8>) {
-        self.raw = bytes;
-        if self.raw.is_empty() {
+    fn set_diff(&mut self, built: super::render::DiffDoc) {
+        self.first_change = built.first_change;
+        if built.binary {
+            self.doc = Text::default();
+            self.state = State::Binary;
+            self.clamp_scroll();
+            return;
+        }
+        if built.is_empty {
             self.doc = Text::default();
             self.truncated = 0;
             self.state = State::Empty;
@@ -154,15 +162,18 @@ impl PreviewApp {
             return;
         }
 
-        let (capped, hidden) = cap_lines(&self.raw, MAX_LINES);
-        let mut doc = build_diff_doc(&capped);
-        if hidden > 0 {
+        let mut doc = built.text;
+        let total = doc.lines.len();
+        if total > MAX_LINES {
+            doc.lines.truncate(MAX_LINES);
             doc.lines.push(Line::from(Span::styled(
-                format!("… diff truncated ({hidden} more lines)"),
+                format!("… diff truncated ({} more lines)", total - MAX_LINES),
                 Style::new().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             )));
+            self.truncated = total - MAX_LINES;
+        } else {
+            self.truncated = 0;
         }
-        self.truncated = hidden;
         self.doc = doc;
         self.state = State::Diff;
         self.clamp_scroll();
@@ -232,136 +243,5 @@ impl PreviewApp {
             }
             _ => {}
         }
-    }
-}
-
-// ---- diff styling ---------------------------------------------------------
-//
-// git's own ANSI colors render inconsistently across terminal themes, so the
-// diff is re-styled here: strip the escapes, parse the unified-diff structure,
-// and paint each line kind deliberately — with an old/new line-number gutter
-// (the look borrows from persiyanov/herdr-reviewr).
-
-fn build_diff_doc(raw: &[u8]) -> Text<'static> {
-    let plain = super::editor::strip_ansi(raw);
-    let text = String::from_utf8_lossy(&plain);
-
-    let dim = Style::new().add_modifier(Modifier::DIM);
-    let green = Style::new().fg(Color::Green);
-    let red = Style::new().fg(Color::Red);
-    let cyan = Style::new().fg(Color::Cyan);
-
-    let mut lines: Vec<Line> = Vec::new();
-    let mut old_no: u32 = 0;
-    let mut new_no: u32 = 0;
-    let mut first_hunk_seen = false;
-
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("@@") {
-            (old_no, new_no) = hunk_start(line).unwrap_or((0, 0));
-            if first_hunk_seen {
-                lines.push(Line::from(Span::styled("─".repeat(60), dim)));
-            }
-            first_hunk_seen = true;
-            // Keep the context hint after the second `@@`, drop the numbers.
-            let hint = rest.split_once("@@").map(|x| x.1).unwrap_or("").trim();
-            if !hint.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    format!("… {hint}"),
-                    cyan.add_modifier(Modifier::DIM),
-                )));
-            }
-            continue;
-        }
-        if !first_hunk_seen {
-            // File header block: diff --git / index / --- / +++ / rename …
-            lines.push(Line::from(Span::styled(line.to_string(), dim)));
-            continue;
-        }
-        let (gutter, style, content) = match line.as_bytes().first() {
-            Some(b'+') => {
-                let g = format!("{:>4} {:>4} ", "", new_no);
-                new_no += 1;
-                (g, green, line.to_string())
-            }
-            Some(b'-') => {
-                let g = format!("{:>4} {:>4} ", old_no, "");
-                old_no += 1;
-                (g, red, line.to_string())
-            }
-            Some(b'\\') => ("          ".to_string(), dim, line.to_string()),
-            _ => {
-                let g = format!("{:>4} {:>4} ", old_no, new_no);
-                old_no += 1;
-                new_no += 1;
-                (g, Style::new(), line.to_string())
-            }
-        };
-        lines.push(Line::from(vec![
-            Span::styled(gutter, dim),
-            Span::styled(content, style),
-        ]));
-    }
-    Text::from(lines)
-}
-
-/// Parse `@@ -a[,b] +c[,d] @@` into the starting (old, new) line numbers.
-fn hunk_start(line: &str) -> Option<(u32, u32)> {
-    let mut old = None;
-    let mut new = None;
-    for tok in line.split(' ') {
-        if let Some(n) = tok.strip_prefix('-') {
-            old = n.split(',').next()?.parse().ok();
-        } else if let Some(n) = tok.strip_prefix('+') {
-            new = n.split(',').next()?.parse().ok();
-        }
-    }
-    Some((old?, new?))
-}
-
-/// Return the diff bytes truncated to at most `cap` lines, plus how many lines
-/// were dropped. Cheap: counts `\n` bytes, no UTF-8 work.
-fn cap_lines(raw: &[u8], cap: usize) -> (Vec<u8>, usize) {
-    let newlines = raw.iter().filter(|b| **b == b'\n').count();
-    let total = newlines + usize::from(raw.last().is_some_and(|b| *b != b'\n'));
-    if total <= cap {
-        return (raw.to_vec(), 0);
-    }
-    let mut count = 0;
-    let mut end = raw.len();
-    for (i, b) in raw.iter().enumerate() {
-        if *b == b'\n' {
-            count += 1;
-            if count == cap {
-                end = i; // keep up to (not including) the cap-th newline
-                break;
-            }
-        }
-    }
-    (raw[..end].to_vec(), total - cap)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cap_lines_leaves_small_diffs_untouched() {
-        let raw = b"a\nb\nc\n";
-        let (out, hidden) = cap_lines(raw, 20_000);
-        assert_eq!(out, raw);
-        assert_eq!(hidden, 0);
-    }
-
-    #[test]
-    fn cap_lines_truncates_and_counts_remainder() {
-        // 10 lines, cap at 4 → keep 4, hide 6.
-        let raw: Vec<u8> = (0..10)
-            .map(|i| format!("line{i}\n"))
-            .collect::<String>()
-            .into_bytes();
-        let (out, hidden) = cap_lines(&raw, 4);
-        assert_eq!(hidden, 6);
-        assert_eq!(out.iter().filter(|b| **b == b'\n').count(), 3); // 4th newline dropped
     }
 }

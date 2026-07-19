@@ -84,6 +84,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &PreviewApp) {
             };
             centered(frame, area, msg, dim());
         }
+        State::Binary => centered(frame, area, "(binary file)", dim()),
         State::Error(msg) => {
             let line = Line::from(Span::styled(
                 format!(" diff error: {msg}"),
