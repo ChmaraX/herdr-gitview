@@ -201,7 +201,7 @@ fn collect_cwds(value: &Value, out: &mut Vec<PathBuf>) {
     match value {
         Value::Object(map) => {
             for (key, val) in map {
-                if matches!(key.as_str(), "cwd" | "foreground_cwd" | "repo_root")
+                if (key.ends_with("cwd") || key == "repo_root")
                     && let Some(s) = val.as_str()
                 {
                     out.push(PathBuf::from(s));
@@ -321,5 +321,48 @@ fn collect_strs(value: &Value, key: &str, out: &mut Vec<String>) {
         }
         Value::Array(items) => items.iter().for_each(|v| collect_strs(v, key, out)),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_cwds_matches_real_action_context_keys() {
+        // Real shape captured from herdr 0.7.3 (see debug.log / contracts doc).
+        let ctx: Value = serde_json::from_str(
+            r#"{
+                "workspace_id": "wF",
+                "workspace_cwd": "/repo/from-workspace",
+                "tab_id": "wF:t2",
+                "focused_pane_id": "wF:p3",
+                "focused_pane_cwd": "/repo/from-pane",
+                "invocation_source": "cli"
+            }"#,
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        collect_cwds(&ctx, &mut out);
+        out.sort();
+        assert_eq!(
+            out,
+            vec![
+                PathBuf::from("/repo/from-pane"),
+                PathBuf::from("/repo/from-workspace"),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_cwds_ignores_non_cwd_keys_and_recurses() {
+        let ctx: Value = serde_json::from_str(
+            r#"{"nested": [{"cwd": "/a", "label": "x"}], "repo_root": "/b"}"#,
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        collect_cwds(&ctx, &mut out);
+        out.sort();
+        assert_eq!(out, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
     }
 }
