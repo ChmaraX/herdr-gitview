@@ -183,8 +183,14 @@ mod tests {
 
     #[test]
     fn parse_key_round_trips() {
-        assert_eq!(parse_key("j").unwrap(), (KeyCode::Char('j'), KeyModifiers::NONE));
-        assert_eq!(parse_key("enter").unwrap(), (KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            parse_key("j").unwrap(),
+            (KeyCode::Char('j'), KeyModifiers::NONE)
+        );
+        assert_eq!(
+            parse_key("enter").unwrap(),
+            (KeyCode::Enter, KeyModifiers::NONE)
+        );
         assert_eq!(
             parse_key("ctrl+d").unwrap(),
             (KeyCode::Char('d'), KeyModifiers::CONTROL)
@@ -193,14 +199,23 @@ mod tests {
             parse_key("alt+shift+left").unwrap(),
             (KeyCode::Left, KeyModifiers::ALT | KeyModifiers::SHIFT)
         );
-        assert_eq!(parse_key("pgdn").unwrap(), (KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(
+            parse_key("pgdn").unwrap(),
+            (KeyCode::PageDown, KeyModifiers::NONE)
+        );
     }
 
     #[test]
     fn shift_char_folds_into_uppercase() {
         // shift+g ≡ G: stored as Char('G') with no SHIFT bit
-        assert_eq!(parse_key("shift+g").unwrap(), (KeyCode::Char('G'), KeyModifiers::NONE));
-        assert_eq!(parse_key("G").unwrap(), (KeyCode::Char('G'), KeyModifiers::NONE));
+        assert_eq!(
+            parse_key("shift+g").unwrap(),
+            (KeyCode::Char('G'), KeyModifiers::NONE)
+        );
+        assert_eq!(
+            parse_key("G").unwrap(),
+            (KeyCode::Char('G'), KeyModifiers::NONE)
+        );
     }
 
     #[test]
@@ -214,7 +229,10 @@ mod tests {
     #[test]
     fn default_map_resolves_events() {
         let km = Keymap::build(&HashMap::new()).unwrap();
-        assert_eq!(km.action(&ev(KeyCode::Char('j'), KeyModifiers::NONE)), Some(Action::Down));
+        assert_eq!(
+            km.action(&ev(KeyCode::Char('j'), KeyModifiers::NONE)),
+            Some(Action::Down)
+        );
         // terminal reports shift+g as Char('G') with SHIFT set
         assert_eq!(
             km.action(&ev(KeyCode::Char('G'), KeyModifiers::SHIFT)),
@@ -224,7 +242,10 @@ mod tests {
             km.action(&ev(KeyCode::Char('d'), KeyModifiers::CONTROL)),
             Some(Action::HalfPageDown)
         );
-        assert_eq!(km.action(&ev(KeyCode::Esc, KeyModifiers::NONE)), Some(Action::Quit));
+        assert_eq!(
+            km.action(&ev(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(Action::Quit)
+        );
         assert_eq!(km.action(&ev(KeyCode::Char('z'), KeyModifiers::NONE)), None);
     }
 
@@ -232,7 +253,10 @@ mod tests {
     fn override_replaces_default() {
         let overrides = HashMap::from([("stage".to_string(), "a".to_string())]);
         let km = Keymap::build(&overrides).unwrap();
-        assert_eq!(km.action(&ev(KeyCode::Char('a'), KeyModifiers::NONE)), Some(Action::Stage));
+        assert_eq!(
+            km.action(&ev(KeyCode::Char('a'), KeyModifiers::NONE)),
+            Some(Action::Stage)
+        );
         // old default 's' is gone
         assert_eq!(km.action(&ev(KeyCode::Char('s'), KeyModifiers::NONE)), None);
         assert_eq!(km.hint(Action::Stage), "a");

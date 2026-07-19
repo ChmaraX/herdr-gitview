@@ -125,10 +125,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &PreviewApp) {
         hint(Action::DiffBottom),
         hint(Action::Quit),
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(text, dim()))),
-        area,
-    );
+    frame.render_widget(Paragraph::new(Line::from(Span::styled(text, dim()))), area);
 }
 
 fn dim() -> Style {

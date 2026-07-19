@@ -36,14 +36,23 @@ pub enum ToPreview {
     },
     /// Scroll the diff without switching pane focus. delta in lines;
     /// `i32::MIN`/`MAX` = home/end.
-    Scroll { delta: i32 },
+    Scroll {
+        delta: i32,
+    },
     /// Half/full page relative to preview's own viewport height.
-    Page { down: bool, full: bool },
+    Page {
+        down: bool,
+        full: bool,
+    },
     /// Suspend TUI, run editor on file, restore.
-    Edit { file: PathBuf },
+    Edit {
+        file: PathBuf,
+    },
     /// Suspend TUI, run `git -C <repo> <argv...>` interactively (e.g.
     /// `["commit", "-e"]`).
-    GitInPane { argv: Vec<String> },
+    GitInPane {
+        argv: Vec<String>,
+    },
     Quit,
 }
 
@@ -187,7 +196,9 @@ mod tests {
                 down: true,
                 full: false,
             },
-            ToPreview::Edit { file: "b.rs".into() },
+            ToPreview::Edit {
+                file: "b.rs".into(),
+            },
             ToPreview::GitInPane {
                 argv: vec!["commit".into(), "-e".into()],
             },
@@ -204,7 +215,9 @@ mod tests {
         // preview -> list: every ToList variant.
         let to_list = vec![
             ToList::Ready,
-            ToList::EditDone { file: "a.rs".into() },
+            ToList::EditDone {
+                file: "a.rs".into(),
+            },
             ToList::GitDone { ok: true },
         ];
         for msg in &to_list {

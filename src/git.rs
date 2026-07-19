@@ -582,7 +582,9 @@ fn untracked_stats(path: &Path) -> (Option<u32>, Option<u32>) {
 fn sort_entries(entries: &mut [FileEntry]) {
     entries.sort_by(|a, b| {
         let conflict = |e: &FileEntry| e.kind != ChangeKind::Conflicted;
-        conflict(a).cmp(&conflict(b)).then_with(|| a.path.cmp(&b.path))
+        conflict(a)
+            .cmp(&conflict(b))
+            .then_with(|| a.path.cmp(&b.path))
     });
 }
 
@@ -630,7 +632,7 @@ mod tests {
 
     #[test]
     fn numstat_parses_plain_binary_and_rename() {
-        let raw = b"3\t1\tsrc/a.rs\0-\t-\timg.png\00\t0\0old.rs\0new.rs\0";
+        let raw = b"3\t1\tsrc/a.rs\0-\t-\timg.png\x000\t0\0old.rs\0new.rs\0";
         let stats = parse_numstat(raw);
         assert_eq!(stats.len(), 3);
         assert_eq!(stats[0], (PathBuf::from("src/a.rs"), Some((3, 1))));
@@ -678,7 +680,10 @@ mod tests {
             entry("m/conflict.rs", ChangeKind::Conflicted),
         ];
         sort_entries(&mut entries);
-        let paths: Vec<_> = entries.iter().map(|e| e.path.to_string_lossy().to_string()).collect();
+        let paths: Vec<_> = entries
+            .iter()
+            .map(|e| e.path.to_string_lossy().to_string())
+            .collect();
         assert_eq!(paths, vec!["m/conflict.rs", "a.rs", "z/deep.rs"]);
     }
 }

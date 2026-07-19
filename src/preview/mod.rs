@@ -42,7 +42,11 @@ pub fn run() -> Result<()> {
     crate::logx::init_panic_hook();
 
     let cfg = Config::load();
-    let keys = Keymap::build(&cfg.keybindings)?;
+    // Bad [keybindings] must not stop startup; fall back to defaults.
+    let keys = Keymap::build(&cfg.keybindings).unwrap_or_else(|err| {
+        crate::logx::log(format!("preview: keybindings ignored: {err}"));
+        Keymap::build(&Default::default()).expect("default keymap is valid")
+    });
     let repo = resolve_repo()?;
     let root = repo.root.clone();
     let mut app = PreviewApp::new(cfg, repo, keys);
@@ -188,7 +192,11 @@ fn run_editor(
     input_paused: &Arc<AtomicBool>,
 ) {
     let mut argv = app.cfg.editor.clone();
-    let same_file = app.current.as_ref().map(|c| c.file == *file).unwrap_or(false);
+    let same_file = app
+        .current
+        .as_ref()
+        .map(|c| c.file == *file)
+        .unwrap_or(false);
     if same_file && let Some(line) = editor::first_new_line(&app.raw) {
         argv.push(format!("+{line}"));
     }
@@ -253,23 +261,25 @@ fn has_core_editor(app: &PreviewApp) -> bool {
 /// `poll` + `read` so it can stop touching stdin while `paused` is set
 /// (an editor owns the PTY then — see `run_suspended`).
 fn spawn_input_thread(tx: Sender<Event>, paused: Arc<AtomicBool>) {
-    thread::spawn(move || loop {
-        if paused.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_millis(30));
-            continue;
-        }
-        match event::poll(Duration::from_millis(100)) {
-            Ok(false) => continue,
-            Ok(true) => match event::read() {
-                Ok(CtEvent::Key(key)) if key.kind == KeyEventKind::Press => {
-                    if tx.send(Event::Key(key)).is_err() {
-                        break;
+    thread::spawn(move || {
+        loop {
+            if paused.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(30));
+                continue;
+            }
+            match event::poll(Duration::from_millis(100)) {
+                Ok(false) => continue,
+                Ok(true) => match event::read() {
+                    Ok(CtEvent::Key(key)) if key.kind == KeyEventKind::Press => {
+                        if tx.send(Event::Key(key)).is_err() {
+                            break;
+                        }
                     }
-                }
-                Ok(_) => {} // resize etc. — next 100 ms redraw picks it up
+                    Ok(_) => {} // resize etc. — next 100 ms redraw picks it up
+                    Err(_) => break,
+                },
                 Err(_) => break,
-            },
-            Err(_) => break,
+            }
         }
     });
 }

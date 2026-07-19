@@ -21,7 +21,10 @@ const STATUS_TTL: Duration = Duration::from_secs(3);
 pub enum Modal {
     Help,
     /// Yes/no question; `y`/enter runs the pending action, `n`/esc cancels.
-    Confirm { text: String, pending: PendingAction },
+    Confirm {
+        text: String,
+        pending: PendingAction,
+    },
 }
 
 /// What a confirmed modal should do.
@@ -196,8 +199,8 @@ impl App {
         }
         self.force_refresh();
         self.needs_reshow = true;
-        let all_staged = !self.entries.is_empty()
-            && self.entries.iter().all(|e| e.stage == StageState::Staged);
+        let all_staged =
+            !self.entries.is_empty() && self.entries.iter().all(|e| e.stage == StageState::Staged);
         if all_staged {
             self.set_status("all changes staged — c to commit");
         }

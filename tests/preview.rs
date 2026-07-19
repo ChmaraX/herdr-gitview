@@ -12,8 +12,8 @@ use herdr_gitview::config::Config;
 use herdr_gitview::git::{ChangeKind, Repo, Scope};
 use herdr_gitview::keymap::Keymap;
 use herdr_gitview::preview::app::State;
-use herdr_gitview::preview::{PreviewApp, ShowReq};
 use herdr_gitview::preview::ui;
+use herdr_gitview::preview::{PreviewApp, ShowReq};
 
 const W: u16 = 60;
 const H: u16 = 12;

@@ -96,17 +96,15 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
             height: 1,
         };
         frame.render_widget(
-            Paragraph::new(msg).alignment(Alignment::Center).style(dim()),
+            Paragraph::new(msg)
+                .alignment(Alignment::Center)
+                .style(dim()),
             mid,
         );
         return;
     }
 
-    let items: Vec<ListItem> = app
-        .entries
-        .iter()
-        .map(|e| row(e, area.width))
-        .collect();
+    let items: Vec<ListItem> = app.entries.iter().map(|e| row(e, area.width)).collect();
     let list = List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED));
 
     let mut state = ListState::default().with_offset(app.list_offset);
@@ -256,9 +254,7 @@ fn sym(hint: String) -> String {
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     let lines: Vec<Line> = HELP_ACTIONS
         .iter()
-        .map(|(action, label)| {
-            Line::from(format!(" {:>8}  {label}", app.keys.hint(*action)))
-        })
+        .map(|(action, label)| Line::from(format!(" {:>8}  {label}", app.keys.hint(*action))))
         .collect();
 
     let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;

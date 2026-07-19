@@ -7,6 +7,8 @@ fn main() -> anyhow::Result<()> {
         Some("toggle") | None => herdr_gitview::orchestrate::toggle(),
         Some("open") => herdr_gitview::orchestrate::open(),
         Some("close") => herdr_gitview::orchestrate::close(),
-        Some(other) => anyhow::bail!("unknown mode: {other} (expected list|preview|toggle|open|close)"),
+        Some(other) => {
+            anyhow::bail!("unknown mode: {other} (expected list|preview|toggle|open|close)")
+        }
     }
 }

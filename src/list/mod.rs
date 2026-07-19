@@ -44,14 +44,22 @@ struct Shared {
 pub fn run() -> Result<()> {
     crate::logx::init_panic_hook();
 
+    let start = Instant::now();
     let cfg = Config::load();
-    let keys = Keymap::build(&cfg.keybindings)?;
+    let (keys, keymap_err) = build_keymap(&cfg);
     let repo = resolve_repo()?;
     let poll_ms = cfg.poll_ms;
     let show_untracked = cfg.show_untracked;
     let root = repo.root.clone();
 
     let mut app = App::new(repo, cfg, keys)?;
+    if let Some(err) = keymap_err {
+        app.set_status(err);
+    }
+    crate::logx::log(format!(
+        "list: first status loaded in {:?}",
+        start.elapsed()
+    ));
 
     let (tx, rx) = mpsc::channel::<Event>();
     spawn_input_thread(tx.clone());
@@ -295,6 +303,18 @@ fn scroll_message(app: &App, key: &KeyEvent) -> Option<ToPreview> {
     }
 }
 
+/// Keymap from config overrides; a bad `[keybindings]` table must not stop
+/// startup — fall back to defaults and surface the error as a status message.
+fn build_keymap(cfg: &Config) -> (Keymap, Option<String>) {
+    match Keymap::build(&cfg.keybindings) {
+        Ok(keys) => (keys, None),
+        Err(err) => (
+            Keymap::build(&Default::default()).expect("default keymap is valid"),
+            Some(format!("keybindings ignored: {err}")),
+        ),
+    }
+}
+
 /// Best-effort send; a broken pipe just drops the preview link.
 fn send(conn: &mut Option<Conn>, msg: &ToPreview) {
     if let Some(c) = conn
@@ -313,15 +333,17 @@ fn sync_shared(shared: &Arc<Mutex<Shared>>, app: &App) {
 
 /// Blocking `event::read` on its own thread; forwards key presses only.
 fn spawn_input_thread(tx: Sender<Event>) {
-    thread::spawn(move || loop {
-        match event::read() {
-            Ok(CtEvent::Key(key)) if key.kind == KeyEventKind::Press => {
-                if tx.send(Event::Key(key)).is_err() {
-                    break;
+    thread::spawn(move || {
+        loop {
+            match event::read() {
+                Ok(CtEvent::Key(key)) if key.kind == KeyEventKind::Press => {
+                    if tx.send(Event::Key(key)).is_err() {
+                        break;
+                    }
                 }
+                Ok(_) => {}
+                Err(_) => break,
             }
-            Ok(_) => {}
-            Err(_) => break,
         }
     });
 }

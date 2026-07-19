@@ -1,0 +1,52 @@
+# herdr-gitview configuration
+# Location: $HERDR_PLUGIN_CONFIG_DIR/config.toml
+#   (usually ~/.config/herdr/plugins/adamchmara.gitview/config.toml)
+# Every key is optional; the values below are the defaults.
+
+# Base ref for branch scope (`w` toggles worktree <-> branch view).
+# "" = auto-detect: origin/HEAD -> origin/main -> origin/master -> main -> master
+base = ""
+
+# Width fraction of the file-list pane (clamped to 0.15..0.6).
+split_ratio = 0.35
+
+# Which side the file list sits on: "right" | "left".
+list_side = "right"
+
+# Editor argv. The file (and "+<line>" when the first changed line is known)
+# is appended. Also used as GIT_EDITOR for `c` (commit) unless you already
+# configured git's core.editor or $GIT_EDITOR.
+editor = ["nvim"]
+
+# Auto-refresh interval in milliseconds; 0 disables polling.
+poll_ms = 2000
+
+# Show untracked files in the worktree view.
+show_untracked = true
+
+# Override any default keybinding: action = "key".
+# Key grammar: [ctrl+][alt+][shift+]<key>, where <key> is a single character
+# or: enter, esc, tab, space, up, down, left, right, pgup, pgdn, home, end.
+# An override replaces ALL default keys for that action.
+# Binding a key that another action already owns is reported at startup and
+# the whole table is ignored (defaults win) — fix the collision to apply it.
+[keybindings]
+# down = "j"                # also: down-arrow
+# up = "k"                  # also: up-arrow
+# top = "g"
+# bottom = "shift+g"
+# edit = "enter"            # open the file in your editor (left pane)
+# scroll_down = "shift+j"   # scroll the diff without leaving the list
+# scroll_up = "shift+k"
+# half_page_down = "ctrl+d"
+# half_page_up = "ctrl+u"
+# diff_top = "home"
+# diff_bottom = "end"
+# toggle_scope = "w"        # worktree <-> branch
+# toggle_cached = "tab"     # unstaged <-> staged diff view
+# stage = "s"
+# discard = "x"
+# commit = "c"
+# refresh = "r"
+# help = "?"
+# quit = "q"                # also: esc

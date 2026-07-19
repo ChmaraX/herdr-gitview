@@ -95,6 +95,19 @@ fn open_view(repo: &Path) -> Result<()> {
         &[("GITVIEW_PREVIEW_PANE", &preview_pane)],
     )?;
 
+    // `list_side = "left"`: panes are opened preview-left/list-right (the
+    // preview must exist first so the list knows its pane id), then swapped.
+    if crate::config::Config::load().list_side == crate::config::ListSide::Left {
+        let _ = herdr_json(&[
+            "pane",
+            "swap",
+            "--source-pane",
+            &preview_pane,
+            "--target-pane",
+            &list_pane,
+        ]);
+    }
+
     let state = ViewState {
         repo: repo.to_path_buf(),
         tab_id,
@@ -198,7 +211,10 @@ fn resolve_repo() -> Result<PathBuf> {
             return Ok(root);
         }
     }
-    bail!("not inside a git repository (checked {} candidate dirs)", candidates.len())
+    bail!(
+        "not inside a git repository (checked {} candidate dirs)",
+        candidates.len()
+    )
 }
 
 fn collect_cwds(value: &Value, out: &mut Vec<PathBuf>) {
@@ -317,7 +333,9 @@ fn collect_strs(value: &Value, key: &str, out: &mut Vec<String>) {
     match value {
         Value::Object(map) => {
             for (k, v) in map {
-                if k == key && let Some(s) = v.as_str() {
+                if k == key
+                    && let Some(s) = v.as_str()
+                {
                     out.push(s.to_string());
                 }
                 collect_strs(v, key, out);
@@ -360,10 +378,9 @@ mod tests {
 
     #[test]
     fn collect_cwds_ignores_non_cwd_keys_and_recurses() {
-        let ctx: Value = serde_json::from_str(
-            r#"{"nested": [{"cwd": "/a", "label": "x"}], "repo_root": "/b"}"#,
-        )
-        .unwrap();
+        let ctx: Value =
+            serde_json::from_str(r#"{"nested": [{"cwd": "/a", "label": "x"}], "repo_root": "/b"}"#)
+                .unwrap();
         let mut out = Vec::new();
         collect_cwds(&ctx, &mut out);
         out.sort();

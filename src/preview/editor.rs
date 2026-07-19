@@ -103,7 +103,8 @@ mod tests {
     #[test]
     fn first_new_line_colored_hunk() {
         // git --color=always wraps hunk headers in cyan (36m).
-        let raw = b"\x1b[1mdiff --git a/f b/f\x1b[m\n\x1b[36m@@ -1,2 +3 @@\x1b[m\n\x1b[32m+x\x1b[m\n";
+        let raw =
+            b"\x1b[1mdiff --git a/f b/f\x1b[m\n\x1b[36m@@ -1,2 +3 @@\x1b[m\n\x1b[32m+x\x1b[m\n";
         assert_eq!(first_new_line(raw), Some(3));
     }
 

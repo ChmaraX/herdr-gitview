@@ -273,7 +273,10 @@ mod tests {
     #[test]
     fn cap_lines_truncates_and_counts_remainder() {
         // 10 lines, cap at 4 → keep 4, hide 6.
-        let raw: Vec<u8> = (0..10).map(|i| format!("line{i}\n")).collect::<String>().into_bytes();
+        let raw: Vec<u8> = (0..10)
+            .map(|i| format!("line{i}\n"))
+            .collect::<String>()
+            .into_bytes();
         let (out, hidden) = cap_lines(&raw, 4);
         assert_eq!(hidden, 6);
         assert_eq!(out.iter().filter(|b| **b == b'\n').count(), 3); // 4th newline dropped

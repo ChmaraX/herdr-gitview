@@ -56,9 +56,21 @@ fn row_text(buf: &Buffer, y: u16) -> String {
 #[test]
 fn markers_and_stats_render() {
     let mut app = app_with(vec![
-        entry("src/main.rs", ChangeKind::Modified, StageState::Unstaged, 3, 1),
+        entry(
+            "src/main.rs",
+            ChangeKind::Modified,
+            StageState::Unstaged,
+            3,
+            1,
+        ),
         entry("new.rs", ChangeKind::Added, StageState::Staged, 10, 0),
-        entry("notes.txt", ChangeKind::Untracked, StageState::Untracked, 5, 0),
+        entry(
+            "notes.txt",
+            ChangeKind::Untracked,
+            StageState::Untracked,
+            5,
+            0,
+        ),
     ]);
     let buf = draw(&mut app);
 
@@ -96,8 +108,14 @@ fn selected_row_is_reversed() {
     let buf = draw(&mut app);
 
     // Selected row is index 1 → body y=2.
-    let selected = buf[(1, 2)].style().add_modifier.contains(Modifier::REVERSED);
-    let other = buf[(1, 1)].style().add_modifier.contains(Modifier::REVERSED);
+    let selected = buf[(1, 2)]
+        .style()
+        .add_modifier
+        .contains(Modifier::REVERSED);
+    let other = buf[(1, 1)]
+        .style()
+        .add_modifier
+        .contains(Modifier::REVERSED);
     assert!(selected, "selected row should be REVERSED");
     assert!(!other, "non-selected row should not be REVERSED");
 }
