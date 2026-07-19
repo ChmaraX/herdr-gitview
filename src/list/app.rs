@@ -11,7 +11,7 @@ use anyhow::Result;
 use crossterm::event::KeyEvent;
 
 use crate::config::Config;
-use crate::git::{FileEntry, Repo, Scope};
+use crate::git::{FileEntry, Repo, Scope, StageState};
 use crate::keymap::{Action, Keymap};
 
 /// How long a transient footer message stays on screen.
@@ -96,22 +96,42 @@ impl App {
                 }
             }
             Action::ToggleScope => self.toggle_scope(),
+            Action::ToggleCached => self.toggle_cached(),
             Action::Refresh => self.force_refresh(),
             Action::Help => self.show_help = true,
             Action::Quit => self.should_quit = true,
 
-            // Not implemented until later phases; announce, don't crash.
-            Action::Edit
-            | Action::Stage
-            | Action::Discard
-            | Action::Commit
-            | Action::ToggleCached
-            | Action::ScrollDown
+            // Diff scroll keys are intercepted by the run loop and forwarded
+            // to the preview pane over IPC, so they are no-ops here.
+            Action::ScrollDown
             | Action::ScrollUp
             | Action::HalfPageDown
             | Action::HalfPageUp
             | Action::DiffTop
-            | Action::DiffBottom => self.set_status("(soon)"),
+            | Action::DiffBottom => {}
+
+            // Not implemented until later phases; announce, don't crash.
+            Action::Edit | Action::Stage | Action::Discard | Action::Commit => {
+                self.set_status("(soon)")
+            }
+        }
+    }
+
+    /// Toggle the staged-diff view (worktree scope only). The preview re-Shows
+    /// with `cached = true`; if the entry has nothing staged, hint as much.
+    fn toggle_cached(&mut self) {
+        if self.scope != Scope::Worktree {
+            return; // staged view is meaningless in branch scope
+        }
+        self.cached_view = !self.cached_view;
+        if self.cached_view
+            && self
+                .entries
+                .get(self.cursor)
+                .map(|e| e.stage == StageState::Unstaged)
+                .unwrap_or(false)
+        {
+            self.set_status("no staged changes");
         }
     }
 
