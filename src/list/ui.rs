@@ -324,7 +324,8 @@ fn footer_hints(app: &App) -> String {
             k(Action::Help),
         ),
         Mode::CommitFiles => format!(
-            " {}/{} scroll diff  {} back  {} help",
+            " {} edit  {}/{} scroll diff  {} back  {} help",
+            k(Action::Edit),
             k(Action::ScrollDown),
             k(Action::ScrollUp),
             k(Action::Quit),

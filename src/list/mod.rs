@@ -115,7 +115,10 @@ fn event_loop(
                 if app.modal.is_none() && app.mode == app::Mode::Log && action == Some(Action::Edit)
                 {
                     app.open_commit();
-                } else if free && action == Some(Action::Edit) && app.mode == app::Mode::Files {
+                } else if free
+                    && action == Some(Action::Edit)
+                    && matches!(app.mode, app::Mode::Files | app::Mode::CommitFiles)
+                {
                     start_edit(app, &mut conn);
                 } else if free && action == Some(Action::Commit) && app.mode == app::Mode::Files {
                     start_commit(app, &mut conn);
@@ -226,8 +229,10 @@ fn start_edit(app: &mut App, conn: &mut Option<Conn>) {
     let Some((entry, _)) = app.selected_entry() else {
         return; // empty list or header row
     };
-    if entry.kind == crate::git::ChangeKind::Deleted {
-        app.set_status("file is deleted — nothing to edit");
+    // The editor always opens the *current* file — also from the history
+    // view — so guard on what exists on disk, not on the change kind.
+    if !app.repo.root.join(&entry.path).exists() {
+        app.set_status("file no longer exists — nothing to edit");
         return;
     }
     let file = entry.path.clone();

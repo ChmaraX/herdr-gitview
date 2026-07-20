@@ -267,13 +267,13 @@ impl App {
 
             // Edit/Commit are intercepted by the run loop (they need the IPC
             // link); reaching here means there is no preview connection.
-            Action::Edit | Action::Commit => match self.mode {
-                Mode::CommitFiles => self.set_status("history view is read-only (q = back)"),
-                _ if std::env::var_os("HERDR_PANE_ID").is_none() => {
+            Action::Edit | Action::Commit => {
+                if std::env::var_os("HERDR_PANE_ID").is_none() {
                     self.set_status("editing needs the preview pane (run inside herdr)")
+                } else {
+                    self.set_status("preview not connected — press r to reconnect")
                 }
-                _ => self.set_status("preview not connected — press r to reconnect"),
-            },
+            }
         }
     }
 
