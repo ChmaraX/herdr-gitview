@@ -21,7 +21,8 @@ use crate::popup::write_answer;
 
 pub fn run_annotate() -> Result<()> {
     let title = std::env::var("GITVIEW_ASK_TEXT").unwrap_or_else(|_| "note".into());
-    let mut input = String::new();
+    // Editing an existing note pre-fills the input.
+    let mut input = std::env::var("GITVIEW_PREFILL").unwrap_or_default();
 
     let mut terminal = ratatui::init();
     let answer = loop {
@@ -75,7 +76,7 @@ pub fn run_annotate() -> Result<()> {
 
 pub fn run_pick_agent() -> Result<()> {
     let title = std::env::var("GITVIEW_ASK_TEXT").unwrap_or_else(|_| "send notes to…".into());
-    let agents: Vec<(String, String, String)> =
+    let agents: Vec<(String, String, String, String, String)> =
         serde_json::from_str(&std::env::var("GITVIEW_AGENTS").unwrap_or_default())
             .unwrap_or_default();
     if agents.is_empty() {
@@ -102,17 +103,31 @@ pub fn run_pick_agent() -> Result<()> {
             );
             let items: Vec<ListItem> = agents
                 .iter()
-                .map(|(pane, agent, status)| {
-                    ListItem::new(Line::from(vec![
+                .map(|(pane, agent, status, tab, cwd)| {
+                    let mut spans = vec![
                         Span::styled(
                             format!("  {agent}"),
                             Style::new().add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
-                            format!("  {status} · {pane}"),
-                            Style::new().add_modifier(Modifier::DIM),
+                            format!(" · {status}"),
+                            Style::new().fg(color_for_status(status)),
                         ),
-                    ]))
+                    ];
+                    if !tab.is_empty() {
+                        spans.push(Span::raw(format!("  tab: {tab}")));
+                    }
+                    if !cwd.is_empty() {
+                        spans.push(Span::styled(
+                            format!("  {cwd}"),
+                            Style::new().add_modifier(Modifier::DIM),
+                        ));
+                    }
+                    spans.push(Span::styled(
+                        format!("  {pane}"),
+                        Style::new().add_modifier(Modifier::DIM),
+                    ));
+                    ListItem::new(Line::from(spans))
                 })
                 .collect();
             let list =
@@ -166,7 +181,6 @@ pub fn run_pick_agent() -> Result<()> {
     write_answer(&answer)
 }
 
-#[allow(unused)]
 fn color_for_status(status: &str) -> Color {
     match status {
         "idle" => Color::Green,

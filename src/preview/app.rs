@@ -115,6 +115,10 @@ pub struct PreviewApp {
     pub popup_request: Option<PopupReq>,
     /// Rendered indices of injected note-card lines (excluded from ranges).
     card_lines: Vec<usize>,
+    /// Note index to scroll to once its file's diff arrives (notes view hover).
+    pending_focus: Option<usize>,
+    /// Bumped on every note mutation; the run loop broadcasts on change.
+    pub notes_rev: u64,
     /// Transient footer flash message.
     pub flash: Option<(String, std::time::Instant)>,
 
@@ -146,6 +150,8 @@ impl PreviewApp {
             pending_note: None,
             popup_request: None,
             card_lines: Vec::new(),
+            pending_focus: None,
+            notes_rev: 0,
             flash: None,
             state: State::Splash("waiting for file list…"),
             should_quit: false,
@@ -229,6 +235,9 @@ impl PreviewApp {
         self.state = State::Diff;
         self.clamp_scroll();
         self.restyle();
+        if let Some(idx) = self.pending_focus.take() {
+            self.scroll_to_note(idx);
+        }
     }
 
     /// Copy the built text into `doc`, applying the render cap and injecting
@@ -436,6 +445,9 @@ impl PreviewApp {
                             Some(self.cursor_line)
                         }
                     };
+                    if self.select_anchor.is_some() {
+                        self.flash("select: j/k extend · a note · esc cancel");
+                    }
                     self.restyle();
                 }
             }
@@ -575,6 +587,7 @@ impl PreviewApp {
         if let Some(mut note) = self.pending_note.take() {
             note.text = text;
             self.notes.push(note);
+            self.notes_rev += 1;
             self.select_anchor = None;
             self.sync_doc();
             self.restyle();
@@ -590,14 +603,79 @@ impl PreviewApp {
             text,
             snippet: String::new(),
         });
+        self.notes_rev += 1;
         self.sync_doc();
         self.restyle();
     }
 
     pub fn clear_notes(&mut self) {
         self.notes.clear();
+        self.notes_rev += 1;
         self.sync_doc();
         self.restyle();
+    }
+
+    pub fn edit_note(&mut self, idx: usize, text: String) {
+        if let Some(note) = self.notes.get_mut(idx) {
+            note.text = text;
+            self.notes_rev += 1;
+            self.sync_doc();
+            self.restyle();
+        }
+    }
+
+    pub fn delete_note(&mut self, idx: usize) {
+        if idx < self.notes.len() {
+            self.notes.remove(idx);
+            self.notes_rev += 1;
+            self.sync_doc();
+            self.restyle();
+        }
+    }
+
+    /// The notes view hovered note `idx`: scroll its card into view when its
+    /// file is already shown, else remember it until that diff arrives.
+    pub fn focus_note(&mut self, idx: usize) {
+        let same_file = match (self.notes.get(idx), &self.current) {
+            (Some(note), Some(req)) => note.file == req.file,
+            _ => false,
+        };
+        if same_file && matches!(self.state, State::Diff) {
+            self.scroll_to_note(idx);
+        } else {
+            self.pending_focus = Some(idx);
+        }
+    }
+
+    fn scroll_to_note(&mut self, idx: usize) {
+        let Some(req) = &self.current else { return };
+        if self.notes.get(idx).is_none() {
+            return;
+        }
+        // Rank of this note's card among the current file's cards (they were
+        // injected sorted by anchor line).
+        let Some(built) = &self.built else { return };
+        let anchor = |n: &Note| {
+            if n.end == 0 {
+                0
+            } else {
+                built.line_for_new(n.end).map(|l| l + 1).unwrap_or(0)
+            }
+        };
+        let mut same: Vec<(usize, usize)> = self
+            .notes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.file == req.file)
+            .map(|(i, n)| (anchor(n), i))
+            .collect();
+        same.sort_by_key(|(a, _)| *a);
+        if let Some(rank) = same.iter().position(|(_, i)| *i == idx)
+            && let Some(&line) = self.card_lines.get(rank)
+        {
+            self.scroll = (line.saturating_sub(3)) as u16;
+            self.clamp_scroll();
+        }
     }
 
     pub fn flash(&mut self, msg: impl Into<String>) {

@@ -117,6 +117,8 @@ fn event_loop(
     let mut popup_answer: Option<PathBuf> = None;
     // Whole-file annotate popup: (answer file, annotated path).
     let mut annotate_answer: Option<(PathBuf, PathBuf)> = None;
+    // Note-edit popup: (answer file, note index).
+    let mut edit_note_answer: Option<(PathBuf, usize)> = None;
 
     loop {
         terminal.draw(|frame| ui::render(frame, app))?;
@@ -231,7 +233,19 @@ fn event_loop(
                     None => {}
                 }
             }
-            Ok(Event::Ipc(ToList::NotesCount { n })) => app.notes_count = n,
+            Ok(Event::Ipc(ToList::Notes { notes })) => {
+                app.notes = notes;
+                if app.mode == app::Mode::Notes {
+                    app.rebuild_rows();
+                    if app.notes.is_empty() {
+                        app.set_status("notes sent");
+                        app.on_key(KeyEvent::new(
+                            crossterm::event::KeyCode::Char('n'),
+                            crossterm::event::KeyModifiers::NONE,
+                        ));
+                    }
+                }
+            }
             Ok(Event::Ipc(ToList::GitDone { ok })) => {
                 app.on_edit_done();
                 show_dirty = true;
@@ -286,6 +300,29 @@ fn event_loop(
             app.send_notes_request = false;
             send(&mut conn, &ToPreview::SendNotes);
         }
+        // Notes view: enter = edit via popup, d = delete.
+        if let Some((idx, current)) = app.edit_note_request.take() {
+            let envs = [
+                ("GITVIEW_ASK_TEXT".to_string(), "edit note".to_string()),
+                ("GITVIEW_PREFILL".to_string(), current),
+            ];
+            match crate::popup::spawn("annotate", &envs, 64, 8) {
+                Some(path) => edit_note_answer = Some((path, idx)),
+                None => app.set_status("popup failed (see debug log)"),
+            }
+        }
+        if let Some((path, idx)) = &edit_note_answer {
+            let mut pending = Some(path.clone());
+            if let Some(text) = crate::popup::poll(&mut pending) {
+                if !text.is_empty() {
+                    send(&mut conn, &ToPreview::EditNote { idx: *idx, text });
+                }
+                edit_note_answer = None;
+            }
+        }
+        if let Some(idx) = app.delete_note_request.take() {
+            send(&mut conn, &ToPreview::DeleteNote { idx });
+        }
 
         // Confirm modals become native floating popup panes when herdr
         // supports them; the in-pane overlay is the fallback.
@@ -319,11 +356,21 @@ fn event_loop(
         }
 
         if show_dirty && dirty_since.elapsed() >= SHOW_DEBOUNCE {
-            match current_show(app) {
-                Some(msg) => send(&mut conn, &msg),
-                // Nothing selectable left (e.g. the last change was
-                // discarded/committed) — clear the stale diff.
-                None => send(&mut conn, &ToPreview::Clear),
+            if app.mode == app::Mode::Notes {
+                // Hovering a note: show its file's diff + scroll to the card.
+                if let Some(idx) = app.selected_note() {
+                    if let Some(msg) = note_show(app, idx) {
+                        send(&mut conn, &msg);
+                    }
+                    send(&mut conn, &ToPreview::FocusNote { idx });
+                }
+            } else {
+                match current_show(app) {
+                    Some(msg) => send(&mut conn, &msg),
+                    // Nothing selectable left (e.g. the last change was
+                    // discarded/committed) — clear the stale diff.
+                    None => send(&mut conn, &ToPreview::Clear),
+                }
             }
             show_dirty = false;
         }
@@ -380,6 +427,12 @@ fn start_edit(app: &mut App, conn: &mut Option<Conn>) {
 fn activate_selection(app: &mut App, conn: &mut Option<Conn>) {
     match app.mode {
         app::Mode::Log => app.open_commit(),
+        app::Mode::Notes => {
+            if let Some(idx) = app.selected_note() {
+                let text = app.notes.get(idx).map(|n| n.3.clone()).unwrap_or_default();
+                app.edit_note_request = Some((idx, text));
+            }
+        }
         app::Mode::Files | app::Mode::CommitFiles => {
             if app.busy.is_some() {
                 remote_open(app);
@@ -512,12 +565,32 @@ fn current_show(app: &App) -> Option<ToPreview> {
 
 /// Identity of what the preview is showing; a change here means "re-Show".
 fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
+    if app.mode == app::Mode::Notes {
+        let idx = app.selected_note()?;
+        let file = app.notes.get(idx)?.0.clone();
+        return Some((file, app.scope, false, Some(format!("note-{idx}"))));
+    }
     let (e, staged) = app.selected_entry()?;
     let commit = match app.mode {
         app::Mode::CommitFiles => app.commit.as_ref().map(|c| c.sha.clone()),
         _ => None,
     };
     Some((e.path.clone(), app.scope, staged, commit))
+}
+
+/// The Show for a hovered note's file, when that file is among the current
+/// entries (a clean file has no diff to show — the card focus still works).
+fn note_show(app: &App, idx: usize) -> Option<ToPreview> {
+    let file = &app.notes.get(idx)?.0;
+    let e = app.entries.iter().find(|e| &e.path == file)?;
+    Some(ToPreview::Show {
+        file: e.path.clone(),
+        orig_path: e.orig_path.clone(),
+        scope: app.scope,
+        cached: false,
+        kind: e.kind,
+        commit: None,
+    })
 }
 
 /// Translate a diff scroll/page key into the message the preview understands,

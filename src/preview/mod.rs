@@ -104,6 +104,7 @@ fn event_loop(
     // Popup answers we are waiting on.
     let mut annotate_answer: Option<std::path::PathBuf> = None;
     let mut pick_answer: Option<std::path::PathBuf> = None;
+    let mut last_notes_rev = 0u64;
 
     loop {
         // Open popups the app requested (annotate input / agent picker).
@@ -147,7 +148,7 @@ fn event_loop(
                     match crate::popup::spawn(
                         "pick-agent",
                         &envs,
-                        50,
+                        74,
                         (agents.len() as u16 + 6).min(14),
                     ) {
                         Some(path) => pick_answer = Some(path),
@@ -166,9 +167,6 @@ fn event_loop(
                 app.pending_note = None; // cancelled
             } else {
                 app.finish_annotate(text);
-                if let Some(c) = conn.as_mut() {
-                    let _ = c.send(&ToList::NotesCount { n: app.notes.len() });
-                }
             }
         }
         // Agent-picker answer: "pane\tplace|submit" or "cancel".
@@ -180,11 +178,22 @@ fn event_loop(
                 Ok(agent) => {
                     app.clear_notes();
                     app.flash(format!("notes sent to {agent}"));
-                    if let Some(c) = conn.as_mut() {
-                        let _ = c.send(&ToList::NotesCount { n: 0 });
-                    }
                 }
                 Err(err) => app.flash(format!("send failed: {err}")),
+            }
+        }
+
+        // Keep the list's notes view in sync whenever the store changes
+        // (add/edit/delete/clear all funnel through here).
+        if app.notes_rev != last_notes_rev {
+            last_notes_rev = app.notes_rev;
+            if let Some(c) = conn.as_mut() {
+                let snapshot: Vec<_> = app
+                    .notes
+                    .iter()
+                    .map(|n| (n.file.clone(), n.start, n.end, n.text.clone()))
+                    .collect();
+                let _ = c.send(&ToList::Notes { notes: snapshot });
             }
         }
 
@@ -272,6 +281,9 @@ fn handle_ipc(app: &mut PreviewApp, msg: ToPreview, work_tx: &Sender<ShowReq>) {
         ToPreview::Page { down, full } => app.page(down, full),
         ToPreview::Clear => app.clear(),
         ToPreview::AddNote { file, text } => app.add_file_note(file, text),
+        ToPreview::FocusNote { idx } => app.focus_note(idx),
+        ToPreview::EditNote { idx, text } => app.edit_note(idx, text),
+        ToPreview::DeleteNote { idx } => app.delete_note(idx),
         ToPreview::SendNotes => {
             if app.notes.is_empty() {
                 app.flash("no notes yet");
@@ -409,8 +421,8 @@ fn deliver_notes(app: &PreviewApp, pane: &str, submit: bool) -> Result<String> {
     }
     let agent = crate::popup::workspace_agents()
         .into_iter()
-        .find(|(id, _, _)| id == pane)
-        .map(|(_, name, _)| name)
+        .find(|(id, _, _, _, _)| id == pane)
+        .map(|(_, name, _, _, _)| name)
         .unwrap_or_else(|| pane.to_string());
     Ok(agent)
 }

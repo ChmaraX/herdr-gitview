@@ -78,6 +78,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
             Some(c) => format!(" {} {}", c.short, c.subject),
             None => " commit".to_string(),
         },
+        (None, Mode::Notes) => " review notes".to_string(),
         (None, Mode::Files) => {
             let scope_label = match app.scope {
                 Scope::Worktree => "working tree".to_string(),
@@ -88,6 +89,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     };
     let right = match app.mode {
         Mode::Log => format!("{} commits ", app.commits.len()),
+        Mode::Notes => format!("{} notes ", app.notes.len()),
         _ => format!("{} files ", app.entries.len()),
     };
 
@@ -122,6 +124,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
         let msg = match (app.mode, app.scope) {
             (Mode::Log, _) => "no commits".to_string(),
             (Mode::CommitFiles, _) => "empty commit".to_string(),
+            (Mode::Notes, _) => "no notes".to_string(),
             (_, Scope::Worktree) => "working tree clean".to_string(),
             (_, Scope::Branch) => format!("no changes vs {}", base_label(app)),
         };
@@ -155,6 +158,10 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
             },
             ListRow::Commit(idx) => match app.commits.get(*idx) {
                 Some(c) => commit_row(c, area.width),
+                None => ListItem::new(""),
+            },
+            ListRow::Note(idx) => match app.notes.get(*idx) {
+                Some(n) => note_row(n, area.width),
                 None => ListItem::new(""),
             },
         })
@@ -208,6 +215,23 @@ fn entry_row(entry: &FileEntry, width: u16, grouped: bool) -> ListItem<'static> 
         spans.extend(stats_spans);
     }
     ListItem::new(Line::from(spans))
+}
+
+/// One note row: `▎ file:12-20 · text`.
+fn note_row(note: &(std::path::PathBuf, u32, u32, String), width: u16) -> ListItem<'static> {
+    let (file, start, end, text) = note;
+    let anchor = if *end == 0 {
+        format!(" ▎ {}", file.display())
+    } else {
+        format!(" ▎ {}:{}-{}", file.display(), start, end)
+    };
+    let avail = (width as usize).saturating_sub(anchor.width() + 3);
+    let text = elide_tail(text, avail);
+    ListItem::new(Line::from(vec![
+        Span::styled(anchor, Style::new().fg(Color::Yellow)),
+        Span::styled(" · ".to_string(), dim()),
+        Span::raw(text),
+    ]))
 }
 
 /// One commit row: `<short> <subject>  <date>`.
@@ -359,6 +383,13 @@ fn footer_hints(app: &App, width: usize) -> Line<'static> {
             (sym(app.keys.hint(Action::Quit)), "back"),
             (sym(app.keys.hint(Action::Help)), "help"),
         ],
+        Mode::Notes => vec![
+            (sym(app.keys.hint(Action::Edit)), "edit note"),
+            (sym(app.keys.hint(Action::Delete)), "delete"),
+            (sym(app.keys.hint(Action::SendNotes)), "send"),
+            (sym(app.keys.hint(Action::Quit)), "back"),
+            (sym(app.keys.hint(Action::Help)), "help"),
+        ],
         Mode::Files => {
             let mut pairs = vec![
                 (sym(app.keys.hint(Action::Edit)), "edit"),
@@ -371,8 +402,8 @@ fn footer_hints(app: &App, width: usize) -> Line<'static> {
                 (sym(app.keys.hint(Action::Help)), "help"),
                 (sym(app.keys.hint(Action::Quit)), "quit"),
             ];
-            if app.notes_count > 0 {
-                pairs.insert(6, (sym(app.keys.hint(Action::SendNotes)), "send notes"));
+            if !app.notes.is_empty() {
+                pairs.insert(6, (sym(app.keys.hint(Action::NotesView)), "notes"));
             }
             pairs
         }

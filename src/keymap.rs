@@ -30,6 +30,10 @@ pub enum Action {
     Annotate,
     /// Send the batched notes to an agent pane.
     SendNotes,
+    /// Toggle the notes view in the list pane.
+    NotesView,
+    /// Delete the selected item (notes view).
+    Delete,
     Refresh,
     Help,
     Quit,
@@ -61,6 +65,8 @@ pub const DEFAULT_KEYS: &[(Action, &str, &[&str])] = &[
     (Action::Select, "select", &["v"]),
     (Action::Annotate, "annotate", &["a"]),
     (Action::SendNotes, "send_notes", &["p"]),
+    (Action::NotesView, "notes_view", &["n"]),
+    (Action::Delete, "delete", &["d"]),
     (Action::Refresh, "refresh", &["r"]),
     (Action::Help, "help", &["?"]),
     (Action::Quit, "quit", &["q", "esc"]),

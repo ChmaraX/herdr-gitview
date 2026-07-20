@@ -66,6 +66,18 @@ pub enum ToPreview {
     },
     /// The list asked to send the batched notes (preview owns the store).
     SendNotes,
+    /// The list's notes view hovers a note: show its file + scroll to it.
+    FocusNote {
+        idx: usize,
+    },
+    /// Replace a note's text (edited via the list's notes view).
+    EditNote {
+        idx: usize,
+        text: String,
+    },
+    DeleteNote {
+        idx: usize,
+    },
     Quit,
 }
 
@@ -79,8 +91,11 @@ pub enum ToList {
     EditDone { file: PathBuf },
     /// GitInPane finished. `ok` = exit status 0.
     GitDone { ok: bool },
-    /// The number of batched review notes changed (footer display).
-    NotesCount { n: usize },
+    /// The batched review notes changed; full snapshot for the notes view.
+    /// Tuples: (file, start, end, text).
+    Notes {
+        notes: Vec<(PathBuf, u32, u32, String)>,
+    },
 }
 
 /// One end of the IPC link: a write half plus an optional reader half.

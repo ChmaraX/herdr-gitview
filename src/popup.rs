@@ -93,19 +93,35 @@ pub fn write_answer(answer: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The agent panes in the current workspace: `(pane_id, agent, status)`.
-pub fn workspace_agents() -> Vec<(String, String, String)> {
+/// The agent panes in the current workspace:
+/// `(pane_id, agent, status, tab_label, cwd_basename)`.
+pub fn workspace_agents() -> Vec<(String, String, String, String, String)> {
     let Some(workspace) = std::env::var_os("HERDR_WORKSPACE_ID") else {
         return Vec::new();
     };
     let workspace = workspace.to_string_lossy().to_string();
     let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let Ok(out) = Command::new(bin).args(["pane", "list"]).output() else {
-        return Vec::new();
+
+    let json_of = |args: &[&str]| -> Option<serde_json::Value> {
+        let out = Command::new(&bin).args(args).output().ok()?;
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).ok()
     };
-    let Ok(value) =
-        serde_json::from_str::<serde_json::Value>(String::from_utf8_lossy(&out.stdout).trim())
-    else {
+
+    // tab_id -> label, for "which tab is this agent in".
+    let mut tab_labels = std::collections::HashMap::new();
+    if let Some(value) = json_of(&["tab", "list"])
+        && let Some(tabs) = value
+            .get("result")
+            .and_then(|r| r.get("tabs"))
+            .and_then(|t| t.as_array())
+    {
+        for tab in tabs {
+            let get = |k: &str| tab.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            tab_labels.insert(get("tab_id").to_string(), get("label").to_string());
+        }
+    }
+
+    let Some(value) = json_of(&["pane", "list"]) else {
         return Vec::new();
     };
     let mut agents = Vec::new();
@@ -117,10 +133,13 @@ pub fn workspace_agents() -> Vec<(String, String, String)> {
         for pane in panes {
             let get = |k: &str| pane.get(k).and_then(|v| v.as_str()).unwrap_or("");
             if get("workspace_id") == workspace && !get("agent").is_empty() {
+                let cwd_base = get("cwd").rsplit('/').next().unwrap_or("").to_string();
                 agents.push((
                     get("pane_id").to_string(),
                     get("agent").to_string(),
                     get("agent_status").to_string(),
+                    tab_labels.get(get("tab_id")).cloned().unwrap_or_default(),
+                    cwd_base,
                 ));
             }
         }

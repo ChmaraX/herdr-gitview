@@ -29,6 +29,8 @@ pub enum Mode {
     Log,
     /// The files changed by the selected commit.
     CommitFiles,
+    /// The batched review notes.
+    Notes,
 }
 
 /// One visual row of the list. Sections group entries VSCode-style: a file
@@ -39,6 +41,7 @@ pub enum ListRow {
     Header { title: &'static str, count: usize },
     Entry { idx: usize, staged: bool },
     Commit(usize),
+    Note(usize),
 }
 
 impl ListRow {
@@ -124,11 +127,14 @@ pub struct App {
     /// True while the current modal is being shown as a native herdr popup
     /// pane instead of the in-pane overlay (the answer arrives via file).
     pub modal_external: bool,
-    /// Batched review-note count (owned by the preview; mirrored for the
-    /// footer). `a` requests a whole-file note via this field.
-    pub notes_count: usize,
+    /// Review notes (owned by the preview; mirrored for the notes view):
+    /// `(file, start, end, text)`.
+    pub notes: Vec<(std::path::PathBuf, u32, u32, String)>,
     pub annotate_request: Option<std::path::PathBuf>,
     pub send_notes_request: bool,
+    /// Edit/delete requests for the run loop (they need popups / the conn).
+    pub edit_note_request: Option<(usize, String)>,
+    pub delete_note_request: Option<usize>,
 }
 
 impl App {
@@ -166,9 +172,11 @@ impl App {
             editor_close_request: None,
             last_click: None,
             modal_external: false,
-            notes_count: 0,
+            notes: Vec::new(),
             annotate_request: None,
             send_notes_request: false,
+            edit_note_request: None,
+            delete_note_request: None,
         };
         app.rebuild_rows();
         app
@@ -181,6 +189,7 @@ impl App {
     pub fn rebuild_rows(&mut self) {
         self.rows = match self.mode {
             Mode::Log => (0..self.commits.len()).map(ListRow::Commit).collect(),
+            Mode::Notes => (0..self.notes.len()).map(ListRow::Note).collect(),
             Mode::CommitFiles => (0..self.entries.len())
                 .map(|idx| ListRow::Entry { idx, staged: false })
                 .collect(),
@@ -258,6 +267,13 @@ impl App {
         }
     }
 
+    pub fn selected_note(&self) -> Option<usize> {
+        match self.rows.get(self.cursor)? {
+            ListRow::Note(idx) => Some(*idx),
+            _ => None,
+        }
+    }
+
     // ---- event handling ---------------------------------------------------
 
     pub fn on_key(&mut self, ev: KeyEvent) {
@@ -299,13 +315,22 @@ impl App {
             Action::Refresh => self.force_refresh(),
             Action::Help => self.modal = Some(Modal::Help),
             Action::Log => self.toggle_log(),
+            Action::NotesView => self.toggle_notes_view(),
             Action::Select => {}
+            Action::Delete => {
+                if self.mode == Mode::Notes {
+                    self.delete_note_request = self.selected_note();
+                }
+            }
             Action::Annotate => match self.selected_entry() {
                 Some((entry, _)) => self.annotate_request = Some(entry.path.clone()),
+                None if self.mode == Mode::Notes => {
+                    self.set_status("annotate from the files view (n to go back)")
+                }
                 None => self.set_status("select a file to annotate"),
             },
             Action::SendNotes => {
-                if self.notes_count == 0 {
+                if self.notes.is_empty() {
                     self.set_status("no notes yet — a annotates a file, v+a lines in the diff");
                 } else {
                     self.send_notes_request = true;
@@ -374,6 +399,7 @@ impl App {
     /// `l`: enter the log view; `l` again (or q/esc) returns to files.
     fn toggle_log(&mut self) {
         match self.mode {
+            Mode::Notes => self.set_status("log opens from the files view (n to go back)"),
             Mode::Files => match self.repo.log_commits(LOG_LIMIT) {
                 Ok(commits) if commits.is_empty() => self.set_status("no commits yet"),
                 Ok(commits) => {
@@ -405,6 +431,28 @@ impl App {
         }
     }
 
+    /// `n`: flip between the files and notes views.
+    fn toggle_notes_view(&mut self) {
+        match self.mode {
+            Mode::Notes => {
+                self.mode = Mode::Files;
+                self.cursor = 0;
+                self.force_refresh();
+                self.rebuild_rows();
+            }
+            Mode::Files => {
+                if self.notes.is_empty() {
+                    self.set_status("no notes yet");
+                    return;
+                }
+                self.mode = Mode::Notes;
+                self.cursor = 0;
+                self.rebuild_rows();
+            }
+            _ => self.set_status("notes view opens from the files view"),
+        }
+    }
+
     /// q/esc: CommitFiles → Log → Files → actually quit.
     fn back_or_quit(&mut self) {
         match self.mode {
@@ -418,6 +466,7 @@ impl App {
                 // vector is unchanged, so position 0 is fine and predictable.
             }
             Mode::Log => self.leave_history(),
+            Mode::Notes => self.toggle_notes_view(),
             Mode::Files => self.should_quit = true,
         }
     }
