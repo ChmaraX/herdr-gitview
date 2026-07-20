@@ -1,13 +1,16 @@
-//! The diff preview pane: state (`app`), rendering (`ui`), and the `run` event
-//! loop that owns the IPC socket, the latest-wins diff worker, and input.
+//! The diff preview pane: state (`app`), rendering (`ui`), the event-loop
+//! logic (`session`), and the thin `run` shell that wires threads, the
+//! terminal, and the real PTY editor host around a `Session`.
 
 pub mod app;
 pub mod editor;
 pub mod highlight;
 pub mod render;
+pub mod session;
 pub mod ui;
 
 pub use app::{PreviewApp, ShowReq};
+pub use session::{EditorHost, Event, Session};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,35 +20,13 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event as CtEvent, KeyEvent, KeyEventKind, MouseEvent};
+use crossterm::event::{self, Event as CtEvent, KeyEventKind};
 
 use crate::config::Config;
-use crate::git::{Repo, Scope};
-use crate::ipc::{Conn, ToList, ToPreview};
+use crate::git::Repo;
+use crate::hostenv::HostEnv;
+use crate::ipc::Conn;
 use crate::keymap::Keymap;
-
-/// Which popup interaction an answer belongs to.
-enum PreviewPopup {
-    Annotate,
-    PickAgent,
-}
-
-/// Everything the main loop can be woken by.
-enum Event {
-    Key(KeyEvent),
-    Mouse(MouseEvent),
-    /// The list finished connecting; `Conn` is the live link.
-    Connected(Conn),
-    /// A message arrived from the list pane.
-    Ipc(ToPreview),
-    /// The list pane went away (socket EOF).
-    IpcClosed,
-    /// The diff worker produced a built document for `req`.
-    Diff {
-        req: ShowReq,
-        result: Result<render::DiffDoc, String>,
-    },
-}
 
 pub fn run() -> Result<()> {
     crate::logx::init_panic_hook();
@@ -57,7 +38,8 @@ pub fn run() -> Result<()> {
         Keymap::build(&Default::default()).expect("default keymap is valid")
     });
     let repo = resolve_repo()?;
-    let root = repo.root.clone();
+    let env = HostEnv::from_process();
+    let in_herdr = env.in_herdr();
     let mut app = PreviewApp::new(cfg, repo, keys);
 
     let (tx, rx) = mpsc::channel::<Event>();
@@ -69,7 +51,7 @@ pub fn run() -> Result<()> {
     // Preview is the IPC listener. `accept` blocks, so do it on a thread and
     // render the "waiting…" splash meanwhile; the connected `Conn` arrives as
     // an event. Standalone (no socket) skips IPC entirely.
-    if let Some(sock) = std::env::var_os("GITVIEW_SOCKET").map(PathBuf::from) {
+    if let Some(sock) = env.socket.clone() {
         let tx = tx.clone();
         thread::spawn(move || match Conn::listen(&sock) {
             Ok(conn) => {
@@ -81,17 +63,15 @@ pub fn run() -> Result<()> {
         app.on_connected(); // dev mode: nothing will connect
     }
 
-    // Latest-wins diff worker. Each Show is pushed here; the worker drains to
-    // the newest request before running git, so holding `j` never queues runs.
-    let work_tx = spawn_diff_worker(tx.clone(), Repo { root }, app.cfg.clone());
+    let mut session = Session::new(app, env, tx);
 
     let mut terminal = ratatui::init();
     crate::term::enable_mouse();
-    let result = event_loop(&mut terminal, &mut app, &rx, &tx, &work_tx, &input_paused);
+    let result = event_loop(&mut terminal, &mut session, &rx, &input_paused);
     crate::term::disable_mouse();
     ratatui::restore();
 
-    if app.close_view && std::env::var_os("HERDR_PANE_ID").is_some() {
+    if session.app.close_view && in_herdr {
         crate::orchestrate::spawn_close();
     }
     result
@@ -99,358 +79,54 @@ pub fn run() -> Result<()> {
 
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
-    app: &mut PreviewApp,
+    session: &mut Session,
     rx: &mpsc::Receiver<Event>,
-    tx: &Sender<Event>,
-    work_tx: &Sender<ShowReq>,
     input_paused: &Arc<AtomicBool>,
 ) -> Result<()> {
-    // Held once connected so the UI thread can send `ToList` (e.g. `Ready`).
-    let mut conn: Option<Conn> = None;
-    // Popup answers we are waiting on.
-    let mut popups: crate::popup::Popups<PreviewPopup> = Default::default();
-    let mut last_notes_rev = 0u64;
-
     loop {
-        // Open popups the app requested (annotate input / agent picker).
-        // A request while another popup is open is put back for later.
-        if let Some(req) = app.popup_request.take() {
-            match req {
-                app::PopupReq::Annotate if popups.is_open() => {
-                    app.popup_request = Some(app::PopupReq::Annotate);
-                }
-                app::PopupReq::Annotate => {
-                    let title = app
-                        .pending_note
-                        .as_ref()
-                        .map(|n| {
-                            if n.end == 0 {
-                                format!("note for {}", n.file.display())
-                            } else {
-                                format!("note for {}:{}-{}", n.file.display(), n.start, n.end)
-                            }
-                        })
-                        .unwrap_or_default();
-                    let envs = [("GITVIEW_ASK_TEXT".to_string(), title)];
-                    if !popups.open("annotate", &envs, (64, 8), PreviewPopup::Annotate) {
-                        app.pending_note = None;
-                        app.flash("couldn't open the note popup (see debug log)");
-                    }
-                }
-                app::PopupReq::PickAgent if popups.is_open() => {
-                    app.popup_request = Some(app::PopupReq::PickAgent);
-                }
-                app::PopupReq::PickAgent => {
-                    let agents = crate::popup::workspace_agents();
-                    if agents.is_empty() {
-                        app.flash("no agent panes in this workspace");
-                    } else {
-                        let json = serde_json::to_string(&agents).unwrap_or_default();
-                        let envs = [
-                            ("GITVIEW_AGENTS".to_string(), json),
-                            (
-                                "GITVIEW_ASK_TEXT".to_string(),
-                                format!("send {} note(s) to…", app.notes.len()),
-                            ),
-                        ];
-                        let size = (74, (agents.len() as u16 + 6).min(14));
-                        if !popups.open("pick-agent", &envs, size, PreviewPopup::PickAgent) {
-                            app.flash("couldn't open the agent picker (see debug log)");
-                        }
-                    }
-                }
-            }
-        }
-        // Popup outcomes (a dead popup pane just cancels the interaction).
-        match popups.poll() {
-            Some((PreviewPopup::Annotate, crate::popup::Answer::Text(text))) => {
-                if text.is_empty() {
-                    app.pending_note = None; // cancelled
-                } else {
-                    app.finish_annotate(text);
-                }
-            }
-            Some((PreviewPopup::Annotate, crate::popup::Answer::Dead)) => {
-                app.pending_note = None;
-            }
-            Some((PreviewPopup::PickAgent, crate::popup::Answer::Text(answer))) => {
-                if answer != "cancel"
-                    && let Some((pane, mode)) = answer.split_once('\t')
-                {
-                    match deliver_notes(app, pane, mode == "submit") {
-                        Ok(agent) => {
-                            app.clear_notes();
-                            app.flash(format!("notes sent to {agent}"));
-                        }
-                        Err(err) => app.flash(format!("send failed: {err}")),
-                    }
-                }
-            }
-            Some((PreviewPopup::PickAgent, crate::popup::Answer::Dead)) | None => {}
-        }
-
-        // `n` in the preview opens the notes view over in the list pane.
-        if app.notes_view_request {
-            app.notes_view_request = false;
-            if let Some(c) = conn.as_mut() {
-                let _ = c.send(&ToList::ShowNotesView);
-            }
-        }
-
-        // Keep the list's notes view in sync whenever the store changes
-        // (add/edit/delete/clear all funnel through here).
-        if app.notes_rev != last_notes_rev {
-            last_notes_rev = app.notes_rev;
-            if let Some(c) = conn.as_mut() {
-                let snapshot: Vec<_> = app
-                    .notes
-                    .iter()
-                    .map(|n| crate::ipc::NoteMeta {
-                        id: n.id,
-                        file: n.file.clone(),
-                        start: n.start,
-                        end: n.end,
-                        text: n.text.clone(),
-                    })
-                    .collect();
-                let _ = c.send(&ToList::Notes { notes: snapshot });
-            }
-        }
-
-        terminal.draw(|frame| ui::render(frame, app))?;
+        session.tick();
+        terminal.draw(|frame| ui::render(frame, &mut session.app))?;
 
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Event::Key(key)) => app.on_key(key),
-            Ok(Event::Mouse(m)) => app.on_mouse(m.kind, m.row),
-
-            Ok(Event::Connected(new_conn)) => {
-                // Decode incoming `ToPreview` frames on a reader thread and
-                // fan them into our event channel; EOF becomes IpcClosed.
-                let (ipc_tx, ipc_rx) = mpsc::channel::<ToPreview>();
-                let mut c = new_conn.spawn_reader(ipc_tx);
-                spawn_ipc_forwarder(ipc_rx, tx.clone());
-                let _ = c.send(&ToList::Ready);
-                conn = Some(c);
-                app.on_connected();
+            Ok(event) => {
+                let mut host = TerminalHost {
+                    terminal,
+                    input_paused,
+                };
+                session.on_event(event, &mut host);
             }
-
-            // Edit / GitInPane suspend the TUI, so they need the terminal —
-            // handle them here; everything else goes through `handle_ipc`.
-            Ok(Event::Ipc(ToPreview::Edit { file })) => {
-                run_editor(terminal, app, &file, input_paused);
-                if let Some(req) = app.current.clone() {
-                    let _ = work_tx.send(req); // file changed on disk — re-diff
-                }
-                if let Some(c) = conn.as_mut() {
-                    let _ = c.send(&ToList::EditDone { file });
-                }
-            }
-            Ok(Event::Ipc(ToPreview::GitInPane { argv })) => {
-                let ok = run_git_in_pane(terminal, app, &argv, input_paused);
-                if let Some(req) = app.current.clone() {
-                    let _ = work_tx.send(req);
-                }
-                if let Some(c) = conn.as_mut() {
-                    let _ = c.send(&ToList::GitDone { ok });
-                }
-            }
-            Ok(Event::Ipc(msg)) => handle_ipc(app, msg, work_tx),
-
-            Ok(Event::IpcClosed) => {
-                // The list (and thus the whole view) is gone — exit cleanly.
-                app.should_quit = true;
-            }
-
-            Ok(Event::Diff { req, result }) => app.apply_diff(&req, result),
-
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
 
-        if app.should_quit {
-            // Drop the link so the list sees EOF promptly.
-            drop(conn.take());
+        if session.should_quit() {
+            session.drop_conn(); // list sees EOF promptly
             return Ok(());
         }
     }
 }
 
-fn handle_ipc(app: &mut PreviewApp, msg: ToPreview, work_tx: &Sender<ShowReq>) {
-    match msg {
-        ToPreview::Show {
-            file,
-            orig_path,
-            scope,
-            cached,
-            kind,
-            commit,
-        } => {
-            let req = ShowReq {
-                file,
-                orig_path,
-                scope,
-                cached,
-                kind,
-                commit,
-            };
-            app.begin_show(req.clone());
-            let _ = work_tx.send(req);
-        }
-        ToPreview::Scroll { delta } => app.scroll_by(delta),
-        ToPreview::Page { down, full } => app.page(down, full),
-        ToPreview::Clear => app.clear(),
-        ToPreview::AddNote { file, text } => app.add_file_note(file, text),
-        ToPreview::FocusNote { id } => app.focus_note(id),
-        ToPreview::EditNote { id, text } => app.edit_note(id, text),
-        ToPreview::DeleteNote { id } => app.delete_note(id),
-        ToPreview::SendNotes => {
-            if app.notes.is_empty() {
-                app.flash("no notes yet");
-            } else {
-                app.popup_request = Some(app::PopupReq::PickAgent);
-            }
-        }
-        ToPreview::Quit => app.should_quit = true, // list initiated teardown
-        // Handled directly in the event loop (they need the terminal).
-        ToPreview::Edit { .. } | ToPreview::GitInPane { .. } => {}
-    }
+/// The real editor host: suspends the ratatui terminal, pauses the input
+/// thread, releases the mouse, and runs the child on this pane's PTY.
+struct TerminalHost<'a> {
+    terminal: &'a mut ratatui::DefaultTerminal,
+    input_paused: &'a Arc<AtomicBool>,
 }
 
-/// Open the configured editor on `file`, jumping to its first changed line
-/// (derived from the currently shown diff when it is for the same file).
-fn run_editor(
-    terminal: &mut ratatui::DefaultTerminal,
-    app: &mut PreviewApp,
-    file: &Path,
-    input_paused: &Arc<AtomicBool>,
-) {
-    let mut argv = app.cfg.editor.clone();
-    // nvim gets a remote-control socket so the list pane can switch the open
-    // file mid-session (Enter on another row while the editor runs).
-    let server = crate::nvim::server_path();
-    if let Some(server) = &server
-        && argv.first().map(|e| e.contains("nvim")).unwrap_or(false)
-    {
-        let _ = std::fs::remove_file(server);
-        argv.push("--listen".into());
-        argv.push(server.display().to_string());
+impl EditorHost for TerminalHost<'_> {
+    fn run(&mut self, cwd: &Path, argv: &[String], envs: &[(String, String)]) -> Result<bool> {
+        self.input_paused.store(true, Ordering::SeqCst);
+        crate::term::disable_mouse(); // the child owns mouse reporting
+        let result = editor::run_on_pty(self.terminal, cwd, argv, envs);
+        crate::term::enable_mouse();
+        self.input_paused.store(false, Ordering::SeqCst);
+        result
     }
-    let same_file = app
-        .current
-        .as_ref()
-        .map(|c| c.file == *file)
-        .unwrap_or(false);
-    if same_file && let Some(line) = app.first_change {
-        argv.push(format!("+{line}"));
-    }
-    argv.push(app.repo.root.join(file).display().to_string());
-    run_suspended(terminal, app, &argv, &[], input_paused);
-    if let Some(server) = &server {
-        let _ = std::fs::remove_file(server);
-    }
-}
-
-/// Run `git -C <root> <argv…>` interactively on this PTY (e.g. commit -e).
-/// Sets GIT_EDITOR from our config only when the user configured nothing.
-fn run_git_in_pane(
-    terminal: &mut ratatui::DefaultTerminal,
-    app: &mut PreviewApp,
-    argv: &[String],
-    input_paused: &Arc<AtomicBool>,
-) -> bool {
-    let mut full = vec![
-        "git".to_string(),
-        "-C".to_string(),
-        app.repo.root.display().to_string(),
-    ];
-    full.extend(argv.iter().cloned());
-
-    let mut envs = Vec::new();
-    if std::env::var_os("GIT_EDITOR").is_none() && !has_core_editor(app) {
-        envs.push(("GIT_EDITOR".to_string(), app.cfg.editor.join(" ")));
-    }
-    run_suspended(terminal, app, &full, &envs, input_paused)
-}
-
-/// Common suspend→run→restore path; a spawn failure lands in the Error state.
-fn run_suspended(
-    terminal: &mut ratatui::DefaultTerminal,
-    app: &mut PreviewApp,
-    argv: &[String],
-    envs: &[(String, String)],
-    input_paused: &Arc<AtomicBool>,
-) -> bool {
-    input_paused.store(true, Ordering::SeqCst);
-    crate::term::disable_mouse(); // the child (nvim) owns mouse reporting while it runs
-    let result = editor::run_on_pty(terminal, &app.repo.root.clone(), argv, envs);
-    crate::term::enable_mouse();
-    input_paused.store(false, Ordering::SeqCst);
-    match result {
-        Ok(ok) => ok,
-        Err(err) => {
-            app.state = app::State::Error(first_line(&err.to_string()));
-            false
-        }
-    }
-}
-
-/// Compose the batched notes and type them into the agent pane's input
-/// (submit optionally presses enter). Returns the agent name on success.
-fn deliver_notes(app: &PreviewApp, pane: &str, submit: bool) -> Result<String> {
-    let mut msg = String::new();
-    for note in &app.notes {
-        if note.end == 0 {
-            msg.push_str(&format!("{} — {}\n", note.file.display(), note.text));
-        } else {
-            msg.push_str(&format!(
-                "{}:{}-{} — {}\n",
-                note.file.display(),
-                note.start,
-                note.end,
-                note.text
-            ));
-        }
-        if !note.snippet.is_empty() {
-            msg.push_str("```diff\n");
-            msg.push_str(&note.snippet);
-            msg.push_str("```\n");
-        }
-    }
-
-    let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let out = std::process::Command::new(&bin)
-        .args(["pane", "send-text", pane, &msg])
-        .output()?;
-    if !out.status.success() {
-        anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    if submit {
-        let _ = std::process::Command::new(&bin)
-            .args(["pane", "send-keys", pane, "enter"])
-            .output();
-    }
-    let agent = crate::popup::workspace_agents()
-        .into_iter()
-        .find(|(id, _, _, _, _)| id == pane)
-        .map(|(_, name, _, _, _)| name)
-        .unwrap_or_else(|| pane.to_string());
-    Ok(agent)
-}
-
-/// Does the user have an editor configured for git itself?
-fn has_core_editor(app: &PreviewApp) -> bool {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(&app.repo.root)
-        .args(["config", "--get", "core.editor"])
-        .output()
-        .map(|out| out.status.success() && !out.stdout.is_empty())
-        .unwrap_or(false)
 }
 
 /// Input reader on its own thread; forwards key presses only. Uses
 /// `poll` + `read` so it can stop touching stdin while `paused` is set
-/// (an editor owns the PTY then — see `run_suspended`).
+/// (an editor owns the PTY then).
 fn spawn_input_thread(tx: Sender<Event>, paused: Arc<AtomicBool>) {
     thread::spawn(move || {
         loop {
@@ -478,113 +154,6 @@ fn spawn_input_thread(tx: Sender<Event>, paused: Arc<AtomicBool>) {
             }
         }
     });
-}
-
-/// Bridge the typed IPC reader channel into the main event channel, turning a
-/// closed channel (socket EOF) into `IpcClosed`.
-fn spawn_ipc_forwarder(ipc_rx: mpsc::Receiver<ToPreview>, tx: Sender<Event>) {
-    thread::spawn(move || {
-        while let Ok(msg) = ipc_rx.recv() {
-            if tx.send(Event::Ipc(msg)).is_err() {
-                return;
-            }
-        }
-        let _ = tx.send(Event::IpcClosed);
-    });
-}
-
-/// Latest-wins diff runner: fetches the old/new file contents for a request
-/// and builds the styled document (syntax highlighting + tints) off the UI
-/// thread. Returns the sender used to enqueue `ShowReq`s.
-fn spawn_diff_worker(tx: Sender<Event>, repo: Repo, cfg: Config) -> Sender<ShowReq> {
-    let (work_tx, work_rx) = mpsc::channel::<ShowReq>();
-    thread::spawn(move || {
-        // The highlighter is expensive to set up — build it once per process.
-        let hl = highlight::Highlighter::new(cfg.theme);
-        // Branch-scope base resolution cached per HEAD (it only moves when
-        // HEAD does) so holding j doesn't spawn a git storm.
-        let mut base_cache: Option<(String, String)> = None; // (head, merge_base)
-        while let Ok(mut req) = work_rx.recv() {
-            // Collapse a backlog to the newest request.
-            while let Ok(newer) = work_rx.try_recv() {
-                req = newer;
-            }
-            let result = fetch_contents(&repo, &cfg, &req, &mut base_cache).map(|(old, new)| {
-                render::build(&req.file, &old, &new, &hl, cfg.theme, cfg.context_lines)
-            });
-            if tx.send(Event::Diff { req, result }).is_err() {
-                break;
-            }
-        }
-    });
-    work_tx
-}
-
-/// The (old, new) content pair a request diffs, per scope/staged/commit.
-/// `base_cache` holds `(head_sha, merge_base)` across calls.
-fn fetch_contents(
-    repo: &Repo,
-    cfg: &Config,
-    req: &ShowReq,
-    base_cache: &mut Option<(String, String)>,
-) -> Result<(String, String), String> {
-    let path = &req.file;
-    let old_path = req.orig_path.as_deref().unwrap_or(path);
-    let err = |e: anyhow::Error| first_line(&e.to_string());
-    let some =
-        |r: Result<Option<String>, anyhow::Error>| r.map_err(err).map(Option::unwrap_or_default);
-
-    if let Some(sha) = &req.commit {
-        // One commit's change: parent vs commit (root commit → empty old).
-        let old = some(repo.file_at(&format!("{sha}^"), old_path))?;
-        let new = some(repo.file_at(sha, path))?;
-        return Ok((old, new));
-    }
-    match req.scope {
-        Scope::Branch => {
-            let head = repo.head_sha().unwrap_or_default();
-            let mb = match base_cache {
-                Some((cached_head, mb)) if *cached_head == head => mb.clone(),
-                _ => {
-                    let (_, mb) = repo.resolve_base(&cfg.base).map_err(err)?;
-                    *base_cache = Some((head, mb.clone()));
-                    mb
-                }
-            };
-            let old = some(repo.file_at(&mb, old_path))?;
-            let new = repo.file_in_worktree(path).unwrap_or_default();
-            Ok((old, new))
-        }
-        Scope::Worktree if req.cached => {
-            // Staged view: HEAD vs index.
-            let old = some(repo.file_at("HEAD", old_path))?;
-            let new = some(repo.file_at(":0", path))?;
-            Ok((old, new))
-        }
-        Scope::Worktree if req.kind == crate::git::ChangeKind::Conflicted => {
-            // Unmerged paths have no stage-0 entry; diff "ours" (stage 2,
-            // falling back to HEAD) against the conflicted worktree file so
-            // the markers show as real insertions instead of a bogus
-            // whole-file add.
-            let ours = match repo.file_at(":2", path).map_err(err)? {
-                Some(content) => content,
-                None => some(repo.file_at("HEAD", path))?,
-            };
-            let new = repo.file_in_worktree(path).unwrap_or_default();
-            Ok((ours, new))
-        }
-        Scope::Worktree => {
-            // Unstaged view: index vs working tree (untracked → empty old).
-            let old = some(repo.file_at(":0", path))?;
-            let new = repo.file_in_worktree(path).unwrap_or_default();
-            Ok((old, new))
-        }
-    }
-}
-
-/// First line of an error message (git failures embed stderr; we want the top).
-fn first_line(s: &str) -> String {
-    s.lines().next().unwrap_or(s).trim().to_string()
 }
 
 /// Repo root: `GITVIEW_REPO` under herdr, else discover from cwd (dev mode).

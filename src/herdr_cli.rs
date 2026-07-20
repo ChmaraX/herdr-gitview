@@ -1,13 +1,13 @@
 //! Tiny helpers for panes talking to the herdr CLI at runtime (the
 //! orchestrator has its own richer wrapper; panes only need focus).
 
+use std::ffi::OsStr;
 use std::process::Command;
 
 /// Focus a pane (best-effort, fire-and-forget). Used for the editor handoff:
 /// list → preview when an edit starts, preview → list when it ends.
-pub fn focus_pane(pane_id: &str) {
-    let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    match Command::new(&bin)
+pub fn focus_pane(bin: &OsStr, pane_id: &str) {
+    match Command::new(bin)
         .args(["plugin", "pane", "focus", pane_id])
         .output()
     {

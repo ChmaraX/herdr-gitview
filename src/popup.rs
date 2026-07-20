@@ -6,12 +6,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// Does this herdr support popup plugin panes (≥0.7.4)?
-pub fn supported() -> bool {
-    if std::env::var_os("HERDR_PANE_ID").is_none() {
+pub fn supported(env: &crate::hostenv::HostEnv) -> bool {
+    if !env.in_herdr() {
         return false; // standalone
     }
-    let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let Ok(out) = Command::new(bin).arg("--version").output() else {
+    let Ok(out) = Command::new(&env.herdr_bin).arg("--version").output() else {
         return false;
     };
     let text = String::from_utf8_lossy(&out.stdout);
@@ -40,6 +39,7 @@ struct Pending<K> {
     key: K,
     path: PathBuf,
     pane_id: Option<String>,
+    herdr_bin: std::ffi::OsString,
     last_liveness_check: std::time::Instant,
 }
 
@@ -47,11 +47,16 @@ struct Pending<K> {
 /// that dies without writing its answer can never wedge the caller.
 pub struct Popups<K> {
     pending: Option<Pending<K>>,
+    /// How often `poll` probes a silent popup for liveness (tests shrink it).
+    pub liveness_interval: std::time::Duration,
 }
 
 impl<K> Default for Popups<K> {
     fn default() -> Self {
-        Popups { pending: None }
+        Popups {
+            pending: None,
+            liveness_interval: std::time::Duration::from_secs(2),
+        }
     }
 }
 
@@ -68,6 +73,7 @@ impl<K> Popups<K> {
     /// newline-sanitized (newlines would break herdr's --env framing).
     pub fn open(
         &mut self,
+        env: &crate::hostenv::HostEnv,
         entrypoint: &str,
         envs: &[(String, String)],
         (width, height): (u16, u16),
@@ -76,14 +82,13 @@ impl<K> Popups<K> {
         if self.pending.is_some() {
             return false;
         }
-        let Some(sock) = std::env::var_os("GITVIEW_SOCKET") else {
+        let Some(sock) = env.socket.clone() else {
             return false;
         };
-        let answer = PathBuf::from(sock).with_extension(format!("{entrypoint}.answer"));
+        let answer = sock.with_extension(format!("{entrypoint}.answer"));
         let _ = std::fs::remove_file(&answer);
 
-        let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-        let mut cmd = Command::new(bin);
+        let mut cmd = Command::new(&env.herdr_bin);
         cmd.args(["plugin", "pane", "open", "--plugin", "chmarax.gitview"])
             .args([
                 "--entrypoint",
@@ -125,6 +130,7 @@ impl<K> Popups<K> {
             key,
             path: answer,
             pane_id,
+            herdr_bin: env.herdr_bin.clone(),
             last_liveness_check: std::time::Instant::now(),
         });
         true
@@ -143,10 +149,10 @@ impl<K> Popups<K> {
                 Answer::Text(answer.trim_end_matches('\n').to_string()),
             ));
         }
-        if pending.last_liveness_check.elapsed() > std::time::Duration::from_secs(2) {
+        if pending.last_liveness_check.elapsed() > self.liveness_interval {
             pending.last_liveness_check = std::time::Instant::now();
             let alive = match &pending.pane_id {
-                Some(id) => pane_alive(id),
+                Some(id) => pane_alive(&pending.herdr_bin, id),
                 None => true, // can't check — rely on the answer file
             };
             if !alive {
@@ -171,8 +177,7 @@ fn find_pane_id(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn pane_alive(pane_id: &str) -> bool {
-    let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
+fn pane_alive(bin: &std::ffi::OsStr, pane_id: &str) -> bool {
     Command::new(bin)
         .args(["pane", "get", pane_id])
         .output()

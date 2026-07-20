@@ -170,6 +170,20 @@ impl Conn {
     /// into `T` and pushes it into `tx`. Undecodable lines (e.g. a half-written
     /// frame) are logged and skipped; EOF or a dropped `tx` ends the thread.
     /// Returns the `Conn` so the caller can keep sending.
+    /// A connected in-process pair (real unix sockets, no filesystem path).
+    /// Used by the scenario tests to wire the two panes together directly.
+    pub fn pair() -> std::io::Result<(Conn, Conn)> {
+        let (a, b) = UnixStream::pair()?;
+        let make = |s: UnixStream| -> std::io::Result<Conn> {
+            let reader = s.try_clone()?;
+            Ok(Conn {
+                writer: s,
+                reader: Some(BufReader::new(reader)),
+            })
+        };
+        Ok((make(a)?, make(b)?))
+    }
+
     pub fn spawn_reader<T: DeserializeOwned + Send + 'static>(mut self, tx: Sender<T>) -> Conn {
         if let Some(reader) = self.reader.take() {
             std::thread::spawn(move || {

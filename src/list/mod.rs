@@ -1,10 +1,13 @@
-//! The changed-file list pane: state (`app`), rendering (`ui`), and the
-//! `run` event loop that wires threads, git, and IPC to the preview together.
+//! The changed-file list pane: state (`app`), rendering (`ui`), the
+//! event-loop logic (`session`), and the thin `run` shell that wires
+//! threads and the terminal around a `Session`.
 
 pub mod app;
+pub mod session;
 pub mod ui;
 
 pub use app::App;
+pub use session::{Event, Session};
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -13,43 +16,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event as CtEvent, KeyEvent, KeyEventKind, MouseEvent};
+use crossterm::event::{self, Event as CtEvent, KeyEventKind};
 
 use crate::config::Config;
-use crate::git::{FileEntry, Repo, Scope};
-use crate::ipc::{Conn, ToList, ToPreview};
-use crate::keymap::{Action, Keymap};
-
-/// Debounce window for re-showing the diff while the cursor moves quickly.
-const SHOW_DEBOUNCE: Duration = Duration::from_millis(40);
-
-/// Everything the main loop can be woken by.
-enum Event {
-    Key(KeyEvent),
-    /// The background connector reached the preview socket.
-    Connected(Conn),
-    Mouse(MouseEvent),
-    /// Poll thread noticed a change and reloaded the entry vector.
-    Refresh(Vec<FileEntry>),
-    /// A message from the preview pane.
-    Ipc(ToList),
-    /// The preview pane went away (socket EOF).
-    IpcClosed,
-    /// Background nvim probe finished. `unsaved: Some(false)` means the
-    /// editor was clean and has already been told to quit; `Some(true)` means
-    /// it holds unsaved buffers; `None` means it couldn't be asked.
-    EditorProbe {
-        then: Option<app::EditorThen>,
-        unsaved: Option<bool>,
-    },
-}
-
-/// Scope info the poll thread needs to reload with the right git command.
-struct Shared {
-    scope: Scope,
-    merge_base: Option<String>,
-    show_untracked: bool,
-}
+use crate::git::{Repo, Scope};
+use crate::hostenv::HostEnv;
+use crate::keymap::Keymap;
+use session::Shared;
 
 pub fn run() -> Result<()> {
     crate::logx::init_panic_hook();
@@ -59,8 +32,8 @@ pub fn run() -> Result<()> {
     let (keys, keymap_err) = build_keymap(&cfg);
     let repo = resolve_repo()?;
     let poll_ms = cfg.poll_ms;
-    let show_untracked = cfg.show_untracked;
     let root = repo.root.clone();
+    let env = HostEnv::from_process();
 
     let mut app = App::new(repo, cfg, keys)?;
     if let Some(err) = keymap_err {
@@ -74,30 +47,27 @@ pub fn run() -> Result<()> {
     let (tx, rx) = mpsc::channel::<Event>();
     spawn_input_thread(tx.clone());
 
-    let shared = Arc::new(Mutex::new(Shared {
-        scope: app.scope,
-        merge_base: app.merge_base.clone(),
-        show_untracked,
-    }));
-    if poll_ms > 0 {
-        spawn_poll_thread(tx.clone(), Arc::clone(&shared), Repo { root }, poll_ms);
-    }
+    let popup_supported = crate::popup::supported(&env);
+    let in_herdr = env.in_herdr();
+    let socket = env.socket.clone();
+    let mut session = Session::new(app, env, tx.clone(), popup_supported);
 
-    // Connect to the preview pane's socket, if we are running under herdr.
-    // Standalone (`GITVIEW_SOCKET` unset) renders the list only — no IPC.
+    if poll_ms > 0 {
+        spawn_poll_thread(tx.clone(), session.shared_handle(), Repo { root }, poll_ms);
+    }
     // Connect to the preview in the background so a slow/absent preview
     // never blanks or blocks the list UI; the Conn arrives as an event.
-    if spawn_connector(&tx, Duration::from_secs(10)) {
-        app.set_status("connecting…");
+    if session::spawn_connector(&tx, socket, Duration::from_secs(10)) {
+        session.app.set_status("connecting…");
     }
 
     let mut terminal = ratatui::init();
     crate::term::enable_mouse();
-    let result = event_loop(&mut terminal, &mut app, &rx, &tx, &shared);
+    let result = event_loop(&mut terminal, &mut session, &rx);
     crate::term::disable_mouse();
     ratatui::restore();
 
-    if app.should_quit && std::env::var_os("HERDR_PANE_ID").is_some() {
+    if session.app.should_quit && in_herdr {
         crate::orchestrate::spawn_close();
     }
     result
@@ -105,549 +75,22 @@ pub fn run() -> Result<()> {
 
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
-    app: &mut App,
+    session: &mut Session,
     rx: &mpsc::Receiver<Event>,
-    tx: &Sender<Event>,
-    shared: &Arc<Mutex<Shared>>,
 ) -> Result<()> {
-    let mut conn: Option<Conn> = None;
-    // Debounced diff refresh: mark dirty on selection/scope/view change, flush
-    // after `SHOW_DEBOUNCE` in the timeout arm. Start dirty so the first frame
-    // sends the initial Show.
-    let mut show_dirty = true;
-    let mut dirty_since = Instant::now();
-    // At most one background nvim probe at a time.
-    let mut probe_pending = false;
-    // Native popups (herdr ≥0.7.4): one at a time, liveness-tracked.
-    let popup_supported = crate::popup::supported();
-    let mut popups: crate::popup::Popups<ListPopup> = Default::default();
-
     loop {
-        terminal.draw(|frame| ui::render(frame, app))?;
+        terminal.draw(|frame| ui::render(frame, &mut session.app))?;
 
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Event::Connected(new_conn)) => {
-                conn = Some(new_conn);
-                show_dirty = true;
-                dirty_since = Instant::now();
-            }
-            Ok(Event::Key(key)) => {
-                // Enter/commit need the IPC link + focus handoff, so they are
-                // handled here; App::on_key covers the plain cases.
-                let free = conn.is_some() && app.busy.is_none();
-                let action = app.keys.action(&key);
-                let before = show_key(app);
-                // An open modal captures every key — checked first so no
-                // special-cased arm below can bypass it.
-                if app.modal.is_some() {
-                    app.on_key(key);
-                // Enter activates the selected row (open commit / edit file).
-                } else if action == Some(Action::Edit) {
-                    activate_selection(app, &mut conn);
-                } else if free && action == Some(Action::Commit) && app.mode == app::Mode::Files {
-                    start_commit(app, &mut conn);
-                // `r` with a dead preview link retries the connection too.
-                } else if action == Some(Action::Refresh) && conn.is_none() {
-                    if spawn_connector(tx, Duration::from_secs(2)) {
-                        app.set_status("reconnecting…");
-                    }
-                    app.on_key(key); // still do the refresh itself
-                // Diff scroll/page keys are forwarded straight to the preview
-                // (skipped while nvim owns that PTY).
-                } else if app.busy.is_none()
-                    && let Some(msg) = scroll_message(app, &key)
-                {
-                    send(&mut conn, &msg);
-                } else {
-                    app.on_key(key);
-                    sync_shared(shared, app);
-                }
-                // Any path that changed what should be shown (moving the
-                // cursor, but also entering a commit's files or the notes
-                // view) re-Shows after the debounce.
-                if show_key(app) != before {
-                    show_dirty = true;
-                    dirty_since = Instant::now();
-                }
-                // Content changed under the same selection (stage/discard).
-                if app.needs_reshow {
-                    app.needs_reshow = false;
-                    show_dirty = true;
-                    dirty_since = Instant::now();
-                }
-                // Editor-close triggers, probed off-thread so the UI never
-                // stalls on nvim's remote API:
-                //  - an action explicitly requested it (q / c), or
-                //  - the cursor moved while editing — a clean nvim quits so
-                //    the diff preview comes back as you browse.
-                if app.busy.is_some() && !probe_pending {
-                    // Browsing while a clean nvim is open closes it so the
-                    // diff preview returns (explicit q/c requests are picked
-                    // up every loop tick below).
-                    let moved = matches!(
-                        action,
-                        Some(Action::Down | Action::Up | Action::Top | Action::Bottom)
-                    ) && app.modal.is_none();
-                    if moved && app.editor_close_request.is_none() {
-                        probe_pending = true;
-                        spawn_editor_probe(tx.clone(), app.cfg.editor.first().cloned(), None);
-                    }
-                }
-            }
-            Ok(Event::Mouse(m)) => {
-                let before = show_key(app);
-                let activate = app.on_mouse(m.kind, m.row);
-                if activate {
-                    activate_selection(app, &mut conn);
-                }
-                if show_key(app) != before {
-                    show_dirty = true;
-                    dirty_since = Instant::now();
-                }
-            }
-            Ok(Event::EditorProbe { then, unsaved }) => {
-                probe_pending = false;
-                if app.busy.is_none() {
-                    // The editor already exited (EditDone won the race) — a
-                    // stale probe result must not schedule anything.
-                    continue;
-                }
-                match (unsaved, then) {
-                    // Clean — already told to quit; EditDone resumes `then`.
-                    (Some(false), then) => app.after_edit = then,
-                    // Dirty + an action waiting → ask.
-                    (Some(true), Some(then)) => app.modal = Some(app::Modal::EditorClose { then }),
-                    // Dirty + just browsing → leave nvim alone, hint once.
-                    (Some(true), None) => app.set_status("editor has unsaved changes — stays open"),
-                    (None, Some(_)) => app.set_status("editor is open — close it first"),
-                    (None, None) => {}
-                }
-            }
-            Ok(Event::Refresh(entries)) => {
-                app.apply_refresh(entries);
-                // Content may have changed under the cursor — re-show the diff.
-                show_dirty = true;
-                dirty_since = Instant::now();
-            }
-            Ok(Event::Ipc(ToList::Ready)) => {
-                if matches!(app.active_status(), Some("connecting…")) {
-                    app.status_msg = None;
-                }
-            }
-            // Editor or commit finished on the preview PTY: same unlock /
-            // refresh / refocus dance, then the message-or-resume tail.
-            Ok(Event::Ipc(msg @ (ToList::EditDone { .. } | ToList::GitDone { .. }))) => {
-                app.on_edit_done();
-                show_dirty = true;
-                dirty_since = Instant::now();
-                focus_self();
-                match msg {
-                    ToList::EditDone { .. } => match app.after_edit.take() {
-                        Some(app::EditorThen::QuitView) => app.should_quit = true,
-                        Some(app::EditorThen::Commit) => start_commit(app, &mut conn),
-                        None => {}
-                    },
-                    ToList::GitDone { ok } => {
-                        let summary = ok.then(|| app.repo.last_commit_summary()).flatten();
-                        match summary {
-                            Some(s) => app.set_status(format!("committed {s}")),
-                            None => app.set_status("commit aborted"),
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            Ok(Event::Ipc(ToList::ShowNotesView)) => {
-                if app.mode != app::Mode::Notes && !app.notes.is_empty() {
-                    app.toggle_notes_view();
-                }
-                focus_self();
-                show_dirty = true;
-                dirty_since = Instant::now();
-            }
-            Ok(Event::Ipc(ToList::Notes { notes })) => {
-                app.notes = notes;
-                if app.mode == app::Mode::Notes {
-                    app.rebuild_rows();
-                    if app.notes.is_empty() {
-                        // Sent or last one deleted — nothing left to look at.
-                        app.toggle_notes_view();
-                    }
-                }
-            }
-            Ok(Event::IpcClosed) => conn = None, // preview gone; keep list usable
+            Ok(event) => session.on_event(event),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
+        session.tick();
 
-        // Explicit editor-close requests (q / c while nvim is open): probed
-        // off-thread; a request arriving mid-probe waits here until the
-        // probe settles instead of being dropped.
-        if app.busy.is_some()
-            && !probe_pending
-            && let Some(then) = app.editor_close_request.take()
-        {
-            probe_pending = true;
-            spawn_editor_probe(tx.clone(), app.cfg.editor.first().cloned(), Some(then));
-        }
-        if app.busy.is_none() {
-            app.editor_close_request = None; // editor already gone
-        }
-
-        // Popups (whole-file annotate, note edit, confirm dialogs) run
-        // through one manager with liveness tracking: a popup pane dying
-        // without an answer cancels the interaction instead of wedging it.
-        if let Some(file) = app.annotate_request.take() {
-            let envs = [(
-                "GITVIEW_ASK_TEXT".to_string(),
-                format!("note for {}", file.display()),
-            )];
-            if !popups.open(
-                "annotate",
-                &envs,
-                (64, 8),
-                ListPopup::AnnotateFile(file.clone()),
-            ) {
-                if popups.is_open() {
-                    app.annotate_request = Some(file); // retry when free
-                } else {
-                    app.set_status("couldn't open the note popup (see debug log)");
-                }
-            }
-        }
-        if let Some((id, current)) = app.edit_note_request.take() {
-            let envs = [
-                ("GITVIEW_ASK_TEXT".to_string(), "edit note".to_string()),
-                ("GITVIEW_PREFILL".to_string(), current.clone()),
-            ];
-            if !popups.open("annotate", &envs, (64, 8), ListPopup::EditNote(id)) {
-                if popups.is_open() {
-                    app.edit_note_request = Some((id, current));
-                } else {
-                    app.set_status("couldn't open the edit popup (see debug log)");
-                }
-            }
-        }
-        // Confirm modals become native floating popup panes when herdr
-        // supports them; the in-pane overlay is the fallback.
-        if popup_supported
-            && !app.modal_external
-            && !popups.is_open()
-            && matches!(
-                app.modal,
-                Some(app::Modal::Confirm { .. } | app::Modal::EditorClose { .. })
-            )
-            && open_popup_confirm(app, &mut popups)
-        {
-            app.modal_external = true;
-        }
-        // Popup outcomes, fed through the same handling as in-pane input.
-        match popups.poll() {
-            Some((ListPopup::Confirm, answer)) => {
-                app.modal_external = false;
-                let code = match answer {
-                    crate::popup::Answer::Text(text) => match text.trim() {
-                        "y" => crossterm::event::KeyCode::Char('y'),
-                        "n" => crossterm::event::KeyCode::Char('n'),
-                        _ => crossterm::event::KeyCode::Esc,
-                    },
-                    crate::popup::Answer::Dead => crossterm::event::KeyCode::Esc,
-                };
-                app.on_key(KeyEvent::new(code, crossterm::event::KeyModifiers::NONE));
-                if app.needs_reshow {
-                    app.needs_reshow = false;
-                    show_dirty = true;
-                    dirty_since = Instant::now();
-                }
-            }
-            Some((ListPopup::AnnotateFile(file), crate::popup::Answer::Text(text))) => {
-                if !text.is_empty() {
-                    send(&mut conn, &ToPreview::AddNote { file, text });
-                }
-            }
-            Some((ListPopup::EditNote(id), crate::popup::Answer::Text(text))) => {
-                if !text.is_empty() {
-                    send(&mut conn, &ToPreview::EditNote { id, text });
-                }
-            }
-            Some((_, crate::popup::Answer::Dead)) | None => {}
-        }
-        // `p`: hand off to the preview (it owns the notes + picker flow).
-        if app.send_notes_request {
-            app.send_notes_request = false;
-            send(&mut conn, &ToPreview::SendNotes);
-        }
-        if let Some(id) = app.delete_note_request.take() {
-            send(&mut conn, &ToPreview::DeleteNote { id });
-        }
-
-        if show_dirty && dirty_since.elapsed() >= SHOW_DEBOUNCE {
-            if app.mode == app::Mode::Notes {
-                // Hovering a note: show its file's diff + scroll to the card.
-                if let Some(note) = app.selected_note() {
-                    let id = note.id;
-                    if let Some(msg) = note_show(app, id) {
-                        send(&mut conn, &msg);
-                    }
-                    send(&mut conn, &ToPreview::FocusNote { id });
-                }
-            } else {
-                match current_show(app) {
-                    Some(msg) => send(&mut conn, &msg),
-                    // Nothing selectable left (e.g. the last change was
-                    // discarded/committed) — clear the stale diff.
-                    None => send(&mut conn, &ToPreview::Clear),
-                }
-            }
-            show_dirty = false;
-        }
-
-        if app.should_quit {
-            send(&mut conn, &ToPreview::Quit);
+        if session.should_quit() {
             return Ok(());
         }
-    }
-}
-
-/// Connect to the preview socket on a background thread; the wired `Conn`
-/// arrives as `Event::Connected`. Returns false in standalone mode.
-fn spawn_connector(tx: &Sender<Event>, budget: Duration) -> bool {
-    let Some(sock) = std::env::var_os("GITVIEW_SOCKET").map(PathBuf::from) else {
-        return false; // standalone — no preview to talk to
-    };
-    let tx = tx.clone();
-    thread::spawn(move || match Conn::connect_retry(&sock, budget) {
-        Ok(conn) => {
-            let (ipc_tx, ipc_rx) = mpsc::channel::<ToList>();
-            let conn = conn.spawn_reader(ipc_tx);
-            spawn_ipc_forwarder(ipc_rx, tx.clone());
-            let _ = tx.send(Event::Connected(conn));
-        }
-        Err(err) => crate::logx::log(format!("list: preview connect failed: {err}")),
-    });
-    true
-}
-
-/// Enter on the selected entry: guard deleted files, then hand the preview
-/// pane the Edit and the focus. The lockout ends when `EditDone` arrives.
-fn start_edit(app: &mut App, conn: &mut Option<Conn>) {
-    let Some((entry, _)) = app.selected_entry() else {
-        return; // empty list or header row
-    };
-    // The editor always opens the *current* file — also from the history
-    // view — so guard on what exists on disk, not on the change kind.
-    if !app.repo.root.join(&entry.path).exists() {
-        app.set_status("file no longer exists — nothing to edit");
-        return;
-    }
-    let file = entry.path.clone();
-    send(conn, &ToPreview::Edit { file: file.clone() });
-    if conn.is_none() {
-        return; // send failed — preview link just broke
-    }
-    app.busy = Some(format!("editing {}…", file.display()));
-    focus_preview();
-}
-
-/// Enter (or a double-click): open the selected commit in the log view, or
-/// the selected file in the editor — remotely switching a running nvim.
-fn activate_selection(app: &mut App, conn: &mut Option<Conn>) {
-    match app.mode {
-        app::Mode::Log => app.open_commit(),
-        app::Mode::Notes => {
-            if let Some(note) = app.selected_note() {
-                app.edit_note_request = Some((note.id, note.text.clone()));
-            }
-        }
-        app::Mode::Files | app::Mode::CommitFiles => {
-            if app.busy.is_some() {
-                remote_open(app);
-            } else if conn.is_some() {
-                start_edit(app, conn);
-            } else if std::env::var_os("HERDR_PANE_ID").is_none() {
-                app.set_status("editing needs the preview pane (run inside herdr)");
-            } else {
-                app.set_status("preview not connected — press r to reconnect");
-            }
-        }
-    }
-}
-
-/// Which popup interaction an answer belongs to.
-enum ListPopup {
-    Confirm,
-    AnnotateFile(PathBuf),
-    EditNote(u64),
-}
-
-/// Open the current modal as a native floating popup pane; false when it
-/// could not be opened (caller falls back to the in-pane overlay).
-fn open_popup_confirm(app: &App, popups: &mut crate::popup::Popups<ListPopup>) -> bool {
-    let text = match &app.modal {
-        Some(app::Modal::Confirm { text, .. }) => text.clone(),
-        Some(app::Modal::EditorClose { .. }) => {
-            "The editor has unsaved changes. Save them? (no discards)".to_string()
-        }
-        _ => return false,
-    };
-    popups.open(
-        "ask",
-        &[("GITVIEW_ASK_TEXT".to_string(), text)],
-        (60, 7),
-        ListPopup::Confirm,
-    )
-}
-
-/// Probe the remote nvim on a background thread: a clean editor is told to
-/// quit immediately; the result comes back as `Event::EditorProbe`.
-fn spawn_editor_probe(tx: Sender<Event>, editor: Option<String>, then: Option<app::EditorThen>) {
-    thread::spawn(move || {
-        let editor = editor.unwrap_or_default();
-        let unsaved = crate::nvim::has_unsaved(&editor);
-        if unsaved == Some(false) {
-            crate::nvim::request_close(&editor, false);
-        }
-        let _ = tx.send(Event::EditorProbe { then, unsaved });
-    });
-}
-
-/// Enter while the editor is running: nvim was started with `--listen`, so
-/// tell it to open the newly selected file instead of refusing the key.
-fn remote_open(app: &mut App) {
-    let Some((entry, _)) = app.selected_entry() else {
-        return;
-    };
-    let abs = app.repo.root.join(&entry.path);
-    if !abs.exists() {
-        app.set_status("file no longer exists — nothing to edit");
-        return;
-    }
-    let editor = app.cfg.editor.first().cloned().unwrap_or_default();
-    if crate::nvim::open_file(&editor, &abs) {
-        app.busy = Some(format!("editing {}…", entry.path.display()));
-        focus_preview();
-    } else if crate::nvim::server_path()
-        .map(|s| s.exists())
-        .unwrap_or(false)
-    {
-        app.set_status("could not switch the editor's file");
-    } else {
-        app.set_status("editor is open — close it first");
-    }
-}
-
-/// `c`: preflight the staged set, then run `git commit -e` on the preview PTY
-/// (nvim opens the commit template there). Same lockout as editing.
-fn start_commit(app: &mut App, conn: &mut Option<Conn>) {
-    match app.repo.staged_count() {
-        Ok(0) => {
-            app.set_status("nothing staged — s to stage files");
-            return;
-        }
-        Err(err) => {
-            app.set_status(format!("commit preflight failed: {err}"));
-            return;
-        }
-        Ok(_) => {}
-    }
-    send(
-        conn,
-        &ToPreview::GitInPane {
-            argv: vec!["commit".to_string(), "-e".to_string()],
-        },
-    );
-    if conn.is_none() {
-        return;
-    }
-    app.busy = Some("committing…".to_string());
-    focus_preview();
-}
-
-fn focus_preview() {
-    if let Some(preview) = std::env::var_os("GITVIEW_PREVIEW_PANE") {
-        crate::herdr_cli::focus_pane(&preview.to_string_lossy());
-    }
-}
-
-fn focus_self() {
-    if let Some(own) = std::env::var_os("HERDR_PANE_ID") {
-        crate::herdr_cli::focus_pane(&own.to_string_lossy());
-    }
-}
-
-/// The Show message for the current selection, or `None` when nothing
-/// diffable is selected (headers, commit rows, empty list).
-fn current_show(app: &App) -> Option<ToPreview> {
-    let (e, staged) = app.selected_entry()?;
-    let commit = match app.mode {
-        app::Mode::CommitFiles => Some(app.commit.as_ref()?.sha.clone()),
-        _ => None,
-    };
-    Some(ToPreview::Show {
-        file: e.path.clone(),
-        orig_path: e.orig_path.clone(),
-        scope: app.scope,
-        cached: staged && app.scope == Scope::Worktree,
-        kind: e.kind,
-        commit,
-    })
-}
-
-/// Identity of what the preview is showing; a change here means "re-Show".
-fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
-    if app.mode == app::Mode::Notes {
-        let note = app.selected_note()?;
-        return Some((
-            note.file.clone(),
-            app.scope,
-            false,
-            Some(format!("note-{}", note.id)),
-        ));
-    }
-    let (e, staged) = app.selected_entry()?;
-    let commit = match app.mode {
-        app::Mode::CommitFiles => app.commit.as_ref().map(|c| c.sha.clone()),
-        _ => None,
-    };
-    Some((e.path.clone(), app.scope, staged, commit))
-}
-
-/// The Show for a hovered note: its file in the note's own context — the
-/// commit it was made against (history notes) or the live worktree diff.
-fn note_show(app: &App, id: u64) -> Option<ToPreview> {
-    let file = &app.notes.iter().find(|n| n.id == id)?.file;
-    // Prefer real entry metadata when the file is among the current entries;
-    // otherwise synthesize (kind only affects rename pathspecs).
-    let entry = app.entries.iter().find(|e| &e.path == file);
-    Some(ToPreview::Show {
-        file: file.clone(),
-        orig_path: entry.and_then(|e| e.orig_path.clone()),
-        scope: Scope::Worktree,
-        cached: false,
-        kind: entry
-            .map(|e| e.kind)
-            .unwrap_or(crate::git::ChangeKind::Modified),
-        commit: None,
-    })
-}
-
-/// Translate a diff scroll/page key into the message the preview understands,
-/// or `None` if this key is not a scroll key.
-fn scroll_message(app: &App, key: &KeyEvent) -> Option<ToPreview> {
-    match app.keys.action(key)? {
-        Action::ScrollDown => Some(ToPreview::Scroll { delta: 1 }),
-        Action::ScrollUp => Some(ToPreview::Scroll { delta: -1 }),
-        Action::HalfPageDown => Some(ToPreview::Page {
-            down: true,
-            full: false,
-        }),
-        Action::HalfPageUp => Some(ToPreview::Page {
-            down: false,
-            full: false,
-        }),
-        Action::DiffTop => Some(ToPreview::Scroll { delta: i32::MIN }),
-        Action::DiffBottom => Some(ToPreview::Scroll { delta: i32::MAX }),
-        _ => None,
     }
 }
 
@@ -660,22 +103,6 @@ fn build_keymap(cfg: &Config) -> (Keymap, Option<String>) {
             Keymap::build(&Default::default()).expect("default keymap is valid"),
             Some(format!("keybindings ignored: {err}")),
         ),
-    }
-}
-
-/// Best-effort send; a broken pipe just drops the preview link.
-fn send(conn: &mut Option<Conn>, msg: &ToPreview) {
-    if let Some(c) = conn
-        && c.send(msg).is_err()
-    {
-        *conn = None;
-    }
-}
-
-fn sync_shared(shared: &Arc<Mutex<Shared>>, app: &App) {
-    if let Ok(mut s) = shared.lock() {
-        s.scope = app.scope;
-        s.merge_base = app.merge_base.clone();
     }
 }
 
@@ -698,19 +125,6 @@ fn spawn_input_thread(tx: Sender<Event>) {
                 Err(_) => break,
             }
         }
-    });
-}
-
-/// Bridge the typed IPC reader channel into the main event channel; a closed
-/// channel (socket EOF) becomes `IpcClosed`.
-fn spawn_ipc_forwarder(ipc_rx: mpsc::Receiver<ToList>, tx: Sender<Event>) {
-    thread::spawn(move || {
-        while let Ok(msg) = ipc_rx.recv() {
-            if tx.send(Event::Ipc(msg)).is_err() {
-                return;
-            }
-        }
-        let _ = tx.send(Event::IpcClosed);
     });
 }
 

@@ -136,6 +136,8 @@ pub struct App {
     /// Edit/delete requests for the run loop (they need popups / the conn).
     pub edit_note_request: Option<(u64, String)>,
     pub delete_note_request: Option<u64>,
+    /// The nvim remote socket (injected by the session; None standalone).
+    pub nvim_server: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -199,6 +201,7 @@ impl App {
             send_notes_request: false,
             edit_note_request: None,
             delete_note_request: None,
+            nvim_server: None,
         };
         app.rebuild_rows();
         app
@@ -536,7 +539,7 @@ impl App {
     /// inline (the *probing* is what happens on a background thread).
     pub fn close_editor(&mut self, save: bool, then: EditorThen) {
         let editor = self.cfg.editor.first().cloned().unwrap_or_default();
-        if crate::nvim::request_close(&editor, save) {
+        if crate::nvim::request_close(&editor, self.nvim_server.as_deref(), save) {
             self.after_edit = Some(then);
         } else {
             self.set_status("could not close the editor");
