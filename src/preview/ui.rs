@@ -147,8 +147,16 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &PreviewApp) {
         ),
         (hint(Action::Quit), "quit"),
     ];
+    // Drop tail hints that would overflow a narrow pane.
+    let width = area.width as usize;
     let mut spans = Vec::new();
+    let mut used = 0;
     for (i, (key, label)) in pairs.into_iter().enumerate() {
+        let w = key.width() + label.width() + 2 + if i > 0 { 2 } else { 0 };
+        if used + w > width {
+            break;
+        }
+        used += w;
         if i > 0 {
             spans.push(Span::styled(" ·".to_string(), dim()));
         }

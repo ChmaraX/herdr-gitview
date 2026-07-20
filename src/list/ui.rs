@@ -332,7 +332,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             format!(" {msg}"),
             Style::new().fg(Color::Yellow),
         )),
-        None => footer_hints(app),
+        None => footer_hints(app, area.width as usize),
     };
     frame.render_widget(
         Paragraph::new(line).style(Style::new().bg(bar_bg(&app.cfg.theme))),
@@ -341,7 +341,9 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// ` key label · key label … ` — keys accented, labels dim (reviewr's look).
-fn footer_hints(app: &App) -> Line<'static> {
+/// On narrow panes, hints are dropped from the tail until the line fits;
+/// `? help` always survives so everything stays discoverable.
+fn footer_hints(app: &App, width: usize) -> Line<'static> {
     let pairs: Vec<(String, &str)> = match app.mode {
         Mode::Log => vec![
             (sym(app.keys.hint(Action::Edit)), "show commit"),
@@ -365,11 +367,46 @@ fn footer_hints(app: &App) -> Line<'static> {
             (sym(app.keys.hint(Action::Quit)), "quit"),
         ],
     };
-    let mut spans = Vec::new();
-    for (i, (key, label)) in pairs.into_iter().enumerate() {
-        if key.is_empty() {
+    hint_line(pairs, width)
+}
+
+/// Build the hint spans, dropping tail hints that would overflow `width`
+/// (the `help` pair is retained even when others are cut).
+fn hint_line(pairs: Vec<(String, &str)>, width: usize) -> Line<'static> {
+    let pair_w = |key: &str, label: &str| key.width() + label.width() + 2; // " k label"
+    let sep_w = 2; // " ·"
+
+    let pairs: Vec<(String, &str)> = pairs.into_iter().filter(|(k, _)| !k.is_empty()).collect();
+    let help = pairs.iter().position(|(_, label)| *label == "help");
+    let help_w = help
+        .map(|i| pair_w(&pairs[i].0, pairs[i].1) + sep_w)
+        .unwrap_or(0);
+
+    let mut kept: Vec<(String, &str)> = Vec::new();
+    let mut used = 0;
+    let mut cut = false;
+    for (i, (key, label)) in pairs.iter().enumerate() {
+        // After the first cut only the help pair may still enter, so the
+        // footer never shows a gap-toothed subset.
+        if cut && *label != "help" {
             continue;
         }
+        let w = pair_w(key, label) + if kept.is_empty() { 0 } else { sep_w };
+        // Reserve room for the upcoming help pair while it hasn't landed yet.
+        let reserve = match help {
+            Some(h) if h > i => help_w,
+            _ => 0,
+        };
+        if used + w + if cut { 0 } else { reserve } > width {
+            cut = true;
+            continue;
+        }
+        used += w;
+        kept.push((key.clone(), label));
+    }
+
+    let mut spans = Vec::new();
+    for (i, (key, label)) in kept.into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(" ·".to_string(), dim()));
         }

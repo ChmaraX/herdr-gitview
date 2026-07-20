@@ -158,3 +158,26 @@ fn empty_state_message() {
     let body: String = (1..H - 1).map(|y| row_text(&buf, y)).collect();
     assert!(body.contains("working tree clean"), "body: {body:?}");
 }
+
+#[test]
+fn narrow_footer_drops_tail_hints_but_keeps_help() {
+    let mut app = app_with(vec![entry(
+        "a.rs",
+        ChangeKind::Modified,
+        StageState::Unstaged,
+        1,
+        0,
+    )]);
+    // Render at 30 columns — far too narrow for the full files-mode footer.
+    let backend = TestBackend::new(30, H);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| ui::render(frame, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let footer: String = (0..30).map(|x| buf[(x, H - 1)].symbol()).collect();
+
+    assert!(footer.contains("help"), "help must survive: {footer:?}");
+    assert!(!footer.contains("quit"), "tail hints dropped: {footer:?}");
+    // Nothing rendered beyond the width (no wrap artifacts on the row above).
+    let above: String = (0..30).map(|x| buf[(x, H - 2)].symbol()).collect();
+    assert!(!above.contains("help"), "no wrapping: {above:?}");
+}
