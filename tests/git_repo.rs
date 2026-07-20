@@ -1,5 +1,5 @@
 //! Fixture tests: build real git repos in tempdirs and assert FileEntry
-//! vectors (reviewr's pattern). Each test gets its own repo.
+//! vectors. Each test gets its own repo.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

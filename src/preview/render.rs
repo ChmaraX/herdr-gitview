@@ -136,7 +136,7 @@ impl Palette {
                 gutter: (0x9a, 0xa0, 0xa6),
             }
         } else {
-            // Catppuccin-ish tints (reviewr's defaults).
+            // Catppuccin-ish tints for dark terminals.
             Palette {
                 ins_bg: (0x1f, 0x3a, 0x2a),
                 del_bg: (0x45, 0x23, 0x2f),

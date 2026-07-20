@@ -74,7 +74,7 @@ impl Repo {
         Ok(Repo { root })
     }
 
-    // ---- command wrappers (reviewr's pattern) ----------------------------
+    // ---- command wrappers -------------------------------------------------
 
     /// Run git, error on non-zero exit with stderr in the message.
     fn git(&self, args: &[&str]) -> Result<Vec<u8>> {

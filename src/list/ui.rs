@@ -107,8 +107,8 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// The surface color behind the header/footer bars (reviewr-style panels),
-/// picked to fit the configured diff theme.
+/// The surface color behind the header/footer bars, picked to fit the
+/// configured diff theme.
 fn bar_bg(flavor: &str) -> Color {
     if flavor == "light" {
         Color::Rgb(0xe6, 0xe9, 0xef)
@@ -185,7 +185,7 @@ fn header_row(title: &str, count: usize) -> ListItem<'static> {
 }
 
 /// One file row: `  <marker> <path>  <+a −d>` — marker colored by kind, dirs
-/// dimmed, stats colored green/red flush right (reviewr's look). `indent`
+/// dimmed, stats colored green/red flush right. `indent`
 /// only in the grouped worktree view.
 fn entry_row(entry: &FileEntry, width: u16, grouped: bool) -> ListItem<'static> {
     let width = width as usize;
@@ -367,7 +367,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// ` key label · key label … ` — keys accented, labels dim (reviewr's look).
+/// ` key label · key label … ` — keys accented, labels dim.
 /// On narrow panes, hints are dropped from the tail until the line fits;
 /// `? help` always survives so everything stays discoverable.
 fn footer_hints(app: &App, width: usize) -> Line<'static> {

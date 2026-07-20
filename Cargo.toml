@@ -2,6 +2,13 @@
 name = "herdr-gitview"
 version = "0.1.0"
 edition = "2024"
+description = "Two-pane git view plugin for herdr: changed files + syntax-highlighted diff, real nvim editing, staging, history, and review notes for AI agents"
+license = "MIT"
+repository = "https://github.com/adamchmara/herdr-gitview"
+readme = "README.md"
+keywords = ["herdr", "git", "tui", "diff"]
+categories = ["command-line-utilities", "development-tools"]
+publish = false
 
 [dependencies]
 anyhow = "1.0.104"
