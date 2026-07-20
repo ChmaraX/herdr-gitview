@@ -55,11 +55,23 @@ pub enum Modal {
         text: String,
         pending: PendingAction,
     },
+    /// The editor has unsaved changes and something needs it closed:
+    /// `y` saves & closes, `n` discards & closes, esc cancels.
+    EditorClose {
+        then: EditorThen,
+    },
 }
 
 /// What a confirmed modal should do.
 pub enum PendingAction {
     Discard,
+}
+
+/// What to do once the editor has been closed (delivered via EditDone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorThen {
+    QuitView,
+    Commit,
 }
 
 pub struct App {
@@ -102,6 +114,8 @@ pub struct App {
     /// changing (stage toggle, discard, edit) — the run loop re-Shows and
     /// clears it.
     pub needs_reshow: bool,
+    /// Action to resume after the editor finishes closing (EditDone).
+    pub after_edit: Option<EditorThen>,
 }
 
 impl App {
@@ -135,6 +149,7 @@ impl App {
             modal: None,
             busy: None,
             needs_reshow: false,
+            after_edit: None,
         };
         app.rebuild_rows();
         app
@@ -234,12 +249,22 @@ impl App {
             return;
         };
 
-        // Only actions that need the preview PTY (or would tear the view down
-        // under nvim's feet) are locked while it is busy; browsing and staging
-        // keep working.
-        if self.busy.is_some() && matches!(action, Action::Edit | Action::Commit | Action::Quit) {
-            self.set_status("editor is open — close it first");
-            return;
+        // While the editor owns the preview PTY, actions that need it gone
+        // close it gracefully (auto when clean, confirm modal when dirty).
+        // Everything else — including history navigation — keeps working.
+        if self.busy.is_some() {
+            match action {
+                Action::Quit if self.mode == Mode::Files => {
+                    self.request_editor_close(EditorThen::QuitView);
+                    return;
+                }
+                Action::Commit => {
+                    self.request_editor_close(EditorThen::Commit);
+                    return;
+                }
+                Action::Edit => return, // remote file switch happens in the run loop
+                _ => {}
+            }
         }
 
         match action {
@@ -351,7 +376,71 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Esc => {}
                 _ => self.modal = Some(Modal::Confirm { text, pending }), // keep open
             },
+            Some(Modal::EditorClose { then }) => match ev.code {
+                KeyCode::Char('y') | KeyCode::Enter => self.close_editor(true, then),
+                KeyCode::Char('n') => self.close_editor(false, then),
+                KeyCode::Esc => {}
+                _ => self.modal = Some(Modal::EditorClose { then }), // keep open
+            },
         }
+    }
+
+    // ---- graceful editor close --------------------------------------------
+
+    /// Something needs the editor gone: close it right away when it has no
+    /// unsaved changes, otherwise ask (save / discard / cancel).
+    fn request_editor_close(&mut self, then: EditorThen) {
+        match self.editor_has_unsaved() {
+            None => self.set_status("editor is open — close it first"), // not remote-controllable
+            Some(false) => self.close_editor(false, then),
+            Some(true) => self.modal = Some(Modal::EditorClose { then }),
+        }
+    }
+
+    /// Quit the remote nvim (`:wqa` / `:qa!`); the resumed action runs when
+    /// its exit comes back as EditDone.
+    fn close_editor(&mut self, save: bool, then: EditorThen) {
+        let keys = if save {
+            "<C-\\><C-n>:wqa<CR>"
+        } else {
+            "<C-\\><C-n>:qa!<CR>"
+        };
+        match self.editor_remote(&["--remote-send", keys]) {
+            Some(out) if out.status.success() => self.after_edit = Some(then),
+            _ => self.set_status("could not close the editor"),
+        }
+    }
+
+    /// Does the remote nvim hold modified buffers? `None` = can't ask (not
+    /// nvim, or no remote socket).
+    fn editor_has_unsaved(&self) -> Option<bool> {
+        let out = self.editor_remote(&[
+            "--remote-expr",
+            r#"len(filter(getbufinfo(), "v:val.changed"))"#,
+        ])?;
+        if !out.status.success() {
+            return None;
+        }
+        let count = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        Some(!count.is_empty() && count != "0")
+    }
+
+    /// Run an nvim remote command against the editor's `--listen` socket.
+    fn editor_remote(&self, args: &[&str]) -> Option<std::process::Output> {
+        let editor = self.cfg.editor.first()?;
+        if !editor.contains("nvim") {
+            return None;
+        }
+        let server = crate::preview::editor_server_path()?;
+        if !server.exists() {
+            return None;
+        }
+        std::process::Command::new(editor)
+            .arg("--server")
+            .arg(&server)
+            .args(args)
+            .output()
+            .ok()
     }
 
     fn run_pending(&mut self, pending: PendingAction) {

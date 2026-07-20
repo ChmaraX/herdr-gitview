@@ -53,6 +53,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match &app.modal {
         Some(Modal::Help) => render_help(frame, area, app),
         Some(Modal::Confirm { text, .. }) => render_confirm(frame, area, text),
+        Some(Modal::EditorClose { .. }) => render_confirm(
+            frame,
+            area,
+            "editor has unsaved changes — y save · n discard · esc cancel",
+        ),
         None => {}
     }
 }

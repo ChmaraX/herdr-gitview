@@ -176,6 +176,12 @@ fn event_loop(
                 show_dirty = true;
                 dirty_since = Instant::now();
                 focus_self();
+                // Resume whatever asked the editor to close.
+                match app.after_edit.take() {
+                    Some(app::EditorThen::QuitView) => app.should_quit = true,
+                    Some(app::EditorThen::Commit) => start_commit(app, &mut conn),
+                    None => {}
+                }
             }
             Ok(Event::Ipc(ToList::GitDone { ok })) => {
                 app.on_edit_done();
