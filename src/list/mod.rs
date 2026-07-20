@@ -92,9 +92,9 @@ pub fn run() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    crate::preview::enable_mouse();
+    crate::term::enable_mouse();
     let result = event_loop(&mut terminal, &mut app, &rx, &tx, &shared);
-    crate::preview::disable_mouse();
+    crate::term::disable_mouse();
     ratatui::restore();
 
     if app.should_quit && std::env::var_os("HERDR_PANE_ID").is_some() {
@@ -503,9 +503,9 @@ fn open_popup_confirm(app: &App, popups: &mut crate::popup::Popups<ListPopup>) -
 fn spawn_editor_probe(tx: Sender<Event>, editor: Option<String>, then: Option<app::EditorThen>) {
     thread::spawn(move || {
         let editor = editor.unwrap_or_default();
-        let unsaved = app::editor_has_unsaved(&editor);
+        let unsaved = crate::nvim::has_unsaved(&editor);
         if unsaved == Some(false) {
-            let _ = app::editor_remote(&editor, &["--remote-send", "<C-\\><C-n>:qa!<CR>"]);
+            crate::nvim::request_close(&editor, false);
         }
         let _ = tx.send(Event::EditorProbe { then, unsaved });
     });
@@ -523,23 +523,16 @@ fn remote_open(app: &mut App) {
         return;
     }
     let editor = app.cfg.editor.first().cloned().unwrap_or_default();
-    let server = crate::preview::editor_server_path();
-    let Some(server) = server.filter(|s| s.exists() && editor.contains("nvim")) else {
+    if crate::nvim::open_file(&editor, &abs) {
+        app.busy = Some(format!("editing {}…", entry.path.display()));
+        focus_preview();
+    } else if crate::nvim::server_path()
+        .map(|s| s.exists())
+        .unwrap_or(false)
+    {
+        app.set_status("could not switch the editor's file");
+    } else {
         app.set_status("editor is open — close it first");
-        return;
-    };
-    let result = std::process::Command::new(&editor)
-        .arg("--server")
-        .arg(&server)
-        .arg("--remote")
-        .arg(&abs)
-        .output();
-    match result {
-        Ok(out) if out.status.success() => {
-            app.busy = Some(format!("editing {}…", entry.path.display()));
-            focus_preview();
-        }
-        _ => app.set_status("could not switch the editor's file"),
     }
 }
 

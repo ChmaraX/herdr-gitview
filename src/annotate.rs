@@ -86,7 +86,7 @@ pub fn run_pick_agent() -> Result<()> {
     let mut cursor = 0usize;
 
     let mut terminal = ratatui::init();
-    crate::preview::enable_mouse();
+    crate::term::enable_mouse();
     let answer = loop {
         terminal.draw(|frame| {
             let area = frame.area();
@@ -176,7 +176,7 @@ pub fn run_pick_agent() -> Result<()> {
             _ => {}
         }
     };
-    crate::preview::disable_mouse();
+    crate::term::disable_mouse();
     ratatui::restore();
     write_answer(&answer)
 }

@@ -20,7 +20,7 @@ pub fn run() -> Result<()> {
         std::env::var("GITVIEW_ANSWER_FILE").context("GITVIEW_ANSWER_FILE not set")?;
 
     let mut terminal = ratatui::init();
-    crate::preview::enable_mouse();
+    crate::term::enable_mouse();
     let answer = loop {
         let mut yes_span: Option<(u16, u16, u16)> = None; // (y, x0, x1)
         let mut no_span: Option<(u16, u16, u16)> = None;
@@ -104,7 +104,7 @@ pub fn run() -> Result<()> {
             _ => {}
         }
     };
-    crate::preview::disable_mouse();
+    crate::term::disable_mouse();
     ratatui::restore();
 
     // Write atomically-ish: temp file + rename, so the poller never sees a

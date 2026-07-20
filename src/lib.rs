@@ -7,6 +7,8 @@ pub mod ipc;
 pub mod keymap;
 pub mod list;
 pub mod logx;
+pub mod nvim;
 pub mod orchestrate;
 pub mod popup;
 pub mod preview;
+pub mod term;

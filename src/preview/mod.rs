@@ -86,9 +86,9 @@ pub fn run() -> Result<()> {
     let work_tx = spawn_diff_worker(tx.clone(), Repo { root }, app.cfg.clone());
 
     let mut terminal = ratatui::init();
-    enable_mouse();
+    crate::term::enable_mouse();
     let result = event_loop(&mut terminal, &mut app, &rx, &tx, &work_tx, &input_paused);
-    disable_mouse();
+    crate::term::disable_mouse();
     ratatui::restore();
 
     if app.close_view && std::env::var_os("HERDR_PANE_ID").is_some() {
@@ -327,7 +327,7 @@ fn run_editor(
     let mut argv = app.cfg.editor.clone();
     // nvim gets a remote-control socket so the list pane can switch the open
     // file mid-session (Enter on another row while the editor runs).
-    let server = editor_server_path();
+    let server = crate::nvim::server_path();
     if let Some(server) = &server
         && argv.first().map(|e| e.contains("nvim")).unwrap_or(false)
     {
@@ -348,15 +348,6 @@ fn run_editor(
     if let Some(server) = &server {
         let _ = std::fs::remove_file(server);
     }
-}
-
-/// The nvim remote socket, derived from the view's IPC socket path (shared
-/// convention with the list pane).
-pub fn editor_server_path() -> Option<std::path::PathBuf> {
-    let sock = std::env::var_os("GITVIEW_SOCKET")?;
-    let mut path = std::path::PathBuf::from(sock);
-    path.set_extension("nvim");
-    Some(path)
 }
 
 /// Run `git -C <root> <argv…>` interactively on this PTY (e.g. commit -e).
@@ -390,9 +381,9 @@ fn run_suspended(
     input_paused: &Arc<AtomicBool>,
 ) -> bool {
     input_paused.store(true, Ordering::SeqCst);
-    disable_mouse(); // the child (nvim) owns mouse reporting while it runs
+    crate::term::disable_mouse(); // the child (nvim) owns mouse reporting while it runs
     let result = editor::run_on_pty(terminal, &app.repo.root.clone(), argv, envs);
-    enable_mouse();
+    crate::term::enable_mouse();
     input_paused.store(false, Ordering::SeqCst);
     match result {
         Ok(ok) => ok,
@@ -588,16 +579,6 @@ fn fetch_contents(
             Ok((old, new))
         }
     }
-}
-
-pub(crate) fn enable_mouse() {
-    use crossterm::execute;
-    let _ = execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
-}
-
-pub(crate) fn disable_mouse() {
-    use crossterm::execute;
-    let _ = execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
 }
 
 /// First line of an error message (git failures embed stderr; we want the top).

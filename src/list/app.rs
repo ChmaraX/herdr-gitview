@@ -515,15 +515,11 @@ impl App {
     /// its exit comes back as EditDone. One remote-send is fast enough to do
     /// inline (the *probing* is what happens on a background thread).
     pub fn close_editor(&mut self, save: bool, then: EditorThen) {
-        let keys = if save {
-            "<C-\\><C-n>:wqa<CR>"
-        } else {
-            "<C-\\><C-n>:qa!<CR>"
-        };
         let editor = self.cfg.editor.first().cloned().unwrap_or_default();
-        match editor_remote(&editor, &["--remote-send", keys]) {
-            Some(out) if out.status.success() => self.after_edit = Some(then),
-            _ => self.set_status("could not close the editor"),
+        if crate::nvim::request_close(&editor, save) {
+            self.after_edit = Some(then);
+        } else {
+            self.set_status("could not close the editor");
         }
     }
 
@@ -792,39 +788,4 @@ impl App {
 /// First line of an error (git errors embed stderr; the top line is the news).
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or(s).trim().to_string()
-}
-
-/// Run an nvim remote command against the editor's `--listen` socket.
-/// `None` = not remote-controllable (not nvim, or no live socket).
-pub(crate) fn editor_remote(editor: &str, args: &[&str]) -> Option<std::process::Output> {
-    if !editor.contains("nvim") {
-        return None;
-    }
-    let server = crate::preview::editor_server_path()?;
-    if !server.exists() {
-        return None;
-    }
-    std::process::Command::new(editor)
-        .arg("--server")
-        .arg(&server)
-        .args(args)
-        .output()
-        .ok()
-}
-
-/// Does the remote nvim hold modified buffers? Runs two child processes —
-/// call from a background thread, never the UI loop.
-pub(crate) fn editor_has_unsaved(editor: &str) -> Option<bool> {
-    let out = editor_remote(
-        editor,
-        &[
-            "--remote-expr",
-            r#"len(filter(getbufinfo(), "v:val.changed"))"#,
-        ],
-    )?;
-    if !out.status.success() {
-        return None;
-    }
-    let count = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Some(!count.is_empty() && count != "0")
 }
