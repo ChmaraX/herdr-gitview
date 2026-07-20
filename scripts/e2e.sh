@@ -7,7 +7,7 @@ set -euo pipefail
 
 herdr="${HERDR_BIN_PATH:-herdr}"
 repo="$(git rev-parse --show-toplevel)"
-state_dir="${HERDR_PLUGIN_STATE_DIR:-$HOME/.local/state/herdr/plugins/adamchmara.gitview}"
+state_dir="${HERDR_PLUGIN_STATE_DIR:-$HOME/.local/state/herdr/plugins/chmarax.gitview}"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 pane_of() { # $1 = preview_pane | list_pane
