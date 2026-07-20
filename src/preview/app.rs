@@ -404,18 +404,37 @@ impl PreviewApp {
         let Some(action) = self.keys.action(&ev) else {
             return;
         };
+        let selecting = self.select_anchor.is_some();
         match action {
-            Action::Down | Action::ScrollDown => self.move_cursor(1),
-            Action::Up | Action::ScrollUp => self.move_cursor(-1),
-            Action::HalfPageDown => self.move_cursor(self.viewport_h.max(2) as i32 / 2),
-            Action::HalfPageUp => self.move_cursor(-(self.viewport_h.max(2) as i32) / 2),
+            // Plain scrolling normally; cursor movement while selecting.
+            Action::Down | Action::ScrollDown if selecting => self.move_cursor(1),
+            Action::Up | Action::ScrollUp if selecting => self.move_cursor(-1),
+            Action::Down | Action::ScrollDown => self.scroll_by(1),
+            Action::Up | Action::ScrollUp => self.scroll_by(-1),
+            Action::HalfPageDown if selecting => {
+                self.move_cursor(self.viewport_h.max(2) as i32 / 2)
+            }
+            Action::HalfPageUp if selecting => {
+                self.move_cursor(-(self.viewport_h.max(2) as i32) / 2)
+            }
+            Action::HalfPageDown => self.page(true, false),
+            Action::HalfPageUp => self.page(false, false),
             Action::Top | Action::DiffTop => self.move_cursor(i32::MIN),
             Action::Bottom | Action::DiffBottom => self.move_cursor(i32::MAX),
             Action::Select => {
                 if matches!(self.state, State::Diff) {
                     self.select_anchor = match self.select_anchor {
                         Some(_) => None,
-                        None => Some(self.cursor_line),
+                        None => {
+                            // Selection starts at the top visible line (or
+                            // wherever a click parked the cursor, if visible).
+                            let top = self.scroll as usize;
+                            let vh = self.viewport_h.max(1) as usize;
+                            if self.cursor_line < top || self.cursor_line >= top + vh {
+                                self.cursor_line = top;
+                            }
+                            Some(self.cursor_line)
+                        }
                     };
                     self.restyle();
                 }
@@ -445,7 +464,8 @@ impl PreviewApp {
     // ---- cursor / selection ----------------------------------------------
 
     /// Move the cursor line (i32::MIN/MAX = home/end), keep it visible, and
-    /// re-apply the selection styling.
+    /// re-apply the selection styling. Only meaningful while selecting (the
+    /// cursor is invisible otherwise).
     fn move_cursor(&mut self, delta: i32) {
         let last = self.content_lines().saturating_sub(1);
         self.cursor_line = match delta {
@@ -471,14 +491,15 @@ impl PreviewApp {
         }
     }
 
-    /// Re-apply the REVERSED styling for the cursor/selection lines.
+    /// Re-apply the REVERSED styling for the selection. Nothing is styled
+    /// unless a selection is active (`v` or mouse drag).
     fn restyle(&mut self) {
         if let Some((a, b)) = self.styled.take() {
             for line in self.doc.lines.iter_mut().skip(a).take(b - a + 1) {
                 line.style = line.style.remove_modifier(Modifier::REVERSED);
             }
         }
-        if !matches!(self.state, State::Diff) {
+        if !matches!(self.state, State::Diff) || self.select_anchor.is_none() {
             return;
         }
         let (a, b) = self.selection();
@@ -491,11 +512,23 @@ impl PreviewApp {
     // ---- notes ------------------------------------------------------------
 
     /// `a`: capture the selection as a pending note and ask the run loop to
-    /// open the annotate popup.
+    /// open the annotate popup. With no active selection, the note covers the
+    /// whole file.
     fn begin_annotate(&mut self) {
         let Some(req) = self.current.clone() else {
             return;
         };
+        if self.select_anchor.is_none() {
+            self.pending_note = Some(Note {
+                file: req.file,
+                start: 0,
+                end: 0,
+                text: String::new(),
+                snippet: String::new(),
+            });
+            self.popup_request = Some(PopupReq::Annotate);
+            return;
+        }
         let Some(built) = &self.built else {
             return;
         };

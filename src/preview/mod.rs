@@ -125,7 +125,9 @@ fn event_loop(
                     Some(path) => annotate_answer = Some(path),
                     None => {
                         app.pending_note = None;
-                        app.flash("annotate popup needs herdr ≥ 0.7.4");
+                        app.flash(
+                            "popup failed — needs herdr ≥0.7.4 + re-linked plugin (see debug log)",
+                        );
                     }
                 }
             }
@@ -149,7 +151,9 @@ fn event_loop(
                         (agents.len() as u16 + 6).min(14),
                     ) {
                         Some(path) => pick_answer = Some(path),
-                        None => app.flash("agent picker needs herdr ≥ 0.7.4"),
+                        None => app.flash(
+                            "popup failed — needs herdr ≥0.7.4 + re-linked plugin (see debug log)",
+                        ),
                     }
                 }
             }

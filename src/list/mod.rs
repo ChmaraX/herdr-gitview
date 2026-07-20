@@ -261,7 +261,9 @@ fn event_loop(
             )];
             match crate::popup::spawn("annotate", &envs, 64, 8) {
                 Some(path) => annotate_answer = Some((path, file)),
-                None => app.set_status("annotate popup needs herdr ≥ 0.7.4"),
+                None => app.set_status(
+                    "popup failed — needs herdr ≥0.7.4 + re-linked plugin (see debug log)",
+                ),
             }
         }
         if let Some((path, file)) = &annotate_answer {
