@@ -1,6 +1,6 @@
 # herdr-gitview configuration
 # Location: $HERDR_PLUGIN_CONFIG_DIR/config.toml
-#   (usually ~/.config/herdr/plugins/adamchmara.gitview/config.toml)
+#   (usually ~/.config/herdr/plugins/chmarax.gitview/config.toml)
 # Every key is optional; the values below are the defaults.
 
 # Base ref for branch scope (`w` toggles worktree <-> branch view).

@@ -84,7 +84,7 @@ impl<K> Popups<K> {
 
         let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
         let mut cmd = Command::new(bin);
-        cmd.args(["plugin", "pane", "open", "--plugin", "adamchmara.gitview"])
+        cmd.args(["plugin", "pane", "open", "--plugin", "chmarax.gitview"])
             .args([
                 "--entrypoint",
                 entrypoint,

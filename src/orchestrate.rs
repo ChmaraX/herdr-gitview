@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::logx::{log, state_dir};
 
-const PLUGIN_ID: &str = "adamchmara.gitview";
+const PLUGIN_ID: &str = "chmarax.gitview";
 
 /// Everything needed to find and tear down an open view later, keyed on disk
 /// by a hash of the repo root (see `views_dir`).

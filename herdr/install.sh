@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build step for `herdr plugin install adamchmara/herdr-gitview`:
+# Build step for `herdr plugin install ChmaraX/herdr-gitview`:
 # download the release binary for this platform (with checksum verification),
 # falling back to a local cargo build when no asset matches.
 set -euo pipefail
 
-REPO="adamchmara/herdr-gitview"
+REPO="ChmaraX/herdr-gitview"
 ROOT="${HERDR_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$ROOT/herdr-plugin.toml" | head -1)"
 

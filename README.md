@@ -1,8 +1,8 @@
 # herdr-gitview
 
-[![CI](https://github.com/adamchmara/herdr-gitview/actions/workflows/ci.yml/badge.svg)](https://github.com/adamchmara/herdr-gitview/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/adamchmara/herdr-gitview)](https://github.com/adamchmara/herdr-gitview/releases/latest)
-[![License](https://img.shields.io/github/license/adamchmara/herdr-gitview)](LICENSE)
+[![CI](https://github.com/ChmaraX/herdr-gitview/actions/workflows/ci.yml/badge.svg)](https://github.com/ChmaraX/herdr-gitview/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ChmaraX/herdr-gitview)](https://github.com/ChmaraX/herdr-gitview/releases/latest)
+[![License](https://img.shields.io/github/license/ChmaraX/herdr-gitview)](LICENSE)
 
 <p align="center">
   <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#controls">controls</a> · <a href="#review-notes">review notes</a> · <a href="#configuration">configuration</a> · <a href="#limitations">limitations</a> · <a href="CHANGELOG.md">changelog</a>
@@ -58,7 +58,7 @@ agent's input; nothing is submitted unless you ask for it.
 Prebuilt binaries, no Rust toolchain needed:
 
 ```bash
-herdr plugin install adamchmara/herdr-gitview
+herdr plugin install ChmaraX/herdr-gitview
 ```
 
 Bind a key in `~/.config/herdr/config.toml`. Note that herdr's built-in
@@ -71,7 +71,7 @@ goto = "prefix+k"          # free up prefix+g
 [[keys.command]]
 key = "prefix+g"
 type = "plugin_action"
-command = "adamchmara.gitview.toggle"   # <plugin_id>.<action_id>
+command = "chmarax.gitview.toggle"   # <plugin_id>.<action_id>
 description = "git view"
 ```
 
@@ -81,7 +81,7 @@ jumps to it from any other tab, and closes it when pressed inside.
 **To update**, reinstall — your config survives:
 
 ```bash
-herdr plugin uninstall adamchmara.gitview && herdr plugin install adamchmara/herdr-gitview
+herdr plugin uninstall chmarax.gitview && herdr plugin install ChmaraX/herdr-gitview
 ```
 
 **Without herdr**, the file list runs as a plain terminal app in any repo —
@@ -178,7 +178,7 @@ read-only.
 ## Configuration
 
 `$HERDR_PLUGIN_CONFIG_DIR/config.toml`, usually
-`~/.config/herdr/plugins/config/adamchmara.gitview/config.toml`. Every key is
+`~/.config/herdr/plugins/config/chmarax.gitview/config.toml`. Every key is
 optional; [assets/example-config.toml](assets/example-config.toml) shows all
 defaults, commented.
 
@@ -246,7 +246,7 @@ repos can have views open at once.
 ## Building from source
 
 ```bash
-git clone https://github.com/adamchmara/herdr-gitview
+git clone https://github.com/ChmaraX/herdr-gitview
 cd herdr-gitview
 cargo build --release
 herdr plugin link "$PWD"
