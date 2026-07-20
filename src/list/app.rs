@@ -128,8 +128,8 @@ pub struct App {
     /// pane instead of the in-pane overlay (the answer arrives via file).
     pub modal_external: bool,
     /// Review notes (owned by the preview; mirrored for the notes view):
-    /// `(file, start, end, text, commit-context)`.
-    pub notes: Vec<(std::path::PathBuf, u32, u32, String, Option<String>)>,
+    /// `(file, start, end, text)`.
+    pub notes: Vec<(std::path::PathBuf, u32, u32, String)>,
     /// Where `n` was pressed, so the notes view can return there.
     notes_return: Option<Mode>,
     pub annotate_request: Option<std::path::PathBuf>,
@@ -325,13 +325,16 @@ impl App {
                     self.delete_note_request = self.selected_note();
                 }
             }
-            Action::Annotate => match self.selected_entry() {
-                Some((entry, _)) => self.annotate_request = Some(entry.path.clone()),
-                None if self.mode == Mode::Notes => {
-                    self.set_status("annotate from the files view (n to go back)")
+            Action::Annotate => {
+                if self.mode != Mode::Files || self.scope != Scope::Worktree {
+                    self.set_status("notes work on staged/unstaged changes only");
+                } else {
+                    match self.selected_entry() {
+                        Some((entry, _)) => self.annotate_request = Some(entry.path.clone()),
+                        None => self.set_status("select a file to annotate"),
+                    }
                 }
-                None => self.set_status("select a file to annotate"),
-            },
+            }
             Action::SendNotes => {
                 if self.notes.is_empty() {
                     self.set_status("no notes yet — a annotates a file, v+a lines in the diff");

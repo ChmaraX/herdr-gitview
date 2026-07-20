@@ -92,10 +92,12 @@ pub enum ToList {
     /// GitInPane finished. `ok` = exit status 0.
     GitDone { ok: bool },
     /// The batched review notes changed; full snapshot for the notes view.
-    /// Tuples: (file, start, end, text, commit-context).
+    /// Tuples: (file, start, end, text).
     Notes {
-        notes: Vec<(PathBuf, u32, u32, String, Option<String>)>,
+        notes: Vec<(PathBuf, u32, u32, String)>,
     },
+    /// The preview pane asked to open the notes view (n works everywhere).
+    ShowNotesView,
 }
 
 /// One end of the IPC link: a write half plus an optional reader half.

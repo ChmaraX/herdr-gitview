@@ -217,20 +217,14 @@ fn entry_row(entry: &FileEntry, width: u16, grouped: bool) -> ListItem<'static> 
     ListItem::new(Line::from(spans))
 }
 
-/// One note row: `▎ file:12-20 [@sha] · text`.
-fn note_row(
-    note: &(std::path::PathBuf, u32, u32, String, Option<String>),
-    width: u16,
-) -> ListItem<'static> {
-    let (file, start, end, text, commit) = note;
-    let mut anchor = if *end == 0 {
+/// One note row: `▎ file:12-20 · text`.
+fn note_row(note: &(std::path::PathBuf, u32, u32, String), width: u16) -> ListItem<'static> {
+    let (file, start, end, text) = note;
+    let anchor = if *end == 0 {
         format!(" ▎ {}", file.display())
     } else {
         format!(" ▎ {}:{}-{}", file.display(), start, end)
     };
-    if let Some(sha) = commit {
-        anchor.push_str(&format!(" @{}", &sha[..sha.len().min(7)]));
-    }
     let avail = (width as usize).saturating_sub(anchor.width() + 3);
     let text = elide_tail(text, avail);
     ListItem::new(Line::from(vec![

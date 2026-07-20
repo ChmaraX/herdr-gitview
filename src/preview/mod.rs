@@ -183,6 +183,14 @@ fn event_loop(
             }
         }
 
+        // `n` in the preview opens the notes view over in the list pane.
+        if app.notes_view_request {
+            app.notes_view_request = false;
+            if let Some(c) = conn.as_mut() {
+                let _ = c.send(&ToList::ShowNotesView);
+            }
+        }
+
         // Keep the list's notes view in sync whenever the store changes
         // (add/edit/delete/clear all funnel through here).
         if app.notes_rev != last_notes_rev {
@@ -191,15 +199,7 @@ fn event_loop(
                 let snapshot: Vec<_> = app
                     .notes
                     .iter()
-                    .map(|n| {
-                        (
-                            n.file.clone(),
-                            n.start,
-                            n.end,
-                            n.text.clone(),
-                            n.commit.clone(),
-                        )
-                    })
+                    .map(|n| (n.file.clone(), n.start, n.end, n.text.clone()))
                     .collect();
                 let _ = c.send(&ToList::Notes { notes: snapshot });
             }

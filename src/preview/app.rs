@@ -56,9 +56,6 @@ pub struct Note {
     pub text: String,
     /// The selected diff lines (`-`/`+`/space prefixed), possibly empty.
     pub snippet: String,
-    /// The commit sha this note was made against (history view); `None` for
-    /// worktree/branch notes. Focusing the note re-shows this exact diff.
-    pub commit: Option<String>,
 }
 
 /// A popup the run loop should open on our behalf.
@@ -114,6 +111,8 @@ pub struct PreviewApp {
     pub pending_note: Option<Note>,
     /// Popup for the run loop to open.
     pub popup_request: Option<PopupReq>,
+    /// `n` pressed here: ask the list pane to open the notes view.
+    pub notes_view_request: bool,
     /// Rendered indices of injected note-card lines (excluded from ranges).
     card_lines: Vec<usize>,
     /// Note index to scroll to once its file's diff arrives (notes view hover).
@@ -149,6 +148,7 @@ impl PreviewApp {
             notes: Vec::new(),
             pending_note: None,
             popup_request: None,
+            notes_view_request: false,
             card_lines: Vec::new(),
             pending_focus: None,
             notes_rev: 0,
@@ -254,7 +254,7 @@ impl PreviewApp {
             let mut anchored: Vec<(usize, String)> = self
                 .notes
                 .iter()
-                .filter(|n| n.file == req.file && n.commit == req.commit)
+                .filter(|n| n.file == req.file)
                 .map(|n| {
                     let line = if n.end == 0 {
                         0
@@ -279,7 +279,7 @@ impl PreviewApp {
             let mut cards: Vec<(usize, String)> = self
                 .notes
                 .iter()
-                .filter(|n| n.file == req.file && n.commit == req.commit)
+                .filter(|n| n.file == req.file)
                 .map(|n| {
                     let line = if n.end == 0 {
                         0
@@ -431,6 +431,7 @@ impl PreviewApp {
                 }
             }
             Action::Annotate => self.begin_annotate(),
+            Action::NotesView => self.notes_view_request = true,
             Action::SendNotes => {
                 if self.notes.is_empty() {
                     self.flash("no notes yet — select lines and press a");
@@ -532,6 +533,10 @@ impl PreviewApp {
         let Some(req) = self.current.clone() else {
             return;
         };
+        if req.commit.is_some() || req.scope != Scope::Worktree {
+            self.flash("notes work on staged/unstaged changes only");
+            return;
+        }
 
         let Some(built) = &self.built else {
             return;
@@ -570,7 +575,6 @@ impl PreviewApp {
             end,
             text: String::new(),
             snippet,
-            commit: req.commit.clone(),
         });
         self.popup_request = Some(PopupReq::Annotate);
     }
@@ -594,7 +598,6 @@ impl PreviewApp {
             end: 0,
             text,
             snippet: String::new(),
-            commit: None,
         });
         self.notes_rev += 1;
         self.restyle();
@@ -626,7 +629,7 @@ impl PreviewApp {
     /// file is already shown, else remember it until that diff arrives.
     pub fn focus_note(&mut self, idx: usize) {
         let same_file = match (self.notes.get(idx), &self.current) {
-            (Some(note), Some(req)) => note.file == req.file && note.commit == req.commit,
+            (Some(note), Some(req)) => note.file == req.file,
             _ => false,
         };
         if same_file && matches!(self.state, State::Diff) {
@@ -655,7 +658,7 @@ impl PreviewApp {
             .notes
             .iter()
             .enumerate()
-            .filter(|(_, n)| n.file == req.file && n.commit == req.commit)
+            .filter(|(_, n)| n.file == req.file)
             .map(|(i, n)| (anchor(n), i))
             .collect();
         same.sort_by_key(|(a, _)| *a);

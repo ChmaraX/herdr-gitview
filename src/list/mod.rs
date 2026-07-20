@@ -233,6 +233,17 @@ fn event_loop(
                     None => {}
                 }
             }
+            Ok(Event::Ipc(ToList::ShowNotesView)) => {
+                if app.mode != app::Mode::Notes && !app.notes.is_empty() {
+                    app.on_key(KeyEvent::new(
+                        crossterm::event::KeyCode::Char('n'),
+                        crossterm::event::KeyModifiers::NONE,
+                    ));
+                }
+                focus_self();
+                show_dirty = true;
+                dirty_since = Instant::now();
+            }
             Ok(Event::Ipc(ToList::Notes { notes })) => {
                 app.notes = notes;
                 if app.mode == app::Mode::Notes {
@@ -581,19 +592,19 @@ fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
 /// The Show for a hovered note: its file in the note's own context — the
 /// commit it was made against (history notes) or the live worktree diff.
 fn note_show(app: &App, idx: usize) -> Option<ToPreview> {
-    let (file, _, _, _, commit) = app.notes.get(idx)?;
+    let (file, _, _, _) = app.notes.get(idx)?;
     // Prefer real entry metadata when the file is among the current entries;
     // otherwise synthesize (kind only affects rename pathspecs).
     let entry = app.entries.iter().find(|e| &e.path == file);
     Some(ToPreview::Show {
         file: file.clone(),
         orig_path: entry.and_then(|e| e.orig_path.clone()),
-        scope: app.scope,
+        scope: Scope::Worktree,
         cached: false,
         kind: entry
             .map(|e| e.kind)
             .unwrap_or(crate::git::ChangeKind::Modified),
-        commit: commit.clone(),
+        commit: None,
     })
 }
 
