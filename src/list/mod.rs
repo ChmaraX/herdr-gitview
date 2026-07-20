@@ -231,9 +231,9 @@ fn event_loop(
                 focus_self();
                 // Resume whatever asked the editor to close.
                 match app.after_edit.take() {
-                    Some(app::EditorThen::JustClose) | None => {} // diff is back
                     Some(app::EditorThen::QuitView) => app.should_quit = true,
                     Some(app::EditorThen::Commit) => start_commit(app, &mut conn),
+                    None => {}
                 }
             }
             Ok(Event::Ipc(ToList::ShowNotesView)) => {

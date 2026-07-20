@@ -73,8 +73,6 @@ pub enum PendingAction {
 /// What to do once the editor has been closed (delivered via EditDone).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorThen {
-    /// Close the editor and return to the diff view, nothing more.
-    JustClose,
     QuitView,
     Commit,
 }
@@ -297,10 +295,8 @@ impl App {
         // Everything else — including history navigation — keeps working.
         if self.busy.is_some() {
             match action {
-                // q/esc while the editor is open: back to the diff, not a
-                // full view teardown (press q again for that).
                 Action::Quit if self.mode == Mode::Files => {
-                    self.editor_close_request = Some(EditorThen::JustClose);
+                    self.editor_close_request = Some(EditorThen::QuitView);
                     return;
                 }
                 Action::Commit => {
