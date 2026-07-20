@@ -439,7 +439,7 @@ impl App {
 
     /// `n`: open the notes view from anywhere; `n`/q returns to where you
     /// came from (files, log, or a commit's files).
-    fn toggle_notes_view(&mut self) {
+    pub fn toggle_notes_view(&mut self) {
         match self.mode {
             Mode::Notes => {
                 self.mode = self.notes_return.take().unwrap_or(Mode::Files);

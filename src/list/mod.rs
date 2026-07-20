@@ -133,13 +133,16 @@ fn event_loop(
             }
             Ok(Event::Key(key)) => {
                 // Enter/commit need the IPC link + focus handoff, so they are
-                // handled here — but only when a preview is connected and no
-                // overlay/lockout is active (App::on_key covers those cases).
-                let free = conn.is_some() && app.modal.is_none() && app.busy.is_none();
+                // handled here; App::on_key covers the plain cases.
+                let free = conn.is_some() && app.busy.is_none();
                 let action = app.keys.action(&key);
                 let before = show_key(app);
+                // An open modal captures every key — checked first so no
+                // special-cased arm below can bypass it.
+                if app.modal.is_some() {
+                    app.on_key(key);
                 // Enter activates the selected row (open commit / edit file).
-                if app.modal.is_none() && action == Some(Action::Edit) {
+                } else if action == Some(Action::Edit) {
                     activate_selection(app, &mut conn);
                 } else if free && action == Some(Action::Commit) && app.mode == app::Mode::Files {
                     start_commit(app, &mut conn);
@@ -231,24 +234,32 @@ fn event_loop(
                     app.status_msg = None;
                 }
             }
-            Ok(Event::Ipc(ToList::EditDone { .. })) => {
+            // Editor or commit finished on the preview PTY: same unlock /
+            // refresh / refocus dance, then the message-or-resume tail.
+            Ok(Event::Ipc(msg @ (ToList::EditDone { .. } | ToList::GitDone { .. }))) => {
                 app.on_edit_done();
                 show_dirty = true;
                 dirty_since = Instant::now();
                 focus_self();
-                // Resume whatever asked the editor to close.
-                match app.after_edit.take() {
-                    Some(app::EditorThen::QuitView) => app.should_quit = true,
-                    Some(app::EditorThen::Commit) => start_commit(app, &mut conn),
-                    None => {}
+                match msg {
+                    ToList::EditDone { .. } => match app.after_edit.take() {
+                        Some(app::EditorThen::QuitView) => app.should_quit = true,
+                        Some(app::EditorThen::Commit) => start_commit(app, &mut conn),
+                        None => {}
+                    },
+                    ToList::GitDone { ok } => {
+                        let summary = ok.then(|| app.repo.last_commit_summary()).flatten();
+                        match summary {
+                            Some(s) => app.set_status(format!("committed {s}")),
+                            None => app.set_status("commit aborted"),
+                        }
+                    }
+                    _ => unreachable!(),
                 }
             }
             Ok(Event::Ipc(ToList::ShowNotesView)) => {
                 if app.mode != app::Mode::Notes && !app.notes.is_empty() {
-                    app.on_key(KeyEvent::new(
-                        crossterm::event::KeyCode::Char('n'),
-                        crossterm::event::KeyModifiers::NONE,
-                    ));
+                    app.toggle_notes_view();
                 }
                 focus_self();
                 show_dirty = true;
@@ -259,26 +270,9 @@ fn event_loop(
                 if app.mode == app::Mode::Notes {
                     app.rebuild_rows();
                     if app.notes.is_empty() {
-                        app.set_status("notes sent");
-                        app.on_key(KeyEvent::new(
-                            crossterm::event::KeyCode::Char('n'),
-                            crossterm::event::KeyModifiers::NONE,
-                        ));
+                        // Sent or last one deleted — nothing left to look at.
+                        app.toggle_notes_view();
                     }
-                }
-            }
-            Ok(Event::Ipc(ToList::GitDone { ok })) => {
-                app.on_edit_done();
-                show_dirty = true;
-                dirty_since = Instant::now();
-                focus_self();
-                if ok {
-                    match app.repo.last_commit_summary() {
-                        Some(s) => app.set_status(format!("committed {s}")),
-                        None => app.set_status("committed"),
-                    }
-                } else {
-                    app.set_status("commit aborted");
                 }
             }
             Ok(Event::IpcClosed) => conn = None, // preview gone; keep list usable
