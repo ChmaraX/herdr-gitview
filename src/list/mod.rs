@@ -112,6 +112,9 @@ fn event_loop(
     let mut dirty_since = Instant::now();
     // At most one background nvim probe at a time.
     let mut probe_pending = false;
+    // Native popup confirms (herdr ≥0.7.4): answer file we are waiting on.
+    let popup_supported = popup_supported();
+    let mut popup_answer: Option<PathBuf> = None;
 
     loop {
         terminal.draw(|frame| ui::render(frame, app))?;
@@ -246,6 +249,41 @@ fn event_loop(
         }
 
         // Flush a debounced Show once the cursor has settled.
+        // Confirm modals become native floating popup panes when herdr
+        // supports them; the in-pane overlay is the fallback.
+        if popup_supported
+            && !app.modal_external
+            && popup_answer.is_none()
+            && matches!(
+                app.modal,
+                Some(app::Modal::Confirm { .. } | app::Modal::EditorClose { .. })
+            )
+            && let Some(path) = spawn_popup_confirm(app)
+        {
+            app.modal_external = true;
+            popup_answer = Some(path);
+        }
+        // Poll for the popup's answer and feed it through the same modal
+        // key-handling as the in-pane overlay.
+        if let Some(path) = &popup_answer
+            && let Ok(answer) = std::fs::read_to_string(path)
+        {
+            let _ = std::fs::remove_file(path);
+            popup_answer = None;
+            app.modal_external = false;
+            let code = match answer.trim() {
+                "y" => crossterm::event::KeyCode::Char('y'),
+                "n" => crossterm::event::KeyCode::Char('n'),
+                _ => crossterm::event::KeyCode::Esc,
+            };
+            app.on_key(KeyEvent::new(code, crossterm::event::KeyModifiers::NONE));
+            if app.needs_reshow {
+                app.needs_reshow = false;
+                show_dirty = true;
+                dirty_since = Instant::now();
+            }
+        }
+
         if show_dirty && dirty_since.elapsed() >= SHOW_DEBOUNCE {
             if let Some(msg) = current_show(app) {
                 send(&mut conn, &msg);
@@ -317,6 +355,62 @@ fn activate_selection(app: &mut App, conn: &mut Option<Conn>) {
             }
         }
     }
+}
+
+/// Does this herdr support popup plugin panes (≥0.7.4)?
+fn popup_supported() -> bool {
+    if std::env::var_os("HERDR_PANE_ID").is_none() {
+        return false; // standalone
+    }
+    let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
+    let Ok(out) = std::process::Command::new(bin).arg("--version").output() else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let Some(ver) = text.split_whitespace().last() else {
+        return false;
+    };
+    let mut parts = ver.split('.').filter_map(|p| p.parse::<u32>().ok());
+    let (maj, min, pat) = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
+    (maj, min, pat) >= (0, 7, 4)
+}
+
+/// Open the current modal as a native floating popup pane; returns the
+/// answer-file path to poll, or None when the popup could not be opened
+/// (caller falls back to the in-pane overlay).
+fn spawn_popup_confirm(app: &App) -> Option<PathBuf> {
+    let text = match &app.modal {
+        Some(app::Modal::Confirm { text, .. }) => text.clone(),
+        Some(app::Modal::EditorClose { .. }) => {
+            "The editor has unsaved changes. Save them? (no discards)".to_string()
+        }
+        _ => return None,
+    };
+    let answer = PathBuf::from(std::env::var_os("GITVIEW_SOCKET")?).with_extension("answer");
+    let _ = std::fs::remove_file(&answer);
+
+    let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
+    let out = std::process::Command::new(bin)
+        .args(["plugin", "pane", "open", "--plugin", "adamchmara.gitview"])
+        .args(["--entrypoint", "ask", "--placement", "popup", "--focus"])
+        .arg("--env")
+        .arg(format!("GITVIEW_ASK_TEXT={text}"))
+        .arg("--env")
+        .arg(format!("GITVIEW_ANSWER_FILE={}", answer.display()))
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        crate::logx::log(format!(
+            "popup confirm failed, falling back to in-pane modal: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+        return None;
+    }
+    Some(answer)
 }
 
 /// Probe the remote nvim on a background thread: a clean editor is told to

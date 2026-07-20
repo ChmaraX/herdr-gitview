@@ -23,6 +23,7 @@ const HELP_ACTIONS: &[(Action, &str)] = &[
     (Action::Edit, "open in editor"),
     (Action::ToggleScope, "worktree / branch"),
     (Action::Stage, "stage / unstage file"),
+    (Action::Unstage, "unstage file"),
     (Action::Discard, "discard changes"),
     (Action::Commit, "commit"),
     (Action::Log, "commit history"),
@@ -51,6 +52,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_footer(frame, chunks[2], app);
 
     match &app.modal {
+        Some(_) if app.modal_external => {} // shown as a herdr popup pane
         Some(Modal::Help) => render_help(frame, area, app),
         Some(Modal::Confirm { text, .. }) => render_confirm(frame, area, text),
         Some(Modal::EditorClose { .. }) => render_confirm(
@@ -355,6 +357,7 @@ fn footer_hints(app: &App) -> Line<'static> {
         Mode::Files => vec![
             (sym(app.keys.hint(Action::Edit)), "edit"),
             (sym(app.keys.hint(Action::Stage)), "stage"),
+            (sym(app.keys.hint(Action::Unstage)), "unstage"),
             (sym(app.keys.hint(Action::Discard)), "discard"),
             (sym(app.keys.hint(Action::Commit)), "commit"),
             (sym(app.keys.hint(Action::Log)), "log"),

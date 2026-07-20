@@ -52,7 +52,8 @@ From source: `git clone`, `cargo build --release`,
 | `home` / `end` | diff top / bottom |
 | `w` | worktree ↔ branch scope (diff vs merge-base) |
 | `tab` | unstaged ↔ staged diff view |
-| `s` | stage / unstage the file |
+| `s` | stage / unstage the file (section-aware) |
+| `u` | explicitly unstage the file |
 | `x` | discard changes (with confirmation) |
 | `c` | commit — message written in nvim in the left pane |
 | `r` | refresh |
@@ -102,3 +103,5 @@ interface contracts) and [docs/architecture.md](docs/architecture.md).
 ## License
 
 MIT
+
+# demo: temporary note for the gitview walkthrough

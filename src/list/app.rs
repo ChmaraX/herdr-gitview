@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::git::{ChangeKind, CommitInfo, FileEntry, Repo, Scope, StageState};
 use crate::keymap::{Action, Keymap};
 
-/// How long a transient footer message stays on screen.
+/// How long a transient footer message stays visible on screen.
 const STATUS_TTL: Duration = Duration::from_secs(3);
 
 /// How many commits the history view loads.
@@ -121,6 +121,9 @@ pub struct App {
     pub editor_close_request: Option<EditorThen>,
     /// Last left-click (row, time) for double-click detection.
     last_click: Option<(usize, Instant)>,
+    /// True while the current modal is being shown as a native herdr popup
+    /// pane instead of the in-pane overlay (the answer arrives via file).
+    pub modal_external: bool,
 }
 
 impl App {
@@ -157,6 +160,7 @@ impl App {
             after_edit: None,
             editor_close_request: None,
             last_click: None,
+            modal_external: false,
         };
         app.rebuild_rows();
         app
@@ -289,6 +293,7 @@ impl App {
             Action::Log => self.toggle_log(),
             Action::Quit => self.back_or_quit(),
             Action::Stage => self.stage_toggle(),
+            Action::Unstage => self.unstage_selected(),
             Action::Discard => self.open_discard_confirm(),
 
             // Diff scroll keys are intercepted by the run loop and forwarded
@@ -478,6 +483,26 @@ impl App {
         if all_staged {
             self.set_status("all changes staged — c to commit");
         }
+    }
+
+    /// `u`: explicitly unstage the selected file, whichever section it's in.
+    fn unstage_selected(&mut self) {
+        if !self.can_stage() {
+            return;
+        }
+        let Some((entry, _)) = self.selected_entry() else {
+            return;
+        };
+        if matches!(entry.stage, StageState::Unstaged | StageState::Untracked) {
+            self.set_status("nothing staged for this file");
+            return;
+        }
+        if let Err(err) = self.repo.unstage(&entry.path) {
+            self.set_status(first_line(&err.to_string()));
+            return;
+        }
+        self.force_refresh();
+        self.needs_reshow = true;
     }
 
     /// `x`: ask before throwing changes away (refused for conflicts).

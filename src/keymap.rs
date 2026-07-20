@@ -19,6 +19,7 @@ pub enum Action {
     ToggleScope,  // worktree <-> branch
     ToggleCached, // unstaged <-> staged diff view (worktree scope)
     Stage,
+    Unstage,
     Discard,
     Commit,
     /// Commit history view (list of commits → files → diffs).
@@ -47,6 +48,7 @@ pub const DEFAULT_KEYS: &[(Action, &str, &[&str])] = &[
     (Action::ToggleScope, "toggle_scope", &["w"]),
     (Action::ToggleCached, "toggle_cached", &["tab"]),
     (Action::Stage, "stage", &["s"]),
+    (Action::Unstage, "unstage", &["u"]),
     (Action::Discard, "discard", &["x"]),
     (Action::Commit, "commit", &["c"]),
     (Action::Log, "log", &["l"]),

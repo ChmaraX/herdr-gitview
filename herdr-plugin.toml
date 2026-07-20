@@ -17,6 +17,12 @@ title = "gitview: files"
 placement = "split"
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" list"]
 
+[[panes]]
+id = "ask"
+title = "gitview: confirm"
+placement = "overlay"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" ask"]
+
 [[actions]]
 id = "toggle"
 title = "gitview: toggle"
