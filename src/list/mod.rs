@@ -397,6 +397,7 @@ fn spawn_popup_confirm(app: &App) -> Option<PathBuf> {
     let out = std::process::Command::new(bin)
         .args(["plugin", "pane", "open", "--plugin", "adamchmara.gitview"])
         .args(["--entrypoint", "ask", "--placement", "popup", "--focus"])
+        .args(["--width", "60", "--height", "7"])
         .arg("--env")
         .arg(format!("GITVIEW_ASK_TEXT={text}"))
         .arg("--env")
