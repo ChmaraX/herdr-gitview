@@ -64,11 +64,23 @@ fn render_header(frame: &mut Frame, area: Rect, app: &PreviewApp) {
     let width = area.width as usize;
     let pad = width.saturating_sub(left.width() + right.width());
     let line = Line::from(vec![
-        Span::raw(left),
+        Span::styled(left, Style::new().add_modifier(Modifier::BOLD)),
         Span::raw(" ".repeat(pad)),
         Span::styled(right, dim()),
     ]);
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::new().bg(bar_bg(&app.cfg.theme))),
+        area,
+    );
+}
+
+/// The surface color behind the header/footer bars (matches the list pane).
+fn bar_bg(flavor: &str) -> Color {
+    if flavor == "light" {
+        Color::Rgb(0xe6, 0xe9, 0xef)
+    } else {
+        Color::Rgb(0x31, 0x32, 0x44)
+    }
 }
 
 // ---- body -----------------------------------------------------------------
@@ -146,7 +158,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &PreviewApp) {
         ));
         spans.push(Span::styled(label.to_string(), dim()));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::new().bg(bar_bg(&app.cfg.theme))),
+        area,
+    );
 }
 
 fn dim() -> Style {
