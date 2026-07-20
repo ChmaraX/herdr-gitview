@@ -124,6 +124,11 @@ pub struct App {
     /// True while the current modal is being shown as a native herdr popup
     /// pane instead of the in-pane overlay (the answer arrives via file).
     pub modal_external: bool,
+    /// Batched review-note count (owned by the preview; mirrored for the
+    /// footer). `a` requests a whole-file note via this field.
+    pub notes_count: usize,
+    pub annotate_request: Option<std::path::PathBuf>,
+    pub send_notes_request: bool,
 }
 
 impl App {
@@ -161,6 +166,9 @@ impl App {
             editor_close_request: None,
             last_click: None,
             modal_external: false,
+            notes_count: 0,
+            annotate_request: None,
+            send_notes_request: false,
         };
         app.rebuild_rows();
         app
@@ -291,6 +299,18 @@ impl App {
             Action::Refresh => self.force_refresh(),
             Action::Help => self.modal = Some(Modal::Help),
             Action::Log => self.toggle_log(),
+            Action::Select => {}
+            Action::Annotate => match self.selected_entry() {
+                Some((entry, _)) => self.annotate_request = Some(entry.path.clone()),
+                None => self.set_status("select a file to annotate"),
+            },
+            Action::SendNotes => {
+                if self.notes_count == 0 {
+                    self.set_status("no notes yet — a annotates a file, v+a lines in the diff");
+                } else {
+                    self.send_notes_request = true;
+                }
+            }
             Action::Quit => self.back_or_quit(),
             Action::Stage => self.stage_toggle(),
             Action::Unstage => self.unstage_selected(),

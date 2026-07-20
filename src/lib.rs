@@ -1,3 +1,4 @@
+pub mod annotate;
 pub mod ask;
 pub mod config;
 pub mod git;
@@ -7,4 +8,5 @@ pub mod keymap;
 pub mod list;
 pub mod logx;
 pub mod orchestrate;
+pub mod popup;
 pub mod preview;

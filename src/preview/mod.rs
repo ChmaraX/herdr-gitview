@@ -101,8 +101,89 @@ fn event_loop(
 ) -> Result<()> {
     // Held once connected so the UI thread can send `ToList` (e.g. `Ready`).
     let mut conn: Option<Conn> = None;
+    // Popup answers we are waiting on.
+    let mut annotate_answer: Option<std::path::PathBuf> = None;
+    let mut pick_answer: Option<std::path::PathBuf> = None;
 
     loop {
+        // Open popups the app requested (annotate input / agent picker).
+        match app.popup_request.take() {
+            Some(app::PopupReq::Annotate) if annotate_answer.is_none() => {
+                let title = app
+                    .pending_note
+                    .as_ref()
+                    .map(|n| {
+                        if n.end == 0 {
+                            format!("note for {}", n.file.display())
+                        } else {
+                            format!("note for {}:{}-{}", n.file.display(), n.start, n.end)
+                        }
+                    })
+                    .unwrap_or_default();
+                let envs = [("GITVIEW_ASK_TEXT".to_string(), title)];
+                match crate::popup::spawn("annotate", &envs, 64, 8) {
+                    Some(path) => annotate_answer = Some(path),
+                    None => {
+                        app.pending_note = None;
+                        app.flash("annotate popup needs herdr ≥ 0.7.4");
+                    }
+                }
+            }
+            Some(app::PopupReq::PickAgent) if pick_answer.is_none() => {
+                let agents = crate::popup::workspace_agents();
+                if agents.is_empty() {
+                    app.flash("no agent panes in this workspace");
+                } else {
+                    let json = serde_json::to_string(&agents).unwrap_or_default();
+                    let envs = [
+                        ("GITVIEW_AGENTS".to_string(), json),
+                        (
+                            "GITVIEW_ASK_TEXT".to_string(),
+                            format!("send {} note(s) to…", app.notes.len()),
+                        ),
+                    ];
+                    match crate::popup::spawn(
+                        "pick-agent",
+                        &envs,
+                        50,
+                        (agents.len() as u16 + 6).min(14),
+                    ) {
+                        Some(path) => pick_answer = Some(path),
+                        None => app.flash("agent picker needs herdr ≥ 0.7.4"),
+                    }
+                }
+            }
+            Some(_) => {} // a popup is already open
+            None => {}
+        }
+        // Annotate answer: non-empty text commits the note.
+        if let Some(text) = crate::popup::poll(&mut annotate_answer) {
+            if text.is_empty() {
+                app.pending_note = None; // cancelled
+            } else {
+                app.finish_annotate(text);
+                if let Some(c) = conn.as_mut() {
+                    let _ = c.send(&ToList::NotesCount { n: app.notes.len() });
+                }
+            }
+        }
+        // Agent-picker answer: "pane\tplace|submit" or "cancel".
+        if let Some(answer) = crate::popup::poll(&mut pick_answer)
+            && answer != "cancel"
+            && let Some((pane, mode)) = answer.split_once('\t')
+        {
+            match deliver_notes(app, pane, mode == "submit") {
+                Ok(agent) => {
+                    app.clear_notes();
+                    app.flash(format!("notes sent to {agent}"));
+                    if let Some(c) = conn.as_mut() {
+                        let _ = c.send(&ToList::NotesCount { n: 0 });
+                    }
+                }
+                Err(err) => app.flash(format!("send failed: {err}")),
+            }
+        }
+
         terminal.draw(|frame| ui::render(frame, app))?;
 
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -186,6 +267,14 @@ fn handle_ipc(app: &mut PreviewApp, msg: ToPreview, work_tx: &Sender<ShowReq>) {
         ToPreview::Scroll { delta } => app.scroll_by(delta),
         ToPreview::Page { down, full } => app.page(down, full),
         ToPreview::Clear => app.clear(),
+        ToPreview::AddNote { file, text } => app.add_file_note(file, text),
+        ToPreview::SendNotes => {
+            if app.notes.is_empty() {
+                app.flash("no notes yet");
+            } else {
+                app.popup_request = Some(app::PopupReq::PickAgent);
+            }
+        }
         ToPreview::Quit => app.should_quit = true, // list initiated teardown
         // Handled directly in the event loop (they need the terminal).
         ToPreview::Edit { .. } | ToPreview::GitInPane { .. } => {}
@@ -277,6 +366,49 @@ fn run_suspended(
             false
         }
     }
+}
+
+/// Compose the batched notes and type them into the agent pane's input
+/// (submit optionally presses enter). Returns the agent name on success.
+fn deliver_notes(app: &PreviewApp, pane: &str, submit: bool) -> Result<String> {
+    let mut msg = String::new();
+    for note in &app.notes {
+        if note.end == 0 {
+            msg.push_str(&format!("{} — {}\n", note.file.display(), note.text));
+        } else {
+            msg.push_str(&format!(
+                "{}:{}-{} — {}\n",
+                note.file.display(),
+                note.start,
+                note.end,
+                note.text
+            ));
+        }
+        if !note.snippet.is_empty() {
+            msg.push_str("```diff\n");
+            msg.push_str(&note.snippet);
+            msg.push_str("```\n");
+        }
+    }
+
+    let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
+    let out = std::process::Command::new(&bin)
+        .args(["pane", "send-text", pane, &msg])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    if submit {
+        let _ = std::process::Command::new(&bin)
+            .args(["pane", "send-keys", pane, "enter"])
+            .output();
+    }
+    let agent = crate::popup::workspace_agents()
+        .into_iter()
+        .find(|(id, _, _)| id == pane)
+        .map(|(_, name, _)| name)
+        .unwrap_or_else(|| pane.to_string());
+    Ok(agent)
 }
 
 /// Does the user have an editor configured for git itself?

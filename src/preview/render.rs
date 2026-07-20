@@ -61,6 +61,36 @@ pub struct DiffDoc {
 }
 
 impl DiffDoc {
+    /// `(old_no, new_no)` of a rendered line (None for folds/out of range).
+    pub fn numbers_of_line(&self, line: usize) -> Option<(Option<u32>, Option<u32>)> {
+        let row = self.rows.get(*self.line_rows.get(line)?)?;
+        match row {
+            Row::Context { old_no, new_no, .. } => Some((Some(*old_no), Some(*new_no))),
+            Row::Deletion { old_no, .. } => Some((Some(*old_no), None)),
+            Row::Insertion { new_no, .. } => Some((None, Some(*new_no))),
+            Row::Fold { .. } => None,
+        }
+    }
+
+    /// The rendered line showing new-file line `no`, if visible (not folded).
+    pub fn line_for_new(&self, no: u32) -> Option<usize> {
+        (0..self.line_rows.len())
+            .find(|&i| self.numbers_of_line(i).and_then(|(_, n)| n) == Some(no))
+    }
+
+    /// A rendered line's diff text: marker + content, no gutter. Empty for
+    /// folds.
+    pub fn marker_text_of_line(&self, line: usize) -> Option<String> {
+        let row = self.rows.get(*self.line_rows.get(line)?)?;
+        let marker = match row {
+            Row::Deletion { .. } => "-",
+            Row::Insertion { .. } => "+",
+            Row::Context { .. } => " ",
+            Row::Fold { .. } => return Some(String::new()),
+        };
+        Some(format!("{marker}{}", row.text()))
+    }
+
     /// Expand the fold at rendered line `line` (if that line is a fold).
     /// Returns true when something unfolded (the text was rebuilt).
     pub fn unfold_at(&mut self, line: usize) -> bool {

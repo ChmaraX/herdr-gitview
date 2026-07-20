@@ -27,6 +27,9 @@ const HELP_ACTIONS: &[(Action, &str)] = &[
     (Action::Discard, "discard changes"),
     (Action::Commit, "commit"),
     (Action::Log, "commit history"),
+    (Action::Annotate, "add review note"),
+    (Action::SendNotes, "send notes to an agent"),
+    (Action::Select, "select lines (preview)"),
     (Action::ScrollDown, "scroll diff down"),
     (Action::ScrollUp, "scroll diff up"),
     (Action::HalfPageDown, "half page down"),
@@ -356,16 +359,23 @@ fn footer_hints(app: &App, width: usize) -> Line<'static> {
             (sym(app.keys.hint(Action::Quit)), "back"),
             (sym(app.keys.hint(Action::Help)), "help"),
         ],
-        Mode::Files => vec![
-            (sym(app.keys.hint(Action::Edit)), "edit"),
-            (sym(app.keys.hint(Action::Stage)), "stage"),
-            (sym(app.keys.hint(Action::Unstage)), "unstage"),
-            (sym(app.keys.hint(Action::Discard)), "discard"),
-            (sym(app.keys.hint(Action::Commit)), "commit"),
-            (sym(app.keys.hint(Action::Log)), "log"),
-            (sym(app.keys.hint(Action::Help)), "help"),
-            (sym(app.keys.hint(Action::Quit)), "quit"),
-        ],
+        Mode::Files => {
+            let mut pairs = vec![
+                (sym(app.keys.hint(Action::Edit)), "edit"),
+                (sym(app.keys.hint(Action::Stage)), "stage"),
+                (sym(app.keys.hint(Action::Unstage)), "unstage"),
+                (sym(app.keys.hint(Action::Discard)), "discard"),
+                (sym(app.keys.hint(Action::Commit)), "commit"),
+                (sym(app.keys.hint(Action::Annotate)), "note"),
+                (sym(app.keys.hint(Action::Log)), "log"),
+                (sym(app.keys.hint(Action::Help)), "help"),
+                (sym(app.keys.hint(Action::Quit)), "quit"),
+            ];
+            if app.notes_count > 0 {
+                pairs.insert(6, (sym(app.keys.hint(Action::SendNotes)), "send notes"));
+            }
+            pairs
+        }
     };
     hint_line(pairs, width)
 }

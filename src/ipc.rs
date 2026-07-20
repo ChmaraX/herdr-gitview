@@ -59,6 +59,13 @@ pub enum ToPreview {
     },
     /// Nothing is selected any more (list emptied) — drop the shown diff.
     Clear,
+    /// A whole-file review note added from the list pane.
+    AddNote {
+        file: PathBuf,
+        text: String,
+    },
+    /// The list asked to send the batched notes (preview owns the store).
+    SendNotes,
     Quit,
 }
 
@@ -72,6 +79,8 @@ pub enum ToList {
     EditDone { file: PathBuf },
     /// GitInPane finished. `ok` = exit status 0.
     GitDone { ok: bool },
+    /// The number of batched review notes changed (footer display).
+    NotesCount { n: usize },
 }
 
 /// One end of the IPC link: a write half plus an optional reader half.

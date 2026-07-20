@@ -113,8 +113,10 @@ fn event_loop(
     // At most one background nvim probe at a time.
     let mut probe_pending = false;
     // Native popup confirms (herdr ≥0.7.4): answer file we are waiting on.
-    let popup_supported = popup_supported();
+    let popup_supported = crate::popup::supported();
     let mut popup_answer: Option<PathBuf> = None;
+    // Whole-file annotate popup: (answer file, annotated path).
+    let mut annotate_answer: Option<(PathBuf, PathBuf)> = None;
 
     loop {
         terminal.draw(|frame| ui::render(frame, app))?;
@@ -229,6 +231,7 @@ fn event_loop(
                     None => {}
                 }
             }
+            Ok(Event::Ipc(ToList::NotesCount { n })) => app.notes_count = n,
             Ok(Event::Ipc(ToList::GitDone { ok })) => {
                 app.on_edit_done();
                 show_dirty = true;
@@ -249,6 +252,39 @@ fn event_loop(
         }
 
         // Flush a debounced Show once the cursor has settled.
+        // Whole-file annotate (`a` on a list row) → popup → AddNote to the
+        // preview, which owns the note store.
+        if let Some(file) = app.annotate_request.take() {
+            let envs = [(
+                "GITVIEW_ASK_TEXT".to_string(),
+                format!("note for {}", file.display()),
+            )];
+            match crate::popup::spawn("annotate", &envs, 64, 8) {
+                Some(path) => annotate_answer = Some((path, file)),
+                None => app.set_status("annotate popup needs herdr ≥ 0.7.4"),
+            }
+        }
+        if let Some((path, file)) = &annotate_answer {
+            let mut pending = Some(path.clone());
+            if let Some(text) = crate::popup::poll(&mut pending) {
+                if !text.is_empty() {
+                    send(
+                        &mut conn,
+                        &ToPreview::AddNote {
+                            file: file.clone(),
+                            text,
+                        },
+                    );
+                }
+                annotate_answer = None;
+            }
+        }
+        // `p`: hand off to the preview (it owns the notes + picker flow).
+        if app.send_notes_request {
+            app.send_notes_request = false;
+            send(&mut conn, &ToPreview::SendNotes);
+        }
+
         // Confirm modals become native floating popup panes when herdr
         // supports them; the in-pane overlay is the fallback.
         if popup_supported
@@ -265,11 +301,7 @@ fn event_loop(
         }
         // Poll for the popup's answer and feed it through the same modal
         // key-handling as the in-pane overlay.
-        if let Some(path) = &popup_answer
-            && let Ok(answer) = std::fs::read_to_string(path)
-        {
-            let _ = std::fs::remove_file(path);
-            popup_answer = None;
+        if let Some(answer) = crate::popup::poll(&mut popup_answer) {
             app.modal_external = false;
             let code = match answer.trim() {
                 "y" => crossterm::event::KeyCode::Char('y'),
@@ -360,28 +392,6 @@ fn activate_selection(app: &mut App, conn: &mut Option<Conn>) {
     }
 }
 
-/// Does this herdr support popup plugin panes (≥0.7.4)?
-fn popup_supported() -> bool {
-    if std::env::var_os("HERDR_PANE_ID").is_none() {
-        return false; // standalone
-    }
-    let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let Ok(out) = std::process::Command::new(bin).arg("--version").output() else {
-        return false;
-    };
-    let text = String::from_utf8_lossy(&out.stdout);
-    let Some(ver) = text.split_whitespace().last() else {
-        return false;
-    };
-    let mut parts = ver.split('.').filter_map(|p| p.parse::<u32>().ok());
-    let (maj, min, pat) = (
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-    );
-    (maj, min, pat) >= (0, 7, 4)
-}
-
 /// Open the current modal as a native floating popup pane; returns the
 /// answer-file path to poll, or None when the popup could not be opened
 /// (caller falls back to the in-pane overlay).
@@ -393,28 +403,7 @@ fn spawn_popup_confirm(app: &App) -> Option<PathBuf> {
         }
         _ => return None,
     };
-    let answer = PathBuf::from(std::env::var_os("GITVIEW_SOCKET")?).with_extension("answer");
-    let _ = std::fs::remove_file(&answer);
-
-    let bin = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let out = std::process::Command::new(bin)
-        .args(["plugin", "pane", "open", "--plugin", "adamchmara.gitview"])
-        .args(["--entrypoint", "ask", "--placement", "popup", "--focus"])
-        .args(["--width", "60", "--height", "7"])
-        .arg("--env")
-        .arg(format!("GITVIEW_ASK_TEXT={text}"))
-        .arg("--env")
-        .arg(format!("GITVIEW_ANSWER_FILE={}", answer.display()))
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        crate::logx::log(format!(
-            "popup confirm failed, falling back to in-pane modal: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-        return None;
-    }
-    Some(answer)
+    crate::popup::spawn("ask", &[("GITVIEW_ASK_TEXT".to_string(), text)], 60, 7)
 }
 
 /// Probe the remote nvim on a background thread: a clean editor is told to

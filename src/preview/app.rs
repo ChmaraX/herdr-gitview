@@ -46,6 +46,24 @@ impl ShowReq {
     }
 }
 
+/// A batched review note, anchored to a file (and optionally a line range).
+#[derive(Debug, Clone)]
+pub struct Note {
+    pub file: PathBuf,
+    /// New-file line range; 0-0 = whole file (list-side note).
+    pub start: u32,
+    pub end: u32,
+    pub text: String,
+    /// The selected diff lines (`-`/`+`/space prefixed), possibly empty.
+    pub snippet: String,
+}
+
+/// A popup the run loop should open on our behalf.
+pub enum PopupReq {
+    Annotate,
+    PickAgent,
+}
+
 pub enum State {
     /// Nothing to show yet: dim centered message.
     Splash(&'static str),
@@ -82,6 +100,24 @@ pub struct PreviewApp {
     /// Branch-scope base ref, resolved once for the header.
     pub base: Option<String>,
 
+    // ---- review notes / selection ----
+    /// Cursor line in the rendered doc (drives selection).
+    pub cursor_line: usize,
+    /// Selection anchor (`v`); selection = anchor..=cursor.
+    pub select_anchor: Option<usize>,
+    /// Lines currently styled as selected, so restyling can undo.
+    styled: Option<(usize, usize)>,
+    /// Batched review notes across files.
+    pub notes: Vec<Note>,
+    /// Set when `a` was pressed: what the annotate popup will describe.
+    pub pending_note: Option<Note>,
+    /// Popup for the run loop to open.
+    pub popup_request: Option<PopupReq>,
+    /// Rendered indices of injected note-card lines (excluded from ranges).
+    card_lines: Vec<usize>,
+    /// Transient footer flash message.
+    pub flash: Option<(String, std::time::Instant)>,
+
     pub state: State,
     pub should_quit: bool,
     /// True only when *this* pane initiated the quit (via `q`), so it should
@@ -103,6 +139,14 @@ impl PreviewApp {
             scroll: 0,
             viewport_h: 0,
             base: None,
+            cursor_line: 0,
+            select_anchor: None,
+            styled: None,
+            notes: Vec::new(),
+            pending_note: None,
+            popup_request: None,
+            card_lines: Vec::new(),
+            flash: None,
             state: State::Splash("waiting for file list…"),
             should_quit: false,
             close_view: false,
@@ -178,17 +222,72 @@ impl PreviewApp {
             return;
         }
         self.built = Some(built);
+        self.cursor_line = 0;
+        self.select_anchor = None;
+        self.styled = None;
         self.sync_doc();
         self.state = State::Diff;
         self.clamp_scroll();
+        self.restyle();
     }
 
-    /// Copy the built text into `doc`, applying the render cap.
+    /// Copy the built text into `doc`, applying the render cap and injecting
+    /// the current file's note cards under their anchor lines.
     fn sync_doc(&mut self) {
         let Some(built) = &self.built else {
             return;
         };
         let mut doc = built.text.clone();
+
+        // Note cards: `▎ 12-20 · note text`, inserted bottom-up so earlier
+        // insertions don't shift later anchors.
+        self.card_lines.clear();
+        if let Some(req) = &self.current {
+            let card_style = Style::new().fg(Color::Yellow);
+            let mut anchored: Vec<(usize, String)> = self
+                .notes
+                .iter()
+                .filter(|n| n.file == req.file)
+                .map(|n| {
+                    let line = if n.end == 0 {
+                        0
+                    } else {
+                        built.line_for_new(n.end).map(|l| l + 1).unwrap_or(0)
+                    };
+                    let label = if n.end == 0 {
+                        format!("          ▎ note · {}", n.text)
+                    } else {
+                        format!("          ▎ {}-{} · {}", n.start, n.end, n.text)
+                    };
+                    (line, label)
+                })
+                .collect();
+            anchored.sort_by_key(|(line, _)| std::cmp::Reverse(*line));
+            for (line, label) in anchored {
+                let at = line.min(doc.lines.len());
+                doc.lines
+                    .insert(at, Line::from(Span::styled(label, card_style)));
+            }
+            // Recompute card indices top-down for range math.
+            let mut cards: Vec<(usize, String)> = self
+                .notes
+                .iter()
+                .filter(|n| n.file == req.file)
+                .map(|n| {
+                    let line = if n.end == 0 {
+                        0
+                    } else {
+                        built.line_for_new(n.end).map(|l| l + 1).unwrap_or(0)
+                    };
+                    (line, String::new())
+                })
+                .collect();
+            cards.sort_by_key(|(l, _)| *l);
+            for (shift, (line, _)) in cards.into_iter().enumerate() {
+                self.card_lines.push(line + shift);
+            }
+        }
+
         let total = doc.lines.len();
         if total > MAX_LINES {
             doc.lines.truncate(MAX_LINES);
@@ -205,8 +304,9 @@ impl PreviewApp {
 
     // ---- mouse ------------------------------------------------------------
 
-    /// Wheel scrolls; a left click on a fold line expands it. `y` is the
-    /// terminal row (body starts at 1, under the header).
+    /// Wheel scrolls; a left click moves the cursor (and expands folds);
+    /// dragging extends a selection. `y` is the terminal row (body starts at
+    /// 1, under the header).
     pub fn on_mouse(&mut self, kind: crossterm::event::MouseEventKind, y: u16) {
         use crossterm::event::{MouseButton, MouseEventKind};
         match kind {
@@ -214,15 +314,43 @@ impl PreviewApp {
             MouseEventKind::ScrollUp => self.scroll_by(-3),
             MouseEventKind::Down(MouseButton::Left) if y >= 1 => {
                 let line = self.scroll as usize + (y - 1) as usize;
-                if let Some(built) = &mut self.built
-                    && built.unfold_at(line)
+                // Cards count as their neighbors; clicks on them do nothing.
+                let card_free = !self.card_lines.contains(&line);
+                let to_built = self.doc_to_built(line);
+                if let (Some(bl), Some(built)) = (to_built, self.built.as_mut())
+                    && built.unfold_at(bl)
                 {
                     self.sync_doc();
                     self.clamp_scroll();
+                    self.restyle();
+                    return;
                 }
+                if card_free && line < self.content_lines() {
+                    self.select_anchor = None;
+                    self.cursor_line = line;
+                    self.restyle();
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) if y >= 1 => {
+                let line = (self.scroll as usize + (y - 1) as usize)
+                    .min(self.content_lines().saturating_sub(1));
+                if self.select_anchor.is_none() {
+                    self.select_anchor = Some(self.cursor_line);
+                }
+                self.cursor_line = line;
+                self.restyle();
             }
             _ => {}
         }
+    }
+
+    /// Map a doc line index (with cards injected) back to the built index.
+    fn doc_to_built(&self, line: usize) -> Option<usize> {
+        if self.card_lines.contains(&line) {
+            return None;
+        }
+        let cards_before = self.card_lines.iter().filter(|c| **c < line).count();
+        Some(line - cards_before)
     }
 
     // ---- scrolling --------------------------------------------------------
@@ -277,17 +405,179 @@ impl PreviewApp {
             return;
         };
         match action {
-            Action::Down | Action::ScrollDown => self.scroll_by(1),
-            Action::Up | Action::ScrollUp => self.scroll_by(-1),
-            Action::HalfPageDown => self.page(true, false),
-            Action::HalfPageUp => self.page(false, false),
-            Action::Top | Action::DiffTop => self.scroll_by(i32::MIN),
-            Action::Bottom | Action::DiffBottom => self.scroll_by(i32::MAX),
+            Action::Down | Action::ScrollDown => self.move_cursor(1),
+            Action::Up | Action::ScrollUp => self.move_cursor(-1),
+            Action::HalfPageDown => self.move_cursor(self.viewport_h.max(2) as i32 / 2),
+            Action::HalfPageUp => self.move_cursor(-(self.viewport_h.max(2) as i32) / 2),
+            Action::Top | Action::DiffTop => self.move_cursor(i32::MIN),
+            Action::Bottom | Action::DiffBottom => self.move_cursor(i32::MAX),
+            Action::Select => {
+                if matches!(self.state, State::Diff) {
+                    self.select_anchor = match self.select_anchor {
+                        Some(_) => None,
+                        None => Some(self.cursor_line),
+                    };
+                    self.restyle();
+                }
+            }
+            Action::Annotate => self.begin_annotate(),
+            Action::SendNotes => {
+                if self.notes.is_empty() {
+                    self.flash("no notes yet — select lines and press a");
+                } else {
+                    self.popup_request = Some(PopupReq::PickAgent);
+                }
+            }
             Action::Quit => {
-                self.should_quit = true;
-                self.close_view = true;
+                // Esc/q first backs out of an active selection.
+                if self.select_anchor.is_some() {
+                    self.select_anchor = None;
+                    self.restyle();
+                } else {
+                    self.should_quit = true;
+                    self.close_view = true;
+                }
             }
             _ => {}
+        }
+    }
+
+    // ---- cursor / selection ----------------------------------------------
+
+    /// Move the cursor line (i32::MIN/MAX = home/end), keep it visible, and
+    /// re-apply the selection styling.
+    fn move_cursor(&mut self, delta: i32) {
+        let last = self.content_lines().saturating_sub(1);
+        self.cursor_line = match delta {
+            i32::MIN => 0,
+            i32::MAX => last,
+            d => (self.cursor_line as i64 + i64::from(d)).clamp(0, last as i64) as usize,
+        };
+        // Keep the cursor inside the viewport.
+        let vh = self.viewport_h.max(1) as usize;
+        if self.cursor_line < self.scroll as usize {
+            self.scroll = self.cursor_line as u16;
+        } else if self.cursor_line >= self.scroll as usize + vh {
+            self.scroll = (self.cursor_line + 1 - vh) as u16;
+        }
+        self.restyle();
+    }
+
+    /// The selected rendered-line range (anchor..=cursor), or the cursor line.
+    pub fn selection(&self) -> (usize, usize) {
+        match self.select_anchor {
+            Some(a) => (a.min(self.cursor_line), a.max(self.cursor_line)),
+            None => (self.cursor_line, self.cursor_line),
+        }
+    }
+
+    /// Re-apply the REVERSED styling for the cursor/selection lines.
+    fn restyle(&mut self) {
+        if let Some((a, b)) = self.styled.take() {
+            for line in self.doc.lines.iter_mut().skip(a).take(b - a + 1) {
+                line.style = line.style.remove_modifier(Modifier::REVERSED);
+            }
+        }
+        if !matches!(self.state, State::Diff) {
+            return;
+        }
+        let (a, b) = self.selection();
+        for line in self.doc.lines.iter_mut().skip(a).take(b - a + 1) {
+            line.style = line.style.add_modifier(Modifier::REVERSED);
+        }
+        self.styled = Some((a, b));
+    }
+
+    // ---- notes ------------------------------------------------------------
+
+    /// `a`: capture the selection as a pending note and ask the run loop to
+    /// open the annotate popup.
+    fn begin_annotate(&mut self) {
+        let Some(req) = self.current.clone() else {
+            return;
+        };
+        let Some(built) = &self.built else {
+            return;
+        };
+        let (a, b) = self.selection();
+        // Map doc lines back to built lines (skip injected card lines).
+        let to_built = |line: usize| -> Option<usize> {
+            if self.card_lines.contains(&line) {
+                return None;
+            }
+            let cards_before = self.card_lines.iter().filter(|c| **c < line).count();
+            Some(line - cards_before)
+        };
+        let mut numbers = Vec::new();
+        let mut snippet = String::new();
+        for line in a..=b {
+            let Some(bl) = to_built(line) else { continue };
+            if let Some((old, new)) = built.numbers_of_line(bl) {
+                numbers.push(new.or(old).unwrap_or(0));
+            }
+            if let Some(text) = built.marker_text_of_line(bl)
+                && !text.is_empty()
+                && snippet.lines().count() < 40
+            {
+                snippet.push_str(&text);
+                snippet.push('\n');
+            }
+        }
+        let (start, end) = match (numbers.iter().min(), numbers.iter().max()) {
+            (Some(&s), Some(&e)) if s > 0 => (s, e),
+            _ => (0, 0),
+        };
+        self.pending_note = Some(Note {
+            file: req.file,
+            start,
+            end,
+            text: String::new(),
+            snippet,
+        });
+        self.popup_request = Some(PopupReq::Annotate);
+    }
+
+    /// The annotate popup returned text: commit the pending note.
+    pub fn finish_annotate(&mut self, text: String) {
+        if let Some(mut note) = self.pending_note.take() {
+            note.text = text;
+            self.notes.push(note);
+            self.select_anchor = None;
+            self.sync_doc();
+            self.restyle();
+        }
+    }
+
+    /// A whole-file note from the list pane.
+    pub fn add_file_note(&mut self, file: PathBuf, text: String) {
+        self.notes.push(Note {
+            file,
+            start: 0,
+            end: 0,
+            text,
+            snippet: String::new(),
+        });
+        self.sync_doc();
+        self.restyle();
+    }
+
+    pub fn clear_notes(&mut self) {
+        self.notes.clear();
+        self.sync_doc();
+        self.restyle();
+    }
+
+    pub fn flash(&mut self, msg: impl Into<String>) {
+        self.flash = Some((msg.into(), std::time::Instant::now()));
+    }
+
+    /// The flash message if still fresh (3 s TTL).
+    pub fn active_flash(&self) -> Option<&str> {
+        match &self.flash {
+            Some((msg, at)) if at.elapsed() < std::time::Duration::from_secs(3) => {
+                Some(msg.as_str())
+            }
+            _ => None,
         }
     }
 }

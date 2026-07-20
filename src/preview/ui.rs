@@ -130,22 +130,33 @@ fn centered(frame: &mut Frame, area: Rect, msg: &str, style: Style) {
 // ---- footer ---------------------------------------------------------------
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &PreviewApp) {
+    if let Some(msg) = app.active_flash() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {msg}"),
+                Style::new().fg(Color::Yellow),
+            )))
+            .style(Style::new().bg(bar_bg(&app.cfg.theme))),
+            area,
+        );
+        return;
+    }
     let hint = |a| app.keys.hint(a);
+    let send_label = if app.notes.is_empty() {
+        "send notes".to_string()
+    } else {
+        format!("send ({})", app.notes.len())
+    };
     let pairs = [
-        ("j/k".to_string(), "scroll"),
-        (
-            format!(
-                "{}/{}",
-                hint(Action::HalfPageDown),
-                hint(Action::HalfPageUp)
-            ),
-            "page",
-        ),
+        ("j/k".to_string(), "move".to_string()),
+        (hint(Action::Select), "select".to_string()),
+        (hint(Action::Annotate), "note".to_string()),
+        (hint(Action::SendNotes), send_label),
         (
             format!("{}/{}", hint(Action::DiffTop), hint(Action::DiffBottom)),
-            "ends",
+            "ends".to_string(),
         ),
-        (hint(Action::Quit), "quit"),
+        (hint(Action::Quit), "quit".to_string()),
     ];
     // Drop tail hints that would overflow a narrow pane.
     let width = area.width as usize;

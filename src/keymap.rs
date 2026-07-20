@@ -24,6 +24,12 @@ pub enum Action {
     Commit,
     /// Commit history view (list of commits → files → diffs).
     Log,
+    /// Start/extend a line selection in the preview pane.
+    Select,
+    /// Add a review note (selection in the preview, whole file in the list).
+    Annotate,
+    /// Send the batched notes to an agent pane.
+    SendNotes,
     Refresh,
     Help,
     Quit,
@@ -52,6 +58,9 @@ pub const DEFAULT_KEYS: &[(Action, &str, &[&str])] = &[
     (Action::Discard, "discard", &["x"]),
     (Action::Commit, "commit", &["c"]),
     (Action::Log, "log", &["l"]),
+    (Action::Select, "select", &["v"]),
+    (Action::Annotate, "annotate", &["a"]),
+    (Action::SendNotes, "send_notes", &["p"]),
     (Action::Refresh, "refresh", &["r"]),
     (Action::Help, "help", &["?"]),
     (Action::Quit, "quit", &["q", "esc"]),
@@ -259,15 +268,15 @@ mod tests {
 
     #[test]
     fn override_replaces_default() {
-        let overrides = HashMap::from([("stage".to_string(), "a".to_string())]);
+        let overrides = HashMap::from([("stage".to_string(), "o".to_string())]);
         let km = Keymap::build(&overrides).unwrap();
         assert_eq!(
-            km.action(&ev(KeyCode::Char('a'), KeyModifiers::NONE)),
+            km.action(&ev(KeyCode::Char('o'), KeyModifiers::NONE)),
             Some(Action::Stage)
         );
         // old default 's' is gone
         assert_eq!(km.action(&ev(KeyCode::Char('s'), KeyModifiers::NONE)), None);
-        assert_eq!(km.hint(Action::Stage), "a");
+        assert_eq!(km.hint(Action::Stage), "o");
     }
 
     #[test]

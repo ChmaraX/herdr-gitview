@@ -8,6 +8,8 @@ fn main() -> anyhow::Result<()> {
         Some("open") => herdr_gitview::orchestrate::open(),
         Some("close") => herdr_gitview::orchestrate::close(),
         Some("ask") => herdr_gitview::ask::run(),
+        Some("annotate") => herdr_gitview::annotate::run_annotate(),
+        Some("pick-agent") => herdr_gitview::annotate::run_pick_agent(),
         Some(other) => {
             anyhow::bail!("unknown mode: {other} (expected list|preview|toggle|open|close|ask)")
         }
