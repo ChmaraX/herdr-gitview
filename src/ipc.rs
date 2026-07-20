@@ -68,15 +68,15 @@ pub enum ToPreview {
     SendNotes,
     /// The list's notes view hovers a note: show its file + scroll to it.
     FocusNote {
-        idx: usize,
+        id: u64,
     },
     /// Replace a note's text (edited via the list's notes view).
     EditNote {
-        idx: usize,
+        id: u64,
         text: String,
     },
     DeleteNote {
-        idx: usize,
+        id: u64,
     },
     Quit,
 }
@@ -92,12 +92,21 @@ pub enum ToList {
     /// GitInPane finished. `ok` = exit status 0.
     GitDone { ok: bool },
     /// The batched review notes changed; full snapshot for the notes view.
-    /// Tuples: (file, start, end, text).
-    Notes {
-        notes: Vec<(PathBuf, u32, u32, String)>,
-    },
+    Notes { notes: Vec<NoteMeta> },
     /// The preview pane asked to open the notes view (n works everywhere).
     ShowNotesView,
+}
+
+/// A review note as shared between the panes. The preview owns the store and
+/// allocates the ids; the list acts on notes *by id*, so a mutation between
+/// snapshot and command can never hit the wrong note.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteMeta {
+    pub id: u64,
+    pub file: PathBuf,
+    pub start: u32,
+    pub end: u32,
+    pub text: String,
 }
 
 /// One end of the IPC link: a write half plus an optional reader half.

@@ -35,6 +35,7 @@ pub struct ShowReq {
 /// A batched review note, anchored to a file (and optionally a line range).
 #[derive(Debug, Clone)]
 pub struct Note {
+    pub id: u64,
     pub file: PathBuf,
     /// New-file line range; 0-0 = whole file (list-side note).
     pub start: u32,
@@ -104,10 +105,12 @@ pub struct PreviewApp {
     saved_tint: Vec<(usize, ratatui::text::Line<'static>)>,
     /// Rendered indices of injected note-card lines (excluded from ranges).
     card_lines: Vec<usize>,
-    /// Note index to scroll to once its file's diff arrives (notes view hover).
-    pending_focus: Option<usize>,
+    /// Note id to scroll to once its file's diff arrives (notes view hover).
+    pending_focus: Option<u64>,
     /// Bumped on every note mutation; the run loop broadcasts on change.
     pub notes_rev: u64,
+    /// Monotonic id source for notes.
+    next_note_id: u64,
     /// Transient footer flash message.
     pub flash: Option<(String, std::time::Instant)>,
 
@@ -142,6 +145,7 @@ impl PreviewApp {
             card_lines: Vec::new(),
             pending_focus: None,
             notes_rev: 0,
+            next_note_id: 1,
             flash: None,
             state: State::Splash("waiting for file list…"),
             should_quit: false,
@@ -226,8 +230,8 @@ impl PreviewApp {
         self.state = State::Diff;
         self.clamp_scroll();
         self.rebuild();
-        if let Some(idx) = self.pending_focus.take() {
-            self.scroll_to_note(idx);
+        if let Some(id) = self.pending_focus.take() {
+            self.scroll_to_note(id);
         }
     }
 
@@ -583,6 +587,7 @@ impl PreviewApp {
             _ => (0, 0),
         };
         self.pending_note = Some(Note {
+            id: 0, // allocated when committed
             file: req.file,
             start,
             end,
@@ -596,6 +601,8 @@ impl PreviewApp {
     pub fn finish_annotate(&mut self, text: String) {
         if let Some(mut note) = self.pending_note.take() {
             note.text = text;
+            note.id = self.next_note_id;
+            self.next_note_id += 1;
             self.notes.push(note);
             self.notes_rev += 1;
             self.select_anchor = None;
@@ -606,12 +613,14 @@ impl PreviewApp {
     /// A whole-file note from the list pane.
     pub fn add_file_note(&mut self, file: PathBuf, text: String) {
         self.notes.push(Note {
+            id: self.next_note_id,
             file,
             start: 0,
             end: 0,
             text,
             snippet: String::new(),
         });
+        self.next_note_id += 1;
         self.notes_rev += 1;
         self.rebuild();
     }
@@ -622,17 +631,18 @@ impl PreviewApp {
         self.rebuild();
     }
 
-    pub fn edit_note(&mut self, idx: usize, text: String) {
-        if let Some(note) = self.notes.get_mut(idx) {
+    pub fn edit_note(&mut self, id: u64, text: String) {
+        if let Some(note) = self.notes.iter_mut().find(|n| n.id == id) {
             note.text = text;
             self.notes_rev += 1;
             self.rebuild();
         }
     }
 
-    pub fn delete_note(&mut self, idx: usize) {
-        if idx < self.notes.len() {
-            self.notes.remove(idx);
+    pub fn delete_note(&mut self, id: u64) {
+        let before = self.notes.len();
+        self.notes.retain(|n| n.id != id);
+        if self.notes.len() != before {
             self.notes_rev += 1;
             self.rebuild();
         }
@@ -640,23 +650,24 @@ impl PreviewApp {
 
     /// The notes view hovered note `idx`: scroll its card into view when its
     /// file is already shown, else remember it until that diff arrives.
-    pub fn focus_note(&mut self, idx: usize) {
-        let same_file = match (self.notes.get(idx), &self.current) {
+    pub fn focus_note(&mut self, id: u64) {
+        let note = self.notes.iter().find(|n| n.id == id);
+        let same_file = match (note, &self.current) {
             (Some(note), Some(req)) => note.file == req.file,
             _ => false,
         };
         if same_file && matches!(self.state, State::Diff) {
-            self.scroll_to_note(idx);
+            self.scroll_to_note(id);
         } else {
-            self.pending_focus = Some(idx);
+            self.pending_focus = Some(id);
         }
     }
 
-    fn scroll_to_note(&mut self, idx: usize) {
+    fn scroll_to_note(&mut self, id: u64) {
         let Some(req) = &self.current else { return };
-        if self.notes.get(idx).is_none() {
+        let Some(idx) = self.notes.iter().position(|n| n.id == id) else {
             return;
-        }
+        };
         // Rank of this note's card among the current file's cards (they were
         // injected sorted by anchor line).
         let Some(built) = &self.built else { return };

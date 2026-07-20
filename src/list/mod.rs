@@ -315,14 +315,14 @@ fn event_loop(
                 }
             }
         }
-        if let Some((idx, current)) = app.edit_note_request.take() {
+        if let Some((id, current)) = app.edit_note_request.take() {
             let envs = [
                 ("GITVIEW_ASK_TEXT".to_string(), "edit note".to_string()),
                 ("GITVIEW_PREFILL".to_string(), current.clone()),
             ];
-            if !popups.open("annotate", &envs, (64, 8), ListPopup::EditNote(idx)) {
+            if !popups.open("annotate", &envs, (64, 8), ListPopup::EditNote(id)) {
                 if popups.is_open() {
-                    app.edit_note_request = Some((idx, current));
+                    app.edit_note_request = Some((id, current));
                 } else {
                     app.set_status("couldn't open the edit popup (see debug log)");
                 }
@@ -365,9 +365,9 @@ fn event_loop(
                     send(&mut conn, &ToPreview::AddNote { file, text });
                 }
             }
-            Some((ListPopup::EditNote(idx), crate::popup::Answer::Text(text))) => {
+            Some((ListPopup::EditNote(id), crate::popup::Answer::Text(text))) => {
                 if !text.is_empty() {
-                    send(&mut conn, &ToPreview::EditNote { idx, text });
+                    send(&mut conn, &ToPreview::EditNote { id, text });
                 }
             }
             Some((_, crate::popup::Answer::Dead)) | None => {}
@@ -377,18 +377,19 @@ fn event_loop(
             app.send_notes_request = false;
             send(&mut conn, &ToPreview::SendNotes);
         }
-        if let Some(idx) = app.delete_note_request.take() {
-            send(&mut conn, &ToPreview::DeleteNote { idx });
+        if let Some(id) = app.delete_note_request.take() {
+            send(&mut conn, &ToPreview::DeleteNote { id });
         }
 
         if show_dirty && dirty_since.elapsed() >= SHOW_DEBOUNCE {
             if app.mode == app::Mode::Notes {
                 // Hovering a note: show its file's diff + scroll to the card.
-                if let Some(idx) = app.selected_note() {
-                    if let Some(msg) = note_show(app, idx) {
+                if let Some(note) = app.selected_note() {
+                    let id = note.id;
+                    if let Some(msg) = note_show(app, id) {
                         send(&mut conn, &msg);
                     }
-                    send(&mut conn, &ToPreview::FocusNote { idx });
+                    send(&mut conn, &ToPreview::FocusNote { id });
                 }
             } else {
                 match current_show(app) {
@@ -454,9 +455,8 @@ fn activate_selection(app: &mut App, conn: &mut Option<Conn>) {
     match app.mode {
         app::Mode::Log => app.open_commit(),
         app::Mode::Notes => {
-            if let Some(idx) = app.selected_note() {
-                let text = app.notes.get(idx).map(|n| n.3.clone()).unwrap_or_default();
-                app.edit_note_request = Some((idx, text));
+            if let Some(note) = app.selected_note() {
+                app.edit_note_request = Some((note.id, note.text.clone()));
             }
         }
         app::Mode::Files | app::Mode::CommitFiles => {
@@ -477,7 +477,7 @@ fn activate_selection(app: &mut App, conn: &mut Option<Conn>) {
 enum ListPopup {
     Confirm,
     AnnotateFile(PathBuf),
-    EditNote(usize),
+    EditNote(u64),
 }
 
 /// Open the current modal as a native floating popup pane; false when it
@@ -603,9 +603,13 @@ fn current_show(app: &App) -> Option<ToPreview> {
 /// Identity of what the preview is showing; a change here means "re-Show".
 fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
     if app.mode == app::Mode::Notes {
-        let idx = app.selected_note()?;
-        let file = app.notes.get(idx)?.0.clone();
-        return Some((file, app.scope, false, Some(format!("note-{idx}"))));
+        let note = app.selected_note()?;
+        return Some((
+            note.file.clone(),
+            app.scope,
+            false,
+            Some(format!("note-{}", note.id)),
+        ));
     }
     let (e, staged) = app.selected_entry()?;
     let commit = match app.mode {
@@ -617,8 +621,8 @@ fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
 
 /// The Show for a hovered note: its file in the note's own context — the
 /// commit it was made against (history notes) or the live worktree diff.
-fn note_show(app: &App, idx: usize) -> Option<ToPreview> {
-    let (file, _, _, _) = app.notes.get(idx)?;
+fn note_show(app: &App, id: u64) -> Option<ToPreview> {
+    let file = &app.notes.iter().find(|n| n.id == id)?.file;
     // Prefer real entry metadata when the file is among the current entries;
     // otherwise synthesize (kind only affects rename pathspecs).
     let entry = app.entries.iter().find(|e| &e.path == file);

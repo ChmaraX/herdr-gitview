@@ -205,7 +205,13 @@ fn event_loop(
                 let snapshot: Vec<_> = app
                     .notes
                     .iter()
-                    .map(|n| (n.file.clone(), n.start, n.end, n.text.clone()))
+                    .map(|n| crate::ipc::NoteMeta {
+                        id: n.id,
+                        file: n.file.clone(),
+                        start: n.start,
+                        end: n.end,
+                        text: n.text.clone(),
+                    })
                     .collect();
                 let _ = c.send(&ToList::Notes { notes: snapshot });
             }
@@ -294,9 +300,9 @@ fn handle_ipc(app: &mut PreviewApp, msg: ToPreview, work_tx: &Sender<ShowReq>) {
         ToPreview::Page { down, full } => app.page(down, full),
         ToPreview::Clear => app.clear(),
         ToPreview::AddNote { file, text } => app.add_file_note(file, text),
-        ToPreview::FocusNote { idx } => app.focus_note(idx),
-        ToPreview::EditNote { idx, text } => app.edit_note(idx, text),
-        ToPreview::DeleteNote { idx } => app.delete_note(idx),
+        ToPreview::FocusNote { id } => app.focus_note(id),
+        ToPreview::EditNote { id, text } => app.edit_note(id, text),
+        ToPreview::DeleteNote { id } => app.delete_note(id),
         ToPreview::SendNotes => {
             if app.notes.is_empty() {
                 app.flash("no notes yet");

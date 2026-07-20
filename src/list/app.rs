@@ -127,16 +127,15 @@ pub struct App {
     /// True while the current modal is being shown as a native herdr popup
     /// pane instead of the in-pane overlay (the answer arrives via file).
     pub modal_external: bool,
-    /// Review notes (owned by the preview; mirrored for the notes view):
-    /// `(file, start, end, text)`.
-    pub notes: Vec<(std::path::PathBuf, u32, u32, String)>,
+    /// Review notes (owned by the preview; mirrored for the notes view).
+    pub notes: Vec<crate::ipc::NoteMeta>,
     /// Where `n` was pressed, so the notes view can return there.
     notes_return: Option<Mode>,
     pub annotate_request: Option<std::path::PathBuf>,
     pub send_notes_request: bool,
     /// Edit/delete requests for the run loop (they need popups / the conn).
-    pub edit_note_request: Option<(usize, String)>,
-    pub delete_note_request: Option<usize>,
+    pub edit_note_request: Option<(u64, String)>,
+    pub delete_note_request: Option<u64>,
 }
 
 impl App {
@@ -270,9 +269,9 @@ impl App {
         }
     }
 
-    pub fn selected_note(&self) -> Option<usize> {
+    pub fn selected_note(&self) -> Option<&crate::ipc::NoteMeta> {
         match self.rows.get(self.cursor)? {
-            ListRow::Note(idx) => Some(*idx),
+            ListRow::Note(idx) => self.notes.get(*idx),
             _ => None,
         }
     }
@@ -322,7 +321,7 @@ impl App {
             Action::Select => {}
             Action::Delete => {
                 if self.mode == Mode::Notes {
-                    self.delete_note_request = self.selected_note();
+                    self.delete_note_request = self.selected_note().map(|n| n.id);
                 }
             }
             Action::Annotate => {
