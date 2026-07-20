@@ -132,6 +132,26 @@ impl Repo {
         "HEAD".to_string()
     }
 
+    /// The configured or auto-detected base ref plus its merge-base with
+    /// HEAD, resolved in one place for both panes.
+    pub fn resolve_base(&self, cfg_base: &str) -> Result<(String, String)> {
+        let base = if cfg_base.is_empty() {
+            self.detect_base()
+        } else {
+            cfg_base.to_string()
+        };
+        let mb = self.merge_base(&base)?;
+        Ok((base, mb))
+    }
+
+    /// The current HEAD commit id (cache key for base resolution).
+    pub fn head_sha(&self) -> Option<String> {
+        let out = self.git_lenient(&["rev-parse", "HEAD"]).ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
     pub fn merge_base(&self, base: &str) -> Result<String> {
         let out = self.git(&["merge-base", "HEAD", base])?;
         Ok(String::from_utf8_lossy(&out).trim().to_string())

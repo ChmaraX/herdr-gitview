@@ -757,13 +757,8 @@ impl App {
         match self.scope {
             Scope::Worktree => {
                 if self.merge_base.is_none() {
-                    let base = if self.cfg.base.is_empty() {
-                        self.repo.detect_base()
-                    } else {
-                        self.cfg.base.clone()
-                    };
-                    match self.repo.merge_base(&base) {
-                        Ok(mb) => {
+                    match self.repo.resolve_base(&self.cfg.base) {
+                        Ok((base, mb)) => {
                             self.base = base;
                             self.merge_base = Some(mb);
                         }

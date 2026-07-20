@@ -99,6 +99,9 @@ pub struct PreviewApp {
     pub popup_request: Option<PopupReq>,
     /// `n` pressed here: ask the list pane to open the notes view.
     pub notes_view_request: bool,
+    /// Pristine copies of the lines currently tinted, so a cursor move can
+    /// restore them instead of re-cloning the whole (up to 20k-line) doc.
+    saved_tint: Vec<(usize, ratatui::text::Line<'static>)>,
     /// Rendered indices of injected note-card lines (excluded from ranges).
     card_lines: Vec<usize>,
     /// Note index to scroll to once its file's diff arrives (notes view hover).
@@ -135,6 +138,7 @@ impl PreviewApp {
             pending_note: None,
             popup_request: None,
             notes_view_request: false,
+            saved_tint: Vec::new(),
             card_lines: Vec::new(),
             pending_focus: None,
             notes_rev: 0,
@@ -157,6 +161,7 @@ impl PreviewApp {
     pub fn clear(&mut self) {
         self.current = None;
         self.built = None;
+        self.saved_tint.clear();
         self.doc = Text::default();
         self.first_change = None;
         self.truncated = 0;
@@ -200,6 +205,7 @@ impl PreviewApp {
         self.first_change = built.first_change;
         if built.binary {
             self.built = None;
+            self.saved_tint.clear();
             self.doc = Text::default();
             self.state = State::Binary;
             self.clamp_scroll();
@@ -207,6 +213,7 @@ impl PreviewApp {
         }
         if built.is_empty {
             self.built = None;
+            self.saved_tint.clear();
             self.doc = Text::default();
             self.truncated = 0;
             self.state = State::Empty;
@@ -218,7 +225,7 @@ impl PreviewApp {
         self.select_anchor = None;
         self.state = State::Diff;
         self.clamp_scroll();
-        self.restyle();
+        self.rebuild();
         if let Some(idx) = self.pending_focus.take() {
             self.scroll_to_note(idx);
         }
@@ -314,7 +321,7 @@ impl PreviewApp {
                     && built.unfold_at(bl)
                 {
                     self.clamp_scroll();
-                    self.restyle();
+                    self.rebuild();
                     return;
                 }
                 if card_free && line < self.content_lines() {
@@ -469,12 +476,26 @@ impl PreviewApp {
         }
     }
 
-    /// Re-render the doc from the built diff, then tint the cursor line and
-    /// any visual selection with subtle background colors (text colors are
-    /// never touched; the tint overrides the red/green line tints while
-    /// selected, like an editor would).
-    fn restyle(&mut self) {
+    /// Full re-render from the built diff (cards re-injected), then tint.
+    /// Use after anything that changes the doc's *content*; plain cursor or
+    /// selection moves go through `restyle` alone.
+    fn rebuild(&mut self) {
         self.sync_doc();
+        self.saved_tint.clear();
+        self.restyle();
+    }
+
+    /// Tint the cursor line / selection with subtle background colors,
+    /// restoring the previously tinted lines first (text colors are never
+    /// touched; the tint overrides the red/green line tints while selected,
+    /// like an editor would).
+    fn restyle(&mut self) {
+        // Restore whatever was tinted before.
+        for (idx, line) in self.saved_tint.drain(..) {
+            if let Some(slot) = self.doc.lines.get_mut(idx) {
+                *slot = line;
+            }
+        }
         if !matches!(self.state, State::Diff) {
             return;
         }
@@ -491,23 +512,29 @@ impl PreviewApp {
         };
         let last = self.doc.lines.len().saturating_sub(1);
         self.cursor_line = self.cursor_line.min(last);
-        fn tint(lines: &mut [ratatui::text::Line<'_>], idx: usize, bg: Color) {
+        let tint = |idx: usize,
+                    bg: Color,
+                    saved: &mut Vec<(usize, ratatui::text::Line<'static>)>,
+                    lines: &mut Vec<ratatui::text::Line<'static>>| {
             if let Some(line) = lines.get_mut(idx) {
+                saved.push((idx, line.clone()));
                 line.style = line.style.bg(bg);
                 for span in &mut line.spans {
                     span.style = span.style.bg(bg);
                 }
             }
-        }
+        };
+        let mut saved = std::mem::take(&mut self.saved_tint);
         match self.select_anchor {
             Some(_) => {
                 let (a, b) = self.selection();
                 for idx in a..=b {
-                    tint(&mut self.doc.lines, idx, select_bg);
+                    tint(idx, select_bg, &mut saved, &mut self.doc.lines);
                 }
             }
-            None => tint(&mut self.doc.lines, self.cursor_line, cursor_bg),
+            None => tint(self.cursor_line, cursor_bg, &mut saved, &mut self.doc.lines),
         }
+        self.saved_tint = saved;
     }
 
     // ---- notes ------------------------------------------------------------
@@ -572,7 +599,7 @@ impl PreviewApp {
             self.notes.push(note);
             self.notes_rev += 1;
             self.select_anchor = None;
-            self.restyle();
+            self.rebuild();
         }
     }
 
@@ -586,20 +613,20 @@ impl PreviewApp {
             snippet: String::new(),
         });
         self.notes_rev += 1;
-        self.restyle();
+        self.rebuild();
     }
 
     pub fn clear_notes(&mut self) {
         self.notes.clear();
         self.notes_rev += 1;
-        self.restyle();
+        self.rebuild();
     }
 
     pub fn edit_note(&mut self, idx: usize, text: String) {
         if let Some(note) = self.notes.get_mut(idx) {
             note.text = text;
             self.notes_rev += 1;
-            self.restyle();
+            self.rebuild();
         }
     }
 
@@ -607,7 +634,7 @@ impl PreviewApp {
         if idx < self.notes.len() {
             self.notes.remove(idx);
             self.notes_rev += 1;
-            self.restyle();
+            self.rebuild();
         }
     }
 

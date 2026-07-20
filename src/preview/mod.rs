@@ -504,12 +504,15 @@ fn spawn_diff_worker(tx: Sender<Event>, repo: Repo, cfg: Config) -> Sender<ShowR
     thread::spawn(move || {
         // The highlighter is expensive to set up — build it once per process.
         let hl = highlight::Highlighter::new(&cfg.theme);
+        // Branch-scope base resolution cached per HEAD (it only moves when
+        // HEAD does) so holding j doesn't spawn a git storm.
+        let mut base_cache: Option<(String, String)> = None; // (head, merge_base)
         while let Ok(mut req) = work_rx.recv() {
             // Collapse a backlog to the newest request.
             while let Ok(newer) = work_rx.try_recv() {
                 req = newer;
             }
-            let result = fetch_contents(&repo, &cfg, &req)
+            let result = fetch_contents(&repo, &cfg, &req, &mut base_cache)
                 .map(|(old, new)| render::build(&req.file, &old, &new, &hl, &cfg.theme));
             if tx.send(Event::Diff { req, result }).is_err() {
                 break;
@@ -520,7 +523,13 @@ fn spawn_diff_worker(tx: Sender<Event>, repo: Repo, cfg: Config) -> Sender<ShowR
 }
 
 /// The (old, new) content pair a request diffs, per scope/staged/commit.
-fn fetch_contents(repo: &Repo, cfg: &Config, req: &ShowReq) -> Result<(String, String), String> {
+/// `base_cache` holds `(head_sha, merge_base)` across calls.
+fn fetch_contents(
+    repo: &Repo,
+    cfg: &Config,
+    req: &ShowReq,
+    base_cache: &mut Option<(String, String)>,
+) -> Result<(String, String), String> {
     let path = &req.file;
     let old_path = req.orig_path.as_deref().unwrap_or(path);
     let err = |e: anyhow::Error| first_line(&e.to_string());
@@ -535,12 +544,15 @@ fn fetch_contents(repo: &Repo, cfg: &Config, req: &ShowReq) -> Result<(String, S
     }
     match req.scope {
         Scope::Branch => {
-            let base = if cfg.base.is_empty() {
-                repo.detect_base()
-            } else {
-                cfg.base.clone()
+            let head = repo.head_sha().unwrap_or_default();
+            let mb = match base_cache {
+                Some((cached_head, mb)) if *cached_head == head => mb.clone(),
+                _ => {
+                    let (_, mb) = repo.resolve_base(&cfg.base).map_err(err)?;
+                    *base_cache = Some((head, mb.clone()));
+                    mb
+                }
             };
-            let mb = repo.merge_base(&base).map_err(err)?;
             let old = some(repo.file_at(&mb, old_path))?;
             let new = repo.file_in_worktree(path).unwrap_or_default();
             Ok((old, new))
