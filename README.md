@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/github/license/ChmaraX/herdr-gitview)](LICENSE)
 
 <p align="center">
-  <a href="#features">features</a> · <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#controls">controls</a> · <a href="#review-notes">review notes</a> · <a href="#configuration">configuration</a> · <a href="#limitations">limitations</a> · <a href="CHANGELOG.md">changelog</a>
+  <a href="#features">features</a> · <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#configuration">configuration</a> · <a href="#limitations">limitations</a> · <a href="CHANGELOG.md">changelog</a>
 </p>
 
 A git view for [herdr](https://herdr.dev). Changed files on one side, a
@@ -92,7 +92,7 @@ Editing, commits, history diffs, and notes need the second pane, i.e. herdr.
 
 ## Quick start
 
-1. **Open it.** `prefix+g` in any repo. Changed files on the right, the
+1. **Open it.** `cmd+g` in any repo. Changed files on the right, the
    selected file's diff on the left.
 2. **Browse.** `j`/`k` (or the wheel) - the diff follows your cursor.
    `Tab`-free: selecting a file under *staged changes* shows its staged diff,
@@ -108,69 +108,6 @@ Editing, commits, history diffs, and notes need the second pane, i.e. herdr.
 
 The footer in each pane shows only the keys that currently work, so you learn
 it by using it.
-
-## Controls
-
-Defaults; every action can be rebound ([Keybindings](#keybindings)).
-
-**File list**
-
-| Key | Action |
-| --- | --- |
-| `j` `k` · `↑` `↓` · wheel | Move (the diff follows) |
-| `Enter` · double-click | Open in the editor / show a commit |
-| `s` | Stage - or unstage, when the file sits in the staged section |
-| `u` | Unstage explicitly |
-| `x` | Discard changes, with confirmation |
-| `c` | Commit - the message opens in nvim on the diff pane |
-| `w` | Worktree ↔ branch scope (diff vs the merge base) |
-| `l` | Commit history |
-| `a` | Annotate the selected file |
-| `n` | Notes view (works from either pane) |
-| `p` | Send the batched notes to an agent |
-| `r` | Refresh - also reconnects the diff pane if the link dropped |
-| `?` | Help |
-| `q` · `Esc` | Back - commit files → log → files → closed |
-
-**Diff pane**
-
-| Key | Action |
-| --- | --- |
-| `j` `k` | Move the cursor line (the view follows) |
-| `Ctrl+d` `Ctrl+u` | Half page |
-| `g` `G` · `Home` `End` | Top / bottom |
-| `v` · drag | Visual line selection |
-| `a` | Annotate the selection - or the cursor line without one |
-| `p` | Send notes |
-| click a `⋯ n unchanged lines` line | Expand the fold |
-| `q` · `Esc` | Leave selection, then close the view |
-
-**While nvim is open** - `:q` returns to the diff. In the list: `Enter` on
-another file switches nvim to it; moving the cursor closes a clean session
-automatically; `q` or `c` close it too, asking save/discard first if there
-are unsaved changes.
-
-## Review notes
-
-The workflow this plugin exists for: your agent wrote code, you're reading
-the diff, and you want to say *"this part - do it differently"* without
-retyping context.
-
-1. Select the lines (`v` or drag) and press `a`. A floating input opens,
-   titled with the exact range: `note for src/git.rs:118-119`.
-2. The note stays visible as a card under those lines. Add more across as
-   many files as you like - the count rides in the footer.
-3. `n` shows all pending notes; hovering one jumps its diff into the preview.
-   `Enter` edits, `d` deletes.
-4. `p` opens the agent picker - every agent pane in the current workspace,
-   with its status and tab. `Enter` types the batch into that agent's input
-   and leaves it there for you to amend and send. `Shift+Enter` (or
-   `Ctrl+Enter`) submits it directly.
-
-Each note is delivered as `path:start-end - your note` followed by the
-selected lines as a fenced ```diff block, so the agent sees exactly what you
-saw. Notes attach to *current* (staged/unstaged) changes - history is
-read-only.
 
 ## Configuration
 
@@ -226,7 +163,6 @@ scroll_down scroll_up`.
   commits.
 - Native floating dialogs need herdr ≥ 0.7.4; older versions get in-pane
   overlays.
-- No hunk-level staging yet ([roadmap](#roadmap)).
 
 ## Building from source
 
@@ -240,13 +176,6 @@ herdr plugin link "$PWD"
 `cargo test` runs the full suite - parser units, fixture git repos, and
 ratatui render tests. `just release-dry` mirrors CI (fmt, clippy, tests,
 release build). `GITVIEW_DEBUG=1` writes a debug log to the plugin state dir.
-
-## Roadmap
-
-- Hunk-level stage / discard
-- Jump-to-hunk keys, diff search
-- Persisted notes
-- More themes
 
 ## Attribution
 
