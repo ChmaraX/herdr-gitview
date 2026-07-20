@@ -142,22 +142,35 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &PreviewApp) {
         return;
     }
     let hint = |a| app.keys.hint(a);
-    let send_label = if app.notes.is_empty() {
-        "send notes".to_string()
-    } else {
-        format!("send ({})", app.notes.len())
-    };
-    let pairs = [
-        ("j/k".to_string(), "move".to_string()),
-        (hint(Action::Select), "select".to_string()),
-        (hint(Action::Annotate), "note".to_string()),
-        (hint(Action::SendNotes), send_label),
-        (
+    // Only advertise what applies to the current diff.
+    let has_diff = matches!(app.state, State::Diff);
+    let annotatable = has_diff
+        && app
+            .current
+            .as_ref()
+            .map(|r| r.commit.is_none() && r.scope == Scope::Worktree)
+            .unwrap_or(false);
+    let mut pairs = Vec::new();
+    if has_diff {
+        pairs.push(("j/k".to_string(), "move".to_string()));
+    }
+    if annotatable {
+        pairs.push((hint(Action::Select), "select".to_string()));
+        pairs.push((hint(Action::Annotate), "note".to_string()));
+    }
+    if !app.notes.is_empty() {
+        pairs.push((
+            hint(Action::SendNotes),
+            format!("send ({})", app.notes.len()),
+        ));
+    }
+    if has_diff {
+        pairs.push((
             format!("{}/{}", hint(Action::DiffTop), hint(Action::DiffBottom)),
             "ends".to_string(),
-        ),
-        (hint(Action::Quit), "quit".to_string()),
-    ];
+        ));
+    }
+    pairs.push((hint(Action::Quit), "quit".to_string()));
     // Drop tail hints that would overflow a narrow pane.
     let width = area.width as usize;
     let mut spans = Vec::new();

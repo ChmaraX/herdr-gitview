@@ -11,7 +11,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::App;
 use super::app::{ListRow, Modal, Mode};
-use crate::git::{ChangeKind, CommitInfo, FileEntry, Scope};
+use crate::git::{ChangeKind, CommitInfo, FileEntry, Scope, StageState};
 use crate::keymap::Action;
 
 /// Actions shown in the help overlay, in a sensible reading order.
@@ -372,17 +372,25 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
 /// `? help` always survives so everything stays discoverable.
 fn footer_hints(app: &App, width: usize) -> Line<'static> {
     let pairs: Vec<(String, &str)> = match app.mode {
-        Mode::Log => vec![
-            (sym(app.keys.hint(Action::Edit)), "show commit"),
-            (sym(app.keys.hint(Action::Quit)), "back"),
-            (sym(app.keys.hint(Action::Help)), "help"),
-        ],
-        Mode::CommitFiles => vec![
-            (sym(app.keys.hint(Action::Edit)), "edit"),
-            (sym(app.keys.hint(Action::HalfPageDown)), "scroll"),
-            (sym(app.keys.hint(Action::Quit)), "back"),
-            (sym(app.keys.hint(Action::Help)), "help"),
-        ],
+        Mode::Log => {
+            let mut pairs = Vec::new();
+            if !app.commits.is_empty() {
+                pairs.push((sym(app.keys.hint(Action::Edit)), "show commit"));
+            }
+            pairs.push((sym(app.keys.hint(Action::Quit)), "back"));
+            pairs.push((sym(app.keys.hint(Action::Help)), "help"));
+            pairs
+        }
+        Mode::CommitFiles => {
+            let mut pairs = Vec::new();
+            if !app.entries.is_empty() {
+                pairs.push((sym(app.keys.hint(Action::Edit)), "edit"));
+                pairs.push((sym(app.keys.hint(Action::HalfPageDown)), "scroll"));
+            }
+            pairs.push((sym(app.keys.hint(Action::Quit)), "back"));
+            pairs.push((sym(app.keys.hint(Action::Help)), "help"));
+            pairs
+        }
         Mode::Notes => vec![
             (sym(app.keys.hint(Action::Edit)), "edit note"),
             (sym(app.keys.hint(Action::Delete)), "delete"),
@@ -391,20 +399,44 @@ fn footer_hints(app: &App, width: usize) -> Line<'static> {
             (sym(app.keys.hint(Action::Help)), "help"),
         ],
         Mode::Files => {
-            let mut pairs = vec![
-                (sym(app.keys.hint(Action::Edit)), "edit"),
-                (sym(app.keys.hint(Action::Stage)), "stage"),
-                (sym(app.keys.hint(Action::Unstage)), "unstage"),
-                (sym(app.keys.hint(Action::Discard)), "discard"),
-                (sym(app.keys.hint(Action::Commit)), "commit"),
-                (sym(app.keys.hint(Action::Annotate)), "note"),
-                (sym(app.keys.hint(Action::Log)), "log"),
-                (sym(app.keys.hint(Action::Help)), "help"),
-                (sym(app.keys.hint(Action::Quit)), "quit"),
-            ];
-            if !app.notes.is_empty() {
-                pairs.insert(6, (sym(app.keys.hint(Action::NotesView)), "notes"));
+            // Only advertise what is currently possible.
+            let has_files = !app.entries.is_empty();
+            let worktree = app.scope == Scope::Worktree;
+            let selected = app.selected_entry();
+            let sel_ok = selected
+                .map(|(e, _)| e.kind != ChangeKind::Conflicted)
+                .unwrap_or(false);
+            let any_staged = app
+                .entries
+                .iter()
+                .any(|e| matches!(e.stage, StageState::Staged | StageState::Partial));
+            let sel_staged = selected
+                .map(|(e, _)| matches!(e.stage, StageState::Staged | StageState::Partial))
+                .unwrap_or(false);
+
+            let mut pairs = Vec::new();
+            if has_files {
+                pairs.push((sym(app.keys.hint(Action::Edit)), "edit"));
             }
+            if worktree && sel_ok {
+                pairs.push((sym(app.keys.hint(Action::Stage)), "stage"));
+                if sel_staged {
+                    pairs.push((sym(app.keys.hint(Action::Unstage)), "unstage"));
+                }
+                pairs.push((sym(app.keys.hint(Action::Discard)), "discard"));
+            }
+            if worktree && any_staged {
+                pairs.push((sym(app.keys.hint(Action::Commit)), "commit"));
+            }
+            if worktree && has_files {
+                pairs.push((sym(app.keys.hint(Action::Annotate)), "note"));
+            }
+            if !app.notes.is_empty() {
+                pairs.push((sym(app.keys.hint(Action::NotesView)), "notes"));
+            }
+            pairs.push((sym(app.keys.hint(Action::Log)), "log"));
+            pairs.push((sym(app.keys.hint(Action::Help)), "help"));
+            pairs.push((sym(app.keys.hint(Action::Quit)), "quit"));
             pairs
         }
     };
