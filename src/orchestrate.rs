@@ -88,6 +88,8 @@ fn open_view(repo: &Path) -> Result<()> {
     let tab_id = pane_tab_id(&preview_pane)?;
     // Label the tab so the tab bar reads as ours, not as a generic pane title.
     let _ = herdr_json(&["tab", "rename", &tab_id, "gitview"]);
+
+    let cfg = crate::config::Config::load();
     let list_pane = open_pane(
         repo,
         &socket,
@@ -106,7 +108,7 @@ fn open_view(repo: &Path) -> Result<()> {
 
     // `list_side = "left"`: panes are opened preview-left/list-right (the
     // preview must exist first so the list knows its pane id), then swapped.
-    if crate::config::Config::load().list_side == crate::config::ListSide::Left {
+    if cfg.list_side == crate::config::ListSide::Left {
         let _ = herdr_json(&[
             "pane",
             "swap",

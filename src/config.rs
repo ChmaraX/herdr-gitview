@@ -13,8 +13,6 @@ use crate::logx::log;
 pub struct Config {
     /// Branch-scope base; "" = auto-detect via `Repo::detect_base`.
     pub base: String,
-    /// List pane fraction of total width, clamped to 0.15..=0.6.
-    pub split_ratio: f64,
     /// Which side the list pane sits on: "right" | "left".
     pub list_side: ListSide,
     /// Editor argv; file (and `+<line>`) appended when launching.
@@ -24,6 +22,11 @@ pub struct Config {
     pub show_untracked: bool,
     /// Diff color flavor — picks the syntax theme and all UI tints.
     pub theme: Theme,
+    /// Which scope the view opens in: "worktree" (default) or "branch".
+    pub default_scope: ScopePref,
+    /// Unchanged context lines kept around each change before folding (git's
+    /// diff.context equivalent). Clamped to 0..=20.
+    pub context_lines: usize,
     /// action name -> key string, overrides `keymap::DEFAULT_KEYS`.
     pub keybindings: HashMap<String, String>,
 }
@@ -49,16 +52,25 @@ impl Theme {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScopePref {
+    #[default]
+    Worktree,
+    Branch,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
             base: String::new(),
-            split_ratio: 0.35,
             list_side: ListSide::Right,
             editor: vec!["nvim".into()],
             poll_ms: 2000,
             show_untracked: true,
             theme: Theme::Dark,
+            default_scope: ScopePref::Worktree,
+            context_lines: 3,
             keybindings: HashMap::new(),
         }
     }
@@ -85,7 +97,11 @@ impl Config {
                 Config::default()
             }
         };
-        cfg.split_ratio = cfg.split_ratio.clamp(0.15, 0.6);
+        cfg.context_lines = cfg.context_lines.min(20);
+        // A tiny non-zero poll interval would hammer git; keep it sane.
+        if cfg.poll_ms > 0 {
+            cfg.poll_ms = cfg.poll_ms.max(250);
+        }
         cfg
     }
 }
@@ -101,7 +117,6 @@ mod tests {
     #[test]
     fn empty_file_gives_defaults() {
         let cfg = Config::parse("");
-        assert_eq!(cfg.split_ratio, 0.35);
         assert_eq!(cfg.list_side, ListSide::Right);
         assert_eq!(cfg.editor, vec!["nvim".to_string()]);
         assert_eq!(cfg.poll_ms, 2000);
@@ -114,14 +129,12 @@ mod tests {
     fn partial_file_keeps_other_defaults() {
         let cfg = Config::parse(
             r#"
-            split_ratio = 0.5
             list_side = "left"
 
             [keybindings]
             stage = "a"
             "#,
         );
-        assert_eq!(cfg.split_ratio, 0.5);
         assert_eq!(cfg.list_side, ListSide::Left);
         assert_eq!(cfg.editor, vec!["nvim".to_string()]); // untouched default
         assert_eq!(cfg.keybindings.get("stage").map(String::as_str), Some("a"));
@@ -129,13 +142,23 @@ mod tests {
 
     #[test]
     fn bad_toml_falls_back_to_defaults() {
-        let cfg = Config::parse("split_ratio = [not toml");
-        assert_eq!(cfg.split_ratio, 0.35);
+        let cfg = Config::parse("list_side = [not toml");
+        assert_eq!(cfg.list_side, ListSide::Right);
     }
 
     #[test]
-    fn split_ratio_is_clamped() {
-        assert_eq!(Config::parse("split_ratio = 0.05").split_ratio, 0.15);
-        assert_eq!(Config::parse("split_ratio = 0.9").split_ratio, 0.6);
+    fn poll_ms_has_a_sane_floor_but_zero_disables() {
+        assert_eq!(Config::parse("poll_ms = 5").poll_ms, 250);
+        assert_eq!(Config::parse("poll_ms = 0").poll_ms, 0); // disabled
+        assert_eq!(Config::parse("poll_ms = 1000").poll_ms, 1000);
+    }
+
+    #[test]
+    fn context_lines_clamped_and_scope_parses() {
+        assert_eq!(Config::parse("context_lines = 99").context_lines, 20);
+        assert_eq!(
+            Config::parse(r#"default_scope = "branch""#).default_scope,
+            ScopePref::Branch
+        );
     }
 }

@@ -188,8 +188,9 @@ defaults, commented.
 | `editor` | `["nvim"]` | Editor argv; the file (and `+<line>`) is appended |
 | `base` | `""` | Branch-scope base ref; `""` auto-detects `origin/HEAD` → `origin/main` → `origin/master` → `main` → `master` |
 | `list_side` | `"right"` | `"right"` or `"left"` |
-| `split_ratio` | `0.35` | List pane width fraction (0.15–0.6) |
-| `poll_ms` | `2000` | Auto-refresh interval in ms; `0` disables |
+| `default_scope` | `"worktree"` | `"worktree"` or `"branch"` — which scope the view opens in |
+| `context_lines` | `3` | Unchanged lines kept around each change before folding (0–20) |
+| `poll_ms` | `2000` | Auto-refresh interval in ms; `0` disables, non-zero floored at 250 |
 | `show_untracked` | `true` | Include untracked files |
 
 ### Theme

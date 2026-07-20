@@ -7,9 +7,6 @@
 # "" = auto-detect: origin/HEAD -> origin/main -> origin/master -> main -> master
 base = ""
 
-# Width fraction of the file-list pane (clamped to 0.15..0.6).
-split_ratio = 0.35
-
 # Which side the file list sits on: "right" | "left".
 list_side = "right"
 
@@ -18,8 +15,17 @@ list_side = "right"
 # configured git's core.editor or $GIT_EDITOR.
 editor = ["nvim"]
 
-# Auto-refresh interval in milliseconds; 0 disables polling.
+# Auto-refresh interval in milliseconds; 0 disables polling. A non-zero
+# value is floored at 250 ms so a tiny interval can't hammer git.
 poll_ms = 2000
+
+# Which scope the view opens in: "worktree" (staged/unstaged changes) or
+# "branch" (diff vs the merge base). `w` toggles at runtime.
+default_scope = "worktree"
+
+# Unchanged context lines kept around each change before the rest folds
+# (git's diff.context equivalent). Clamped to 0..20.
+context_lines = 3
 
 # Show untracked files in the worktree view.
 show_untracked = true

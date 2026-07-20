@@ -139,22 +139,42 @@ pub struct App {
 }
 
 impl App {
-    /// Load the initial worktree status and build the app.
+    /// Load the initial status and build the app. Honors `default_scope`:
+    /// a branch default resolves the merge base and loads branch changes up
+    /// front (falling back to worktree if no base exists).
     pub fn new(repo: Repo, cfg: Config, keys: Keymap) -> Result<App> {
         let entries = repo.worktree_status(cfg.show_untracked)?;
-        Ok(App::from_entries(repo, cfg, keys, entries))
+        let mut app = App::from_entries(repo, cfg, keys, entries);
+        if app.scope == Scope::Branch {
+            match app.repo.resolve_base(&app.cfg.base) {
+                Ok((base, mb)) => {
+                    app.base = base;
+                    app.merge_base = Some(mb);
+                    if let Ok(entries) = app.load_entries() {
+                        app.entries = entries;
+                        app.rebuild_rows();
+                    }
+                }
+                Err(_) => app.scope = Scope::Worktree, // no base — stay in worktree
+            }
+        }
+        Ok(app)
     }
 
     /// Build an app around an already-loaded entry vector (no git status call).
     /// Used by render tests and by `new`.
     pub fn from_entries(repo: Repo, cfg: Config, keys: Keymap, entries: Vec<FileEntry>) -> App {
         let branch = repo.head_branch();
+        let scope = match cfg.default_scope {
+            crate::config::ScopePref::Branch => Scope::Branch,
+            crate::config::ScopePref::Worktree => Scope::Worktree,
+        };
         let mut app = App {
             repo,
             cfg,
             keys,
             mode: Mode::Files,
-            scope: Scope::Worktree,
+            scope,
             entries,
             commits: Vec::new(),
             commit: None,

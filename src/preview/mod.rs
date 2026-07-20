@@ -509,8 +509,9 @@ fn spawn_diff_worker(tx: Sender<Event>, repo: Repo, cfg: Config) -> Sender<ShowR
             while let Ok(newer) = work_rx.try_recv() {
                 req = newer;
             }
-            let result = fetch_contents(&repo, &cfg, &req, &mut base_cache)
-                .map(|(old, new)| render::build(&req.file, &old, &new, &hl, cfg.theme));
+            let result = fetch_contents(&repo, &cfg, &req, &mut base_cache).map(|(old, new)| {
+                render::build(&req.file, &old, &new, &hl, cfg.theme, cfg.context_lines)
+            });
             if tx.send(Event::Diff { req, result }).is_err() {
                 break;
             }

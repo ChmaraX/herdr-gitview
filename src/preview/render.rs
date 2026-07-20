@@ -161,9 +161,6 @@ impl Palette {
     }
 }
 
-/// Context lines kept adjacent to each change; longer runs collapse to a fold.
-const FOLD_MARGIN: usize = 3;
-
 /// Build the full document from old and new file content.
 pub fn build(
     path: &Path,
@@ -171,6 +168,7 @@ pub fn build(
     new: &str,
     hl: &Highlighter,
     theme: crate::config::Theme,
+    context_lines: usize,
 ) -> DiffDoc {
     if old.contains('\0') || new.contains('\0') {
         return DiffDoc {
@@ -228,7 +226,7 @@ pub fn build(
     });
 
     compute_emphasis(&mut rows);
-    let rows = collapse_context(rows);
+    let rows = collapse_context(rows, context_lines);
     let (text, line_rows) = to_text(&rows, &Palette::new(theme), hl.default_fg);
     DiffDoc {
         rows,
@@ -367,16 +365,16 @@ fn trim_edges(ranges: Vec<CharRange>, text: &str) -> Vec<CharRange> {
 
 // ---- folding ---------------------------------------------------------------
 
-/// Collapse runs of unchanged context beyond `FOLD_MARGIN` around each change.
-fn collapse_context(rows: Vec<Row>) -> Vec<Row> {
+/// Collapse runs of unchanged context beyond `margin` lines around each change.
+fn collapse_context(rows: Vec<Row>, margin: usize) -> Vec<Row> {
     let n = rows.len();
     let mut keep = vec![false; n];
     for (i, row) in rows.iter().enumerate() {
         if matches!(row, Row::Context { .. }) {
             continue;
         }
-        let lo = i.saturating_sub(FOLD_MARGIN);
-        let hi = (i + FOLD_MARGIN).min(n.saturating_sub(1));
+        let lo = i.saturating_sub(margin);
+        let hi = (i + margin).min(n.saturating_sub(1));
         keep[lo..=hi].iter_mut().for_each(|k| *k = true);
     }
 
@@ -572,6 +570,7 @@ mod tests {
             new,
             &hl,
             crate::config::Theme::Dark,
+            3,
         )
     }
 
