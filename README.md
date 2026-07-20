@@ -61,15 +61,12 @@ Prebuilt binaries, no Rust toolchain needed:
 herdr plugin install ChmaraX/herdr-gitview
 ```
 
-Bind a key in `~/.config/herdr/config.toml`. Note that herdr's built-in
-`goto` uses `prefix+g` by default - move it first or pick another key:
+Bind a key in `~/.config/herdr/config.toml` (`cmd+g` is free of herdr's
+defaults; any key works):
 
 ```toml
-[keys]
-goto = "prefix+k"          # free up prefix+g
-
 [[keys.command]]
-key = "prefix+g"
+key = "cmd+g"
 type = "plugin_action"
 command = "chmarax.gitview.toggle"   # <plugin_id>.<action_id>
 description = "git view"
@@ -217,18 +214,6 @@ Grammar: `[ctrl+][alt+][shift+]<key>` where `<key>` is a single character or
 discard commit log annotate select send_notes notes_view delete toggle_scope
 refresh help quit half_page_down half_page_up diff_top diff_bottom
 scroll_down scroll_up`.
-
-## How it works
-
-Two plugin panes in one herdr tab, talking over a unix socket. The **list**
-pane owns git state and intent; the **preview** pane owns the diff render
-*and the PTY* - which is why `Enter` gives you the real nvim instead of a
-re-implementation. Diffs are built in-process from old/new file contents:
-structured rows, [syntect] highlighting, git-delta-style word emphasis.
-Dialogs are herdr floating popup panes. One state file per repo means several
-repos can have views open at once.
-
-[syntect]: https://github.com/trishume/syntect
 
 ## Limitations
 
