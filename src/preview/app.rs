@@ -66,6 +66,8 @@ pub struct PreviewApp {
 
     /// Last Show request (what the header/stale-guard describe).
     pub current: Option<ShowReq>,
+    /// The built diff (kept for click-to-unfold rebuilds).
+    built: Option<super::render::DiffDoc>,
     /// Styled, capped diff text (plus a truncation notice line when capped).
     pub doc: Text<'static>,
     /// First inserted line's new-file number (editor jump target).
@@ -94,6 +96,7 @@ impl PreviewApp {
             repo,
             keys,
             current: None,
+            built: None,
             doc: Text::default(),
             first_change: None,
             truncated: 0,
@@ -149,20 +152,32 @@ impl PreviewApp {
     fn set_diff(&mut self, built: super::render::DiffDoc) {
         self.first_change = built.first_change;
         if built.binary {
+            self.built = None;
             self.doc = Text::default();
             self.state = State::Binary;
             self.clamp_scroll();
             return;
         }
         if built.is_empty {
+            self.built = None;
             self.doc = Text::default();
             self.truncated = 0;
             self.state = State::Empty;
             self.clamp_scroll();
             return;
         }
+        self.built = Some(built);
+        self.sync_doc();
+        self.state = State::Diff;
+        self.clamp_scroll();
+    }
 
-        let mut doc = built.text;
+    /// Copy the built text into `doc`, applying the render cap.
+    fn sync_doc(&mut self) {
+        let Some(built) = &self.built else {
+            return;
+        };
+        let mut doc = built.text.clone();
         let total = doc.lines.len();
         if total > MAX_LINES {
             doc.lines.truncate(MAX_LINES);
@@ -175,8 +190,28 @@ impl PreviewApp {
             self.truncated = 0;
         }
         self.doc = doc;
-        self.state = State::Diff;
-        self.clamp_scroll();
+    }
+
+    // ---- mouse ------------------------------------------------------------
+
+    /// Wheel scrolls; a left click on a fold line expands it. `y` is the
+    /// terminal row (body starts at 1, under the header).
+    pub fn on_mouse(&mut self, kind: crossterm::event::MouseEventKind, y: u16) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        match kind {
+            MouseEventKind::ScrollDown => self.scroll_by(3),
+            MouseEventKind::ScrollUp => self.scroll_by(-3),
+            MouseEventKind::Down(MouseButton::Left) if y >= 1 => {
+                let line = self.scroll as usize + (y - 1) as usize;
+                if let Some(built) = &mut self.built
+                    && built.unfold_at(line)
+                {
+                    self.sync_doc();
+                    self.clamp_scroll();
+                }
+            }
+            _ => {}
+        }
     }
 
     // ---- scrolling --------------------------------------------------------

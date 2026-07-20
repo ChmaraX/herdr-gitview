@@ -126,7 +126,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
         .rows
         .iter()
         .map(|row| match row {
-            ListRow::Header(title) => header_row(title),
+            ListRow::Header { title, count } => header_row(title, *count),
             ListRow::Entry { idx, .. } => match app.entries.get(*idx) {
                 Some(e) => entry_row(
                     e,
@@ -149,11 +149,14 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
     app.list_offset = state.offset();
 }
 
-fn header_row(title: &str) -> ListItem<'static> {
-    ListItem::new(Line::from(Span::styled(
-        format!(" {}", title.to_uppercase()),
-        Style::new().add_modifier(Modifier::BOLD | Modifier::DIM),
-    )))
+fn header_row(title: &str, count: usize) -> ListItem<'static> {
+    ListItem::new(Line::from(vec![
+        Span::styled(
+            format!(" ▾ {}", title.to_uppercase()),
+            Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  {count}"), dim()),
+    ]))
 }
 
 /// One file row: `  <marker> <path>  <+a −d>` — marker colored by kind, dirs
@@ -314,39 +317,50 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             format!(" {msg}"),
             Style::new().fg(Color::Yellow),
         )),
-        None => Line::from(Span::styled(footer_hints(app), dim())),
+        None => footer_hints(app),
     };
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn footer_hints(app: &App) -> String {
-    let k = |a| sym(app.keys.hint(a));
-    match app.mode {
-        Mode::Log => format!(
-            " {} show commit  {} back  {} help",
-            k(Action::Edit),
-            k(Action::Quit),
-            k(Action::Help),
-        ),
-        Mode::CommitFiles => format!(
-            " {} edit  {}/{} scroll diff  {} back  {} help",
-            k(Action::Edit),
-            k(Action::ScrollDown),
-            k(Action::ScrollUp),
-            k(Action::Quit),
-            k(Action::Help),
-        ),
-        Mode::Files => format!(
-            " {} edit  {} stage  {} discard  {} commit  {} log  {} help  {} quit",
-            k(Action::Edit),
-            k(Action::Stage),
-            k(Action::Discard),
-            k(Action::Commit),
-            k(Action::Log),
-            k(Action::Help),
-            k(Action::Quit),
-        ),
+/// ` key label · key label … ` — keys accented, labels dim (reviewr's look).
+fn footer_hints(app: &App) -> Line<'static> {
+    let pairs: Vec<(String, &str)> = match app.mode {
+        Mode::Log => vec![
+            (sym(app.keys.hint(Action::Edit)), "show commit"),
+            (sym(app.keys.hint(Action::Quit)), "back"),
+            (sym(app.keys.hint(Action::Help)), "help"),
+        ],
+        Mode::CommitFiles => vec![
+            (sym(app.keys.hint(Action::Edit)), "edit"),
+            (sym(app.keys.hint(Action::HalfPageDown)), "scroll"),
+            (sym(app.keys.hint(Action::Quit)), "back"),
+            (sym(app.keys.hint(Action::Help)), "help"),
+        ],
+        Mode::Files => vec![
+            (sym(app.keys.hint(Action::Edit)), "edit"),
+            (sym(app.keys.hint(Action::Stage)), "stage"),
+            (sym(app.keys.hint(Action::Discard)), "discard"),
+            (sym(app.keys.hint(Action::Commit)), "commit"),
+            (sym(app.keys.hint(Action::Log)), "log"),
+            (sym(app.keys.hint(Action::Help)), "help"),
+            (sym(app.keys.hint(Action::Quit)), "quit"),
+        ],
+    };
+    let mut spans = Vec::new();
+    for (i, (key, label)) in pairs.into_iter().enumerate() {
+        if key.is_empty() {
+            continue;
+        }
+        if i > 0 {
+            spans.push(Span::styled(" ·".to_string(), dim()));
+        }
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::new().fg(Color::Cyan),
+        ));
+        spans.push(Span::styled(label.to_string(), dim()));
     }
+    Line::from(spans)
 }
 
 /// Prettify a hint for the footer (`enter` → `↵`).
@@ -363,7 +377,16 @@ fn sym(hint: String) -> String {
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     let lines: Vec<Line> = HELP_ACTIONS
         .iter()
-        .map(|(action, label)| Line::from(format!(" {:>8}  {label}", app.keys.hint(*action))))
+        .filter(|(action, _)| !app.keys.hint(*action).is_empty())
+        .map(|(action, label)| {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {:>8}  ", app.keys.hint(*action)),
+                    Style::new().fg(Color::Cyan),
+                ),
+                Span::raw((*label).to_string()),
+            ])
+        })
         .collect();
 
     let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;

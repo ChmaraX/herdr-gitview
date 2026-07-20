@@ -17,7 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event as CtEvent, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event as CtEvent, KeyEvent, KeyEventKind, MouseEvent};
 
 use crate::config::Config;
 use crate::git::{Repo, Scope};
@@ -27,6 +27,7 @@ use crate::keymap::Keymap;
 /// Everything the main loop can be woken by.
 enum Event {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     /// The list finished connecting; `Conn` is the live link.
     Connected(Conn),
     /// A message arrived from the list pane.
@@ -79,7 +80,9 @@ pub fn run() -> Result<()> {
     let work_tx = spawn_diff_worker(tx.clone(), Repo { root }, app.cfg.clone());
 
     let mut terminal = ratatui::init();
+    enable_mouse();
     let result = event_loop(&mut terminal, &mut app, &rx, &tx, &work_tx, &input_paused);
+    disable_mouse();
     ratatui::restore();
 
     if app.close_view && std::env::var_os("HERDR_PANE_ID").is_some() {
@@ -104,6 +107,7 @@ fn event_loop(
 
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Event::Key(key)) => app.on_key(key),
+            Ok(Event::Mouse(m)) => app.on_mouse(m.kind, m.row),
 
             Ok(Event::Connected(new_conn)) => {
                 // Split the reader onto a thread that forwards `ToList`-shaped
@@ -261,7 +265,9 @@ fn run_suspended(
     input_paused: &Arc<AtomicBool>,
 ) -> bool {
     input_paused.store(true, Ordering::SeqCst);
+    disable_mouse(); // the child (nvim) owns mouse reporting while it runs
     let result = editor::run_on_pty(terminal, &app.repo.root.clone(), argv, envs);
+    enable_mouse();
     input_paused.store(false, Ordering::SeqCst);
     match result {
         Ok(ok) => ok,
@@ -298,6 +304,11 @@ fn spawn_input_thread(tx: Sender<Event>, paused: Arc<AtomicBool>) {
                 Ok(true) => match event::read() {
                     Ok(CtEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                         if tx.send(Event::Key(key)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(CtEvent::Mouse(m)) => {
+                        if tx.send(Event::Mouse(m)).is_err() {
                             break;
                         }
                     }
@@ -385,6 +396,16 @@ fn fetch_contents(repo: &Repo, cfg: &Config, req: &ShowReq) -> Result<(String, S
             Ok((old, new))
         }
     }
+}
+
+pub(crate) fn enable_mouse() {
+    use crossterm::execute;
+    let _ = execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+}
+
+pub(crate) fn disable_mouse() {
+    use crossterm::execute;
+    let _ = execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
 }
 
 /// First line of an error message (git failures embed stderr; we want the top).

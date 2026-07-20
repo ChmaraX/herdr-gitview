@@ -35,8 +35,11 @@ pub const DEFAULT_KEYS: &[(Action, &str, &[&str])] = &[
     (Action::Top, "top", &["g"]),
     (Action::Bottom, "bottom", &["shift+g"]),
     (Action::Edit, "edit", &["enter"]),
-    (Action::ScrollDown, "scroll_down", &["shift+j"]),
-    (Action::ScrollUp, "scroll_up", &["shift+k"]),
+    // Diff scrolling from the list defaults to ctrl+d/u (half pages) and the
+    // mouse wheel; plain j/k scroll when the preview pane itself is focused.
+    // These stay available for [keybindings] overrides.
+    (Action::ScrollDown, "scroll_down", &[]),
+    (Action::ScrollUp, "scroll_up", &[]),
     (Action::HalfPageDown, "half_page_down", &["ctrl+d"]),
     (Action::HalfPageUp, "half_page_up", &["ctrl+u"]),
     (Action::DiffTop, "diff_top", &["home"]),

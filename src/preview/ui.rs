@@ -119,17 +119,34 @@ fn centered(frame: &mut Frame, area: Rect, msg: &str, style: Style) {
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &PreviewApp) {
     let hint = |a| app.keys.hint(a);
-    let text = format!(
-        " {}/{} scroll  {}/{} page  {}/{} ends  {} quit",
-        hint(Action::ScrollDown),
-        hint(Action::ScrollUp),
-        hint(Action::HalfPageDown),
-        hint(Action::HalfPageUp),
-        hint(Action::DiffTop),
-        hint(Action::DiffBottom),
-        hint(Action::Quit),
-    );
-    frame.render_widget(Paragraph::new(Line::from(Span::styled(text, dim()))), area);
+    let pairs = [
+        ("j/k".to_string(), "scroll"),
+        (
+            format!(
+                "{}/{}",
+                hint(Action::HalfPageDown),
+                hint(Action::HalfPageUp)
+            ),
+            "page",
+        ),
+        (
+            format!("{}/{}", hint(Action::DiffTop), hint(Action::DiffBottom)),
+            "ends",
+        ),
+        (hint(Action::Quit), "quit"),
+    ];
+    let mut spans = Vec::new();
+    for (i, (key, label)) in pairs.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" ·".to_string(), dim()));
+        }
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::new().fg(Color::Cyan),
+        ));
+        spans.push(Span::styled(label.to_string(), dim()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn dim() -> Style {

@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event as CtEvent, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event as CtEvent, KeyEvent, KeyEventKind, MouseEvent};
 
 use crate::config::Config;
 use crate::git::{FileEntry, Repo, Scope};
@@ -26,6 +26,7 @@ const SHOW_DEBOUNCE: Duration = Duration::from_millis(40);
 /// Everything the main loop can be woken by.
 enum Event {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     /// Poll thread noticed a change and reloaded the entry vector.
     Refresh(Vec<FileEntry>),
     /// A message from the preview pane.
@@ -85,7 +86,9 @@ pub fn run() -> Result<()> {
     let conn = connect_preview(&mut app, &tx, Duration::from_secs(10));
 
     let mut terminal = ratatui::init();
+    crate::preview::enable_mouse();
     let result = event_loop(&mut terminal, &mut app, &rx, &tx, &shared, conn);
+    crate::preview::disable_mouse();
     ratatui::restore();
 
     if app.should_quit && std::env::var_os("HERDR_PANE_ID").is_some() {
@@ -120,22 +123,9 @@ fn event_loop(
                 // overlay/lockout is active (App::on_key covers those cases).
                 let free = conn.is_some() && app.modal.is_none() && app.busy.is_none();
                 let action = app.keys.action(&key);
-                // Enter picks a commit in the log view (no IPC needed).
-                if app.modal.is_none() && app.mode == app::Mode::Log && action == Some(Action::Edit)
-                {
-                    app.open_commit();
-                } else if free
-                    && action == Some(Action::Edit)
-                    && matches!(app.mode, app::Mode::Files | app::Mode::CommitFiles)
-                {
-                    start_edit(app, &mut conn);
-                // Enter while nvim is already open: switch its file remotely.
-                } else if action == Some(Action::Edit)
-                    && app.busy.is_some()
-                    && app.modal.is_none()
-                    && matches!(app.mode, app::Mode::Files | app::Mode::CommitFiles)
-                {
-                    remote_open(app);
+                // Enter activates the selected row (open commit / edit file).
+                if app.modal.is_none() && action == Some(Action::Edit) {
+                    activate_selection(app, &mut conn);
                 } else if free && action == Some(Action::Commit) && app.mode == app::Mode::Files {
                     start_commit(app, &mut conn);
                 // `r` with a dead preview link retries the connection too.
@@ -187,6 +177,17 @@ fn event_loop(
                     }
                 } else {
                     app.editor_close_request = None; // probe already in flight
+                }
+            }
+            Ok(Event::Mouse(m)) => {
+                let before = show_key(app);
+                let activate = app.on_mouse(m.kind, m.row);
+                if activate {
+                    activate_selection(app, &mut conn);
+                }
+                if show_key(app) != before {
+                    show_dirty = true;
+                    dirty_since = Instant::now();
                 }
             }
             Ok(Event::EditorProbe { then, unsaved }) => {
@@ -297,6 +298,25 @@ fn start_edit(app: &mut App, conn: &mut Option<Conn>) {
     }
     app.busy = Some(format!("editing {}…", file.display()));
     focus_preview();
+}
+
+/// Enter (or a double-click): open the selected commit in the log view, or
+/// the selected file in the editor — remotely switching a running nvim.
+fn activate_selection(app: &mut App, conn: &mut Option<Conn>) {
+    match app.mode {
+        app::Mode::Log => app.open_commit(),
+        app::Mode::Files | app::Mode::CommitFiles => {
+            if app.busy.is_some() {
+                remote_open(app);
+            } else if conn.is_some() {
+                start_edit(app, conn);
+            } else if std::env::var_os("HERDR_PANE_ID").is_none() {
+                app.set_status("editing needs the preview pane (run inside herdr)");
+            } else {
+                app.set_status("preview not connected — press r to reconnect");
+            }
+        }
+    }
 }
 
 /// Probe the remote nvim on a background thread: a clean editor is told to
@@ -466,6 +486,11 @@ fn spawn_input_thread(tx: Sender<Event>) {
             match event::read() {
                 Ok(CtEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                     if tx.send(Event::Key(key)).is_err() {
+                        break;
+                    }
+                }
+                Ok(CtEvent::Mouse(m)) => {
+                    if tx.send(Event::Mouse(m)).is_err() {
                         break;
                     }
                 }

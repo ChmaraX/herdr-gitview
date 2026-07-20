@@ -36,14 +36,14 @@ pub enum Mode {
 /// section decides which diff the preview shows (`staged` → `--cached`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListRow {
-    Header(&'static str),
+    Header { title: &'static str, count: usize },
     Entry { idx: usize, staged: bool },
     Commit(usize),
 }
 
 impl ListRow {
     pub fn selectable(&self) -> bool {
-        !matches!(self, ListRow::Header(_))
+        !matches!(self, ListRow::Header { .. })
     }
 }
 
@@ -119,6 +119,8 @@ pub struct App {
     /// Set by `on_key` when an action needs the editor closed; the run loop
     /// picks it up and probes nvim on a background thread (no UI stall).
     pub editor_close_request: Option<EditorThen>,
+    /// Last left-click (row, time) for double-click detection.
+    last_click: Option<(usize, Instant)>,
 }
 
 impl App {
@@ -154,6 +156,7 @@ impl App {
             needs_reshow: false,
             after_edit: None,
             editor_close_request: None,
+            last_click: None,
         };
         app.rebuild_rows();
         app
@@ -191,7 +194,10 @@ impl App {
                     .map(|(i, _)| i)
                     .collect();
                 if !idxs.is_empty() {
-                    rows.push(ListRow::Header(title));
+                    rows.push(ListRow::Header {
+                        title,
+                        count: idxs.len(),
+                    });
                     rows.extend(idxs.into_iter().map(|idx| ListRow::Entry { idx, staged }));
                 }
             };
@@ -304,6 +310,38 @@ impl App {
                 }
             }
         }
+    }
+
+    // ---- mouse ------------------------------------------------------------
+
+    /// Wheel moves the cursor; a click selects the row under the pointer.
+    /// Returns true when a double-click should *activate* the row (like
+    /// Enter) — the run loop owns activation because it needs the IPC link.
+    pub fn on_mouse(&mut self, kind: crossterm::event::MouseEventKind, y: u16) -> bool {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        if self.modal.is_some() {
+            return false; // modals are keyboard-only
+        }
+        match kind {
+            MouseEventKind::ScrollDown => self.move_cursor(1),
+            MouseEventKind::ScrollUp => self.move_cursor(-1),
+            MouseEventKind::Down(MouseButton::Left) if y >= 1 => {
+                let idx = self.list_offset + (y - 1) as usize;
+                if self.rows.get(idx).map(ListRow::selectable).unwrap_or(false) {
+                    self.cursor = idx;
+                    // Double-click on the same row = activate.
+                    let now = Instant::now();
+                    let double = matches!(
+                        self.last_click,
+                        Some((i, at)) if i == idx && now.duration_since(at) < Duration::from_millis(400)
+                    );
+                    self.last_click = Some((idx, now));
+                    return double;
+                }
+            }
+            _ => {}
+        }
+        false
     }
 
     // ---- history view -----------------------------------------------------

@@ -30,8 +30,8 @@ enum Row {
         runs: Vec<Run>,
         emphasis: Vec<CharRange>,
     },
-    /// A collapsed run of unchanged lines.
-    Fold { hidden: usize },
+    /// A collapsed run of unchanged lines (kept, so a click can expand them).
+    Fold { lines: Vec<Row> },
 }
 
 impl Row {
@@ -45,13 +45,44 @@ impl Row {
     }
 }
 
-/// The built document, ready to render.
+/// The built document, ready to render. Folds can be expanded in place
+/// (`unfold_at`), which rebuilds `text`.
 pub struct DiffDoc {
+    rows: Vec<Row>,
+    flavor: String,
+    default_fg: Rgb,
+    /// Rendered line index → index into `rows`.
+    line_rows: Vec<usize>,
     pub text: Text<'static>,
     /// First inserted line's new-file number (for the editor jump).
     pub first_change: Option<u32>,
     pub is_empty: bool,
     pub binary: bool,
+}
+
+impl DiffDoc {
+    /// Expand the fold at rendered line `line` (if that line is a fold).
+    /// Returns true when something unfolded (the text was rebuilt).
+    pub fn unfold_at(&mut self, line: usize) -> bool {
+        let Some(&row_idx) = self.line_rows.get(line) else {
+            return false;
+        };
+        if !matches!(self.rows.get(row_idx), Some(Row::Fold { .. })) {
+            return false;
+        }
+        let Row::Fold { lines } = self.rows.remove(row_idx) else {
+            unreachable!();
+        };
+        self.rows.splice(row_idx..row_idx, lines);
+        self.rebuild();
+        true
+    }
+
+    fn rebuild(&mut self) {
+        let (text, line_rows) = to_text(&self.rows, &Palette::new(&self.flavor), self.default_fg);
+        self.text = text;
+        self.line_rows = line_rows;
+    }
 }
 
 /// Colors for the diff chrome, themed light or dark to match the syntax theme.
@@ -94,6 +125,10 @@ const FOLD_MARGIN: usize = 3;
 pub fn build(path: &Path, old: &str, new: &str, hl: &Highlighter, flavor: &str) -> DiffDoc {
     if old.contains('\0') || new.contains('\0') {
         return DiffDoc {
+            rows: Vec::new(),
+            flavor: flavor.to_string(),
+            default_fg: hl.default_fg,
+            line_rows: Vec::new(),
             text: Text::default(),
             first_change: None,
             is_empty: false,
@@ -145,8 +180,13 @@ pub fn build(path: &Path, old: &str, new: &str, hl: &Highlighter, flavor: &str) 
 
     compute_emphasis(&mut rows);
     let rows = collapse_context(rows);
+    let (text, line_rows) = to_text(&rows, &Palette::new(flavor), hl.default_fg);
     DiffDoc {
-        text: to_text(&rows, &Palette::new(flavor), hl.default_fg),
+        rows,
+        flavor: flavor.to_string(),
+        default_fg: hl.default_fg,
+        line_rows,
+        text,
         first_change,
         is_empty,
         binary: false,
@@ -304,7 +344,9 @@ fn collapse_context(rows: Vec<Row>) -> Vec<Row> {
             i += 1;
         }
         if i - start > 1 {
-            out.push(Row::Fold { hidden: i - start });
+            out.push(Row::Fold {
+                lines: rows[start..i].to_vec(),
+            });
         } else {
             out.extend(rows[start..i].iter().cloned());
         }
@@ -318,15 +360,20 @@ fn collapse_context(rows: Vec<Row>) -> Vec<Row> {
 /// (`"{:>4}     "` or `"     {:>4}"` = 9, plus `"- "`/`"+ "` = 2).
 const GUTTER_CHARS: u32 = 11;
 
-/// Rows → ratatui text: `old new marker` gutter, tinted backgrounds on change
-/// lines, stronger tint on emphasized ranges.
-fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> Text<'static> {
+/// Rows → ratatui text plus a rendered-line → row-index map (for clicks):
+/// `old new marker` gutter, tinted backgrounds on change lines, stronger tint
+/// on emphasized ranges.
+fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> (Text<'static>, Vec<usize>) {
     let gutter_style = Style::new().fg(rgb(p.gutter));
     let mut lines = Vec::with_capacity(rows.len());
-    for row in rows {
+    let mut line_rows = Vec::with_capacity(rows.len());
+    for (row_idx, row) in rows.iter().enumerate() {
         let line = match row {
-            Row::Fold { hidden } => Line::from(Span::styled(
-                format!("       ⋯ {hidden} unchanged lines"),
+            Row::Fold { lines: hidden } => Line::from(Span::styled(
+                format!(
+                    "      ▸ ⋯ {} unchanged lines — click to expand",
+                    hidden.len()
+                ),
                 gutter_style,
             )),
             Row::Context {
@@ -382,8 +429,9 @@ fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> Text<'static> {
             _ => line,
         };
         lines.push(line);
+        line_rows.push(row_idx);
     }
-    Text::from(lines)
+    (Text::from(lines), line_rows)
 }
 
 /// Syntax runs → spans, with an optional background tint.
@@ -526,6 +574,19 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
         assert!(flat.contains("unchanged lines"), "should fold: {flat}");
+    }
+
+    #[test]
+    fn clicking_a_fold_expands_it() {
+        let old: String = (0..40).map(|i| format!("line {i}\n")).collect();
+        let new = old.replace("line 20", "LINE 20");
+        let mut d = doc(&old, &new);
+        let folded_len = d.text.lines.len();
+        // First rendered line is the leading fold.
+        assert!(d.unfold_at(0), "line 0 should be a fold");
+        assert!(d.text.lines.len() > folded_len, "unfolding adds lines");
+        // A content line is not a fold.
+        assert!(!d.unfold_at(1));
     }
 
     #[test]
