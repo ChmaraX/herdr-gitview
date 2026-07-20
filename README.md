@@ -1,62 +1,68 @@
 # herdr-gitview
 
-A git UI plugin for [herdr](https://herdr.dev). One shortcut opens a
-full-tab view: changed files grouped VSCode-style on one side, a
-syntax-highlighted diff on the other. `Enter` opens the file in **real
-nvim** on the diff pane's PTY — at the first changed line — and quitting
-brings the diff back. Stage, discard, and commit without leaving the view;
-browse the commit history; annotate lines and send review notes straight
-to an AI agent running in your workspace.
+[![CI](https://github.com/adamchmara/herdr-gitview/actions/workflows/ci.yml/badge.svg)](https://github.com/adamchmara/herdr-gitview/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/adamchmara/herdr-gitview)](https://github.com/adamchmara/herdr-gitview/releases/latest)
+[![License](https://img.shields.io/github/license/adamchmara/herdr-gitview)](LICENSE)
 
-```
-┌─ gitview: diff ────────────────────────┬─ gitview: files ─────────────┐
-│ src/git.rs  [worktree]          12/340 │ main  working tree   5 files │
-│  118  118    fn stage(&self) {         │ ▾ STAGED CHANGES  2          │
-│       119  +     self.git(&["add"])    │   A  src/notes.rs       +214 │
-│  119       -     todo!()               │   M  src/git.rs     +34  −2  │
-│ ▸ ⋯ 24 unchanged lines — click to expand ▾ CHANGES  3                 │
-│  ▎ 118-119 · use add -A here?          │   M  src/git.rs      +6  −6  │
-│                                        │   U  notes.md           +12  │
-│ j/k move · v select · a note · q quit  │ ↵ edit · s stage · ? help    │
-└────────────────────────────────────────┴──────────────────────────────┘
-```
+<p align="center">
+  <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#controls">controls</a> · <a href="#review-notes">review notes</a> · <a href="#configuration">configuration</a> · <a href="#limitations">limitations</a> · <a href="CHANGELOG.md">changelog</a>
+</p>
 
-## Features
+A git view for [herdr](https://herdr.dev). One shortcut opens a full tab: your
+changed files on one side, a syntax-highlighted diff on the other. Press
+`Enter` and the diff pane *becomes* your real nvim — plugins, colors,
+everything — opened at the first changed line. Quit, and the diff is back.
+Stage, discard, commit, browse history, and send line-annotated review notes
+to the AI agents working in your workspace. You never leave the terminal.
 
-- **Two-pane git view** in its own tab: grouped file list (conflicts /
-  staged / changes) + a structured diff with syntax highlighting,
-  red/green line tints, word-level change emphasis, line numbers, and
-  click-to-expand context folds.
-- **Real editor, real PTY** — `Enter` suspends the diff and runs your
-  nvim (full plugins/colors) on that pane; `:q` returns to the diff.
-  While editing, `Enter` on another file switches nvim to it remotely.
-- **Stage / unstage / discard / commit** — `s` moves files between the
-  staged and changes groups, `x` asks first (native floating confirm),
-  `c` writes the commit message in nvim.
-- **History** — `l` lists recent commits; pick one to browse its files
-  and per-commit diffs.
-- **Review notes for AI agents** — select diff lines (`v` or mouse drag),
-  annotate (`a`), batch notes with inline cards, then `p` sends them —
-  `path:12-20 — note` plus the diff snippet — into the input of any agent
-  pane in the workspace (enter places, shift/ctrl+enter also submits).
-- **Mouse everywhere**: click to select, double-click to open, wheel to
-  scroll, drag to select diff lines, click folds to expand.
-- Auto-refresh on worktree changes, worktree ↔ branch scope, multiple
-  repos concurrently, standalone CLI mode.
+![demo](assets/demo.gif)
+
+- **Grouped changes** — merge conflicts, staged, and unstaged sections, the
+  VSCode way. A partially staged file appears in both, and the section decides
+  which diff you see. `s` moves files between them.
+- **A diff worth reading** — syntax highlighting, red/green line tints,
+  word-level emphasis on edited lines, line numbers, and collapsible context
+  folds you expand with a click.
+- **Your actual editor** — no embedded-terminal emulation. `Enter` runs nvim
+  on the diff pane's own PTY. While it's open, `Enter` on another file
+  switches it remotely; moving on closes a clean session and restores the
+  diff.
+- **Commit without leaving** — `c` opens the commit message in nvim too.
+  Discards ask first, in a floating dialog.
+- **History** — `l` lists recent commits; pick one to browse its files and
+  per-commit diffs.
+- **Review notes for agents** — select diff lines, annotate, batch. `p` sends
+  `path:12-20 — note` plus the diff snippet into the input of any agent pane
+  in your workspace. It types; you decide when to press enter.
+- **Mouse everywhere** — click to select, double-click to open, drag to select
+  diff lines, wheel to scroll, click folds to expand.
+
+It only runs the git commands you invoke — stage, restore, clean, and commit
+happen when you press their keys, never on their own. Notes are typed into an
+agent's input; nothing is submitted unless you ask for it.
 
 ## Requirements
 
-- herdr ≥ 0.7.0 (≥ 0.7.4 for native floating dialogs)
-- git, and nvim (or any editor; nvim enables the remote-control niceties)
+- **herdr ≥ 0.7.0** (≥ **0.7.4** for the native floating dialogs; older
+  versions fall back to in-pane overlays).
+- **git** on `PATH`.
+- **nvim** for the editor loop (any editor works via config; the
+  remote-control niceties — file switching, save/discard prompts — are
+  nvim-only).
+- A truecolor terminal. Pick the `theme` matching its background
+  ([Theme](#theme)).
+- macOS or Linux.
 
 ## Install
 
-```sh
-herdr plugin install <owner>/herdr-gitview
+Prebuilt binaries, no Rust toolchain needed:
+
+```bash
+herdr plugin install adamchmara/herdr-gitview
 ```
 
-Then bind a key in `~/.config/herdr/config.toml` (herdr's built-in `goto`
-uses `prefix+g` by default — move it or pick another key):
+Bind a key in `~/.config/herdr/config.toml`. Note that herdr's built-in
+`goto` uses `prefix+g` by default — move it first or pick another key:
 
 ```toml
 [keys]
@@ -65,95 +71,203 @@ goto = "prefix+k"          # free up prefix+g
 [[keys.command]]
 key = "prefix+g"
 type = "plugin_action"
-command = "adamchmara.gitview.toggle"
+command = "adamchmara.gitview.toggle"   # <plugin_id>.<action_id>
 description = "git view"
 ```
 
-The shortcut toggles: it opens the view for the repo you're in, jumps to
-it from any other tab, and closes it when pressed inside.
+The shortcut is a smart toggle: it opens the view for the repo you're in,
+jumps to it from any other tab, and closes it when pressed inside.
 
-From source: `git clone`, `cargo build --release`,
-`herdr plugin link /path/to/herdr-gitview`.
+**To update**, reinstall — your config survives:
 
-## Keys
+```bash
+herdr plugin uninstall adamchmara.gitview && herdr plugin install adamchmara/herdr-gitview
+```
 
-File list:
+**Without herdr**, the file list runs as a plain terminal app in any repo —
+browse, stage, unstage, discard:
+
+```bash
+herdr-gitview list
+```
+
+Editing, commits, history diffs, and notes need the second pane, i.e. herdr.
+
+## Quick start
+
+1. **Open it.** `prefix+g` in any repo. Changed files on the right, the
+   selected file's diff on the left.
+2. **Browse.** `j`/`k` (or the wheel) — the diff follows your cursor.
+   `Tab`-free: selecting a file under *staged changes* shows its staged diff,
+   under *changes* the unstaged one.
+3. **Edit.** `Enter` — nvim opens in the diff pane at the first changed line.
+   `:wq`, and you're back on the refreshed diff, focus on the list.
+4. **Stage & commit.** `s` to stage (the file moves up), `x` to discard
+   (asks first), `c` to commit — write the message in nvim, `:wq` commits,
+   `:q!` aborts.
+5. **Review for your agent.** Focus the diff pane, `v` + `j`/`k` (or drag) to
+   select lines, `a` to annotate. Notes pile up as cards under the code.
+   `p` → pick an agent → the batch lands in its input.
+
+The footer in each pane shows only the keys that currently work, so you learn
+it by using it.
+
+## Controls
+
+Defaults; every action can be rebound ([Keybindings](#keybindings)).
+
+**File list**
 
 | Key | Action |
-|---|---|
-| `j` / `k`, arrows, wheel | move through the list |
-| `enter`, double-click | open the file in your editor / show a commit |
-| `s` | stage / unstage (section-aware) |
-| `u` | explicitly unstage |
-| `x` | discard changes (with confirmation) |
-| `c` | commit — message written in nvim in the diff pane |
-| `w` | worktree ↔ branch scope |
-| `l` | commit history |
-| `a` | add a review note for the selected file |
-| `n` | notes view (from either pane) |
-| `p` | send the batched notes to an agent |
-| `r` | refresh (also reconnects the preview link) |
-| `?` | help |
-| `q` / `esc` | back / close |
+| --- | --- |
+| `j` `k` · `↑` `↓` · wheel | Move (the diff follows) |
+| `Enter` · double-click | Open in the editor / show a commit |
+| `s` | Stage — or unstage, when the file sits in the staged section |
+| `u` | Unstage explicitly |
+| `x` | Discard changes, with confirmation |
+| `c` | Commit — the message opens in nvim on the diff pane |
+| `w` | Worktree ↔ branch scope (diff vs the merge base) |
+| `l` | Commit history |
+| `a` | Annotate the selected file |
+| `n` | Notes view (works from either pane) |
+| `p` | Send the batched notes to an agent |
+| `r` | Refresh — also reconnects the diff pane if the link dropped |
+| `?` | Help |
+| `q` · `Esc` | Back — commit files → log → files → closed |
 
-Diff pane:
+**Diff pane**
 
 | Key | Action |
-|---|---|
-| `j` / `k` | move the cursor (view follows) |
-| `ctrl+d` / `ctrl+u` | half page |
-| `g` / `G`, `home`/`end` | top / bottom |
-| `v`, mouse drag | visual line selection |
-| `a` | annotate the selection (or cursor line) |
-| `p` | send notes to an agent |
-| click on `⋯ n unchanged lines` | expand the fold |
+| --- | --- |
+| `j` `k` | Move the cursor line (the view follows) |
+| `Ctrl+d` `Ctrl+u` | Half page |
+| `g` `G` · `Home` `End` | Top / bottom |
+| `v` · drag | Visual line selection |
+| `a` | Annotate the selection — or the cursor line without one |
+| `p` | Send notes |
+| click a `⋯ n unchanged lines` line | Expand the fold |
+| `q` · `Esc` | Leave selection, then close the view |
 
-Every action can be rebound; see the config below.
+**While nvim is open** — `:q` returns to the diff. In the list: `Enter` on
+another file switches nvim to it; moving the cursor closes a clean session
+automatically; `q` or `c` close it too, asking save/discard first if there
+are unsaved changes.
 
-## Config
+## Review notes
 
-`$HERDR_PLUGIN_CONFIG_DIR/config.toml` — all keys optional (see
-[assets/example-config.toml](assets/example-config.toml) for the fully
-commented version):
+The workflow this plugin exists for: your agent wrote code, you're reading
+the diff, and you want to say *"this part — do it differently"* without
+retyping context.
+
+1. Select the lines (`v` or drag) and press `a`. A floating input opens,
+   titled with the exact range: `note for src/git.rs:118-119`.
+2. The note stays visible as a card under those lines. Add more across as
+   many files as you like — the count rides in the footer.
+3. `n` shows all pending notes; hovering one jumps its diff into the preview.
+   `Enter` edits, `d` deletes.
+4. `p` opens the agent picker — every agent pane in the current workspace,
+   with its status and tab. `Enter` types the batch into that agent's input
+   and leaves it there for you to amend and send. `Shift+Enter` (or
+   `Ctrl+Enter`) submits it directly.
+
+Each note is delivered as `path:start-end — your note` followed by the
+selected lines as a fenced ```diff block, so the agent sees exactly what you
+saw. Notes attach to *current* (staged/unstaged) changes — history is
+read-only.
+
+## Configuration
+
+`$HERDR_PLUGIN_CONFIG_DIR/config.toml`, usually
+`~/.config/herdr/plugins/config/adamchmara.gitview/config.toml`. Every key is
+optional; [assets/example-config.toml](assets/example-config.toml) shows all
+defaults, commented.
 
 | Key | Default | Meaning |
-|---|---|---|
-| `base` | `""` | branch-scope base ref; `""` auto-detects (origin/HEAD → origin/main → …) |
-| `split_ratio` | `0.35` | list pane width fraction (0.15–0.6) |
+| --- | --- | --- |
+| `theme` | `"dark"` | `"dark"` or `"light"` — syntax theme + all UI tints |
+| `editor` | `["nvim"]` | Editor argv; the file (and `+<line>`) is appended |
+| `base` | `""` | Branch-scope base ref; `""` auto-detects `origin/HEAD` → `origin/main` → `origin/master` → `main` → `master` |
 | `list_side` | `"right"` | `"right"` or `"left"` |
-| `editor` | `["nvim"]` | editor argv; file and `+<line>` appended |
-| `poll_ms` | `2000` | auto-refresh interval; `0` disables |
-| `show_untracked` | `true` | include untracked files |
-| `theme` | `"dark"` | diff colors: `"dark"` or `"light"` (syntax theme + tints) |
-| `[keybindings]` | — | `action = "key"` overrides |
+| `split_ratio` | `0.35` | List pane width fraction (0.15–0.6) |
+| `poll_ms` | `2000` | Auto-refresh interval in ms; `0` disables |
+| `show_untracked` | `true` | Include untracked files |
+
+### Theme
+
+`theme = "dark"` pairs a dark syntax palette with dark red/green diff tints;
+`"light"` is GitHub-web-flavored. Match your terminal's background — diff
+tints are painted as real background colors.
+
+### Keybindings
+
+`[keybindings]` maps action names to keys. An override replaces all default
+keys for that action; binding a key another action owns is reported at
+startup and the table is ignored until fixed.
+
+```toml
+[keybindings]
+stage = "space"
+discard = "ctrl+x"
+```
+
+Grammar: `[ctrl+][alt+][shift+]<key>` where `<key>` is a single character or
+`enter`, `esc`, `tab`, `space`, `up`, `down`, `left`, `right`, `pgup`,
+`pgdn`, `home`, `end`. Action names: `down up top bottom edit stage unstage
+discard commit log annotate select send_notes notes_view delete toggle_scope
+refresh help quit half_page_down half_page_up diff_top diff_bottom
+scroll_down scroll_up`.
 
 ## How it works
 
-Two plugin panes in one herdr tab, talking over a unix socket: the
-**list** pane owns git state and keyboard intent; the **preview** pane
-owns the diff render *and the PTY* — so editing and committing run real
-nvim on that terminal with full fidelity. No embedded-terminal emulation.
-Dialogs (confirm, note input, agent picker) are herdr floating popup
-panes. Diffs are built in-process from the old/new file contents:
-structured rows, syntect highlighting, and git-delta-style word emphasis.
+Two plugin panes in one herdr tab, talking over a unix socket. The **list**
+pane owns git state and intent; the **preview** pane owns the diff render
+*and the PTY* — which is why `Enter` gives you the real nvim instead of a
+re-implementation. Diffs are built in-process from old/new file contents:
+structured rows, [syntect] highlighting, git-delta-style word emphasis.
+Dialogs are herdr floating popup panes. One state file per repo means several
+repos can have views open at once.
 
-Standalone mode: `herdr-gitview list` works in any repo outside herdr
-(browse, stage, discard); editing, commits, and notes need the preview
-pane, i.e. herdr.
+[syntect]: https://github.com/trishume/syntect
 
-## Development
+## Limitations
 
-```sh
-cargo test          # unit + fixture-repo + render tests
-just release-dry    # fmt + clippy + test + release build
-GITVIEW_DEBUG=1     # debug log in the plugin state dir
+- **Editing needs herdr** — standalone `herdr-gitview list` covers browsing
+  and staging only.
+- **Remote editor tricks need nvim** (`--listen`/`--server`). Other editors
+  work for plain editing; you close them yourself.
+- **Notes live in memory** — closing the view discards unsent notes.
+- **Notes attach to working-tree changes** — you can't annotate historical
+  commits.
+- Native floating dialogs need herdr ≥ 0.7.4; older versions get in-pane
+  overlays.
+- No hunk-level staging yet ([roadmap](#roadmap)).
+
+## Building from source
+
+```bash
+git clone https://github.com/adamchmara/herdr-gitview
+cd herdr-gitview
+cargo build --release
+herdr plugin link "$PWD"
 ```
+
+`cargo test` runs the full suite — parser units, fixture git repos, and
+ratatui render tests. `just release-dry` mirrors CI (fmt, clippy, tests,
+release build). `GITVIEW_DEBUG=1` writes a debug log to the plugin state dir.
+
+## Roadmap
+
+- Hunk-level stage / discard
+- Jump-to-hunk keys, diff search
+- Persisted notes
+- More themes
 
 ## Attribution
 
-The diff renderer and syntax-highlighting approach are ported (simplified)
-from [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr) (MIT).
+The structured diff renderer and highlighting approach are ported, in
+simplified form, from [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr)
+(MIT).
 
 ## License
 
-MIT
+[MIT](LICENSE)
