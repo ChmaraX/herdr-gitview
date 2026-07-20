@@ -56,6 +56,9 @@ pub struct Note {
     pub text: String,
     /// The selected diff lines (`-`/`+`/space prefixed), possibly empty.
     pub snippet: String,
+    /// The commit sha this note was made against (history view); `None` for
+    /// worktree/branch notes. Focusing the note re-shows this exact diff.
+    pub commit: Option<String>,
 }
 
 /// A popup the run loop should open on our behalf.
@@ -105,8 +108,6 @@ pub struct PreviewApp {
     pub cursor_line: usize,
     /// Selection anchor (`v`); selection = anchor..=cursor.
     pub select_anchor: Option<usize>,
-    /// Lines currently styled as selected, so restyling can undo.
-    styled: Option<(usize, usize)>,
     /// Batched review notes across files.
     pub notes: Vec<Note>,
     /// Set when `a` was pressed: what the annotate popup will describe.
@@ -145,7 +146,6 @@ impl PreviewApp {
             base: None,
             cursor_line: 0,
             select_anchor: None,
-            styled: None,
             notes: Vec::new(),
             pending_note: None,
             popup_request: None,
@@ -230,8 +230,6 @@ impl PreviewApp {
         self.built = Some(built);
         self.cursor_line = 0;
         self.select_anchor = None;
-        self.styled = None;
-        self.sync_doc();
         self.state = State::Diff;
         self.clamp_scroll();
         self.restyle();
@@ -256,7 +254,7 @@ impl PreviewApp {
             let mut anchored: Vec<(usize, String)> = self
                 .notes
                 .iter()
-                .filter(|n| n.file == req.file)
+                .filter(|n| n.file == req.file && n.commit == req.commit)
                 .map(|n| {
                     let line = if n.end == 0 {
                         0
@@ -281,7 +279,7 @@ impl PreviewApp {
             let mut cards: Vec<(usize, String)> = self
                 .notes
                 .iter()
-                .filter(|n| n.file == req.file)
+                .filter(|n| n.file == req.file && n.commit == req.commit)
                 .map(|n| {
                     let line = if n.end == 0 {
                         0
@@ -329,7 +327,6 @@ impl PreviewApp {
                 if let (Some(bl), Some(built)) = (to_built, self.built.as_mut())
                     && built.unfold_at(bl)
                 {
-                    self.sync_doc();
                     self.clamp_scroll();
                     self.restyle();
                     return;
@@ -413,21 +410,12 @@ impl PreviewApp {
         let Some(action) = self.keys.action(&ev) else {
             return;
         };
-        let selecting = self.select_anchor.is_some();
         match action {
-            // Plain scrolling normally; cursor movement while selecting.
-            Action::Down | Action::ScrollDown if selecting => self.move_cursor(1),
-            Action::Up | Action::ScrollUp if selecting => self.move_cursor(-1),
-            Action::Down | Action::ScrollDown => self.scroll_by(1),
-            Action::Up | Action::ScrollUp => self.scroll_by(-1),
-            Action::HalfPageDown if selecting => {
-                self.move_cursor(self.viewport_h.max(2) as i32 / 2)
-            }
-            Action::HalfPageUp if selecting => {
-                self.move_cursor(-(self.viewport_h.max(2) as i32) / 2)
-            }
-            Action::HalfPageDown => self.page(true, false),
-            Action::HalfPageUp => self.page(false, false),
+            // nvim-style: j/k always move the cursor; the view follows.
+            Action::Down | Action::ScrollDown => self.move_cursor(1),
+            Action::Up | Action::ScrollUp => self.move_cursor(-1),
+            Action::HalfPageDown => self.move_cursor(self.viewport_h.max(2) as i32 / 2),
+            Action::HalfPageUp => self.move_cursor(-(self.viewport_h.max(2) as i32) / 2),
             Action::Top | Action::DiffTop => self.move_cursor(i32::MIN),
             Action::Bottom | Action::DiffBottom => self.move_cursor(i32::MAX),
             Action::Select => {
@@ -435,19 +423,10 @@ impl PreviewApp {
                     self.select_anchor = match self.select_anchor {
                         Some(_) => None,
                         None => {
-                            // Selection starts at the top visible line (or
-                            // wherever a click parked the cursor, if visible).
-                            let top = self.scroll as usize;
-                            let vh = self.viewport_h.max(1) as usize;
-                            if self.cursor_line < top || self.cursor_line >= top + vh {
-                                self.cursor_line = top;
-                            }
+                            self.flash("visual: j/k extend · a note · esc cancel");
                             Some(self.cursor_line)
                         }
                     };
-                    if self.select_anchor.is_some() {
-                        self.flash("select: j/k extend · a note · esc cancel");
-                    }
                     self.restyle();
                 }
             }
@@ -503,22 +482,45 @@ impl PreviewApp {
         }
     }
 
-    /// Re-apply the REVERSED styling for the selection. Nothing is styled
-    /// unless a selection is active (`v` or mouse drag).
+    /// Re-render the doc from the built diff, then tint the cursor line and
+    /// any visual selection with subtle background colors (text colors are
+    /// never touched; the tint overrides the red/green line tints while
+    /// selected, like an editor would).
     fn restyle(&mut self) {
-        if let Some((a, b)) = self.styled.take() {
-            for line in self.doc.lines.iter_mut().skip(a).take(b - a + 1) {
-                line.style = line.style.remove_modifier(Modifier::REVERSED);
-            }
-        }
-        if !matches!(self.state, State::Diff) || self.select_anchor.is_none() {
+        self.sync_doc();
+        if !matches!(self.state, State::Diff) {
             return;
         }
-        let (a, b) = self.selection();
-        for line in self.doc.lines.iter_mut().skip(a).take(b - a + 1) {
-            line.style = line.style.add_modifier(Modifier::REVERSED);
+        let dark = self.cfg.theme != "light";
+        let cursor_bg = if dark {
+            Color::Rgb(0x31, 0x32, 0x44)
+        } else {
+            Color::Rgb(0xea, 0xed, 0xf2)
+        };
+        let select_bg = if dark {
+            Color::Rgb(0x45, 0x47, 0x5a)
+        } else {
+            Color::Rgb(0xd8, 0xdd, 0xe6)
+        };
+        let last = self.doc.lines.len().saturating_sub(1);
+        self.cursor_line = self.cursor_line.min(last);
+        fn tint(lines: &mut [ratatui::text::Line<'_>], idx: usize, bg: Color) {
+            if let Some(line) = lines.get_mut(idx) {
+                line.style = line.style.bg(bg);
+                for span in &mut line.spans {
+                    span.style = span.style.bg(bg);
+                }
+            }
         }
-        self.styled = Some((a, b));
+        match self.select_anchor {
+            Some(_) => {
+                let (a, b) = self.selection();
+                for idx in a..=b {
+                    tint(&mut self.doc.lines, idx, select_bg);
+                }
+            }
+            None => tint(&mut self.doc.lines, self.cursor_line, cursor_bg),
+        }
     }
 
     // ---- notes ------------------------------------------------------------
@@ -530,17 +532,7 @@ impl PreviewApp {
         let Some(req) = self.current.clone() else {
             return;
         };
-        if self.select_anchor.is_none() {
-            self.pending_note = Some(Note {
-                file: req.file,
-                start: 0,
-                end: 0,
-                text: String::new(),
-                snippet: String::new(),
-            });
-            self.popup_request = Some(PopupReq::Annotate);
-            return;
-        }
+
         let Some(built) = &self.built else {
             return;
         };
@@ -578,6 +570,7 @@ impl PreviewApp {
             end,
             text: String::new(),
             snippet,
+            commit: req.commit.clone(),
         });
         self.popup_request = Some(PopupReq::Annotate);
     }
@@ -589,7 +582,6 @@ impl PreviewApp {
             self.notes.push(note);
             self.notes_rev += 1;
             self.select_anchor = None;
-            self.sync_doc();
             self.restyle();
         }
     }
@@ -602,16 +594,15 @@ impl PreviewApp {
             end: 0,
             text,
             snippet: String::new(),
+            commit: None,
         });
         self.notes_rev += 1;
-        self.sync_doc();
         self.restyle();
     }
 
     pub fn clear_notes(&mut self) {
         self.notes.clear();
         self.notes_rev += 1;
-        self.sync_doc();
         self.restyle();
     }
 
@@ -619,7 +610,6 @@ impl PreviewApp {
         if let Some(note) = self.notes.get_mut(idx) {
             note.text = text;
             self.notes_rev += 1;
-            self.sync_doc();
             self.restyle();
         }
     }
@@ -628,7 +618,6 @@ impl PreviewApp {
         if idx < self.notes.len() {
             self.notes.remove(idx);
             self.notes_rev += 1;
-            self.sync_doc();
             self.restyle();
         }
     }
@@ -637,7 +626,7 @@ impl PreviewApp {
     /// file is already shown, else remember it until that diff arrives.
     pub fn focus_note(&mut self, idx: usize) {
         let same_file = match (self.notes.get(idx), &self.current) {
-            (Some(note), Some(req)) => note.file == req.file,
+            (Some(note), Some(req)) => note.file == req.file && note.commit == req.commit,
             _ => false,
         };
         if same_file && matches!(self.state, State::Diff) {
@@ -666,7 +655,7 @@ impl PreviewApp {
             .notes
             .iter()
             .enumerate()
-            .filter(|(_, n)| n.file == req.file)
+            .filter(|(_, n)| n.file == req.file && n.commit == req.commit)
             .map(|(i, n)| (anchor(n), i))
             .collect();
         same.sort_by_key(|(a, _)| *a);

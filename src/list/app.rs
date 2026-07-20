@@ -128,8 +128,10 @@ pub struct App {
     /// pane instead of the in-pane overlay (the answer arrives via file).
     pub modal_external: bool,
     /// Review notes (owned by the preview; mirrored for the notes view):
-    /// `(file, start, end, text)`.
-    pub notes: Vec<(std::path::PathBuf, u32, u32, String)>,
+    /// `(file, start, end, text, commit-context)`.
+    pub notes: Vec<(std::path::PathBuf, u32, u32, String, Option<String>)>,
+    /// Where `n` was pressed, so the notes view can return there.
+    notes_return: Option<Mode>,
     pub annotate_request: Option<std::path::PathBuf>,
     pub send_notes_request: bool,
     /// Edit/delete requests for the run loop (they need popups / the conn).
@@ -173,6 +175,7 @@ impl App {
             last_click: None,
             modal_external: false,
             notes: Vec::new(),
+            notes_return: None,
             annotate_request: None,
             send_notes_request: false,
             edit_note_request: None,
@@ -399,7 +402,7 @@ impl App {
     /// `l`: enter the log view; `l` again (or q/esc) returns to files.
     fn toggle_log(&mut self) {
         match self.mode {
-            Mode::Notes => self.set_status("log opens from the files view (n to go back)"),
+            Mode::Notes => self.set_status("leave the notes view first (n)"),
             Mode::Files => match self.repo.log_commits(LOG_LIMIT) {
                 Ok(commits) if commits.is_empty() => self.set_status("no commits yet"),
                 Ok(commits) => {
@@ -431,25 +434,28 @@ impl App {
         }
     }
 
-    /// `n`: flip between the files and notes views.
+    /// `n`: open the notes view from anywhere; `n`/q returns to where you
+    /// came from (files, log, or a commit's files).
     fn toggle_notes_view(&mut self) {
         match self.mode {
             Mode::Notes => {
-                self.mode = Mode::Files;
+                self.mode = self.notes_return.take().unwrap_or(Mode::Files);
                 self.cursor = 0;
-                self.force_refresh();
+                if self.mode == Mode::Files {
+                    self.force_refresh();
+                }
                 self.rebuild_rows();
             }
-            Mode::Files => {
+            mode => {
                 if self.notes.is_empty() {
                     self.set_status("no notes yet");
                     return;
                 }
+                self.notes_return = Some(mode);
                 self.mode = Mode::Notes;
                 self.cursor = 0;
                 self.rebuild_rows();
             }
-            _ => self.set_status("notes view opens from the files view"),
         }
     }
 

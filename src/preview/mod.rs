@@ -191,7 +191,15 @@ fn event_loop(
                 let snapshot: Vec<_> = app
                     .notes
                     .iter()
-                    .map(|n| (n.file.clone(), n.start, n.end, n.text.clone()))
+                    .map(|n| {
+                        (
+                            n.file.clone(),
+                            n.start,
+                            n.end,
+                            n.text.clone(),
+                            n.commit.clone(),
+                        )
+                    })
                     .collect();
                 let _ = c.send(&ToList::Notes { notes: snapshot });
             }

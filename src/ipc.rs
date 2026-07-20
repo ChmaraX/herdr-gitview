@@ -92,9 +92,9 @@ pub enum ToList {
     /// GitInPane finished. `ok` = exit status 0.
     GitDone { ok: bool },
     /// The batched review notes changed; full snapshot for the notes view.
-    /// Tuples: (file, start, end, text).
+    /// Tuples: (file, start, end, text, commit-context).
     Notes {
-        notes: Vec<(PathBuf, u32, u32, String)>,
+        notes: Vec<(PathBuf, u32, u32, String, Option<String>)>,
     },
 }
 

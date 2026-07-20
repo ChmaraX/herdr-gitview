@@ -578,18 +578,22 @@ fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
     Some((e.path.clone(), app.scope, staged, commit))
 }
 
-/// The Show for a hovered note's file, when that file is among the current
-/// entries (a clean file has no diff to show — the card focus still works).
+/// The Show for a hovered note: its file in the note's own context — the
+/// commit it was made against (history notes) or the live worktree diff.
 fn note_show(app: &App, idx: usize) -> Option<ToPreview> {
-    let file = &app.notes.get(idx)?.0;
-    let e = app.entries.iter().find(|e| &e.path == file)?;
+    let (file, _, _, _, commit) = app.notes.get(idx)?;
+    // Prefer real entry metadata when the file is among the current entries;
+    // otherwise synthesize (kind only affects rename pathspecs).
+    let entry = app.entries.iter().find(|e| &e.path == file);
     Some(ToPreview::Show {
-        file: e.path.clone(),
-        orig_path: e.orig_path.clone(),
+        file: file.clone(),
+        orig_path: entry.and_then(|e| e.orig_path.clone()),
         scope: app.scope,
         cached: false,
-        kind: e.kind,
-        commit: None,
+        kind: entry
+            .map(|e| e.kind)
+            .unwrap_or(crate::git::ChangeKind::Modified),
+        commit: commit.clone(),
     })
 }
 
