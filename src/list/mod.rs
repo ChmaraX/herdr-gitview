@@ -130,6 +130,7 @@ fn event_loop(
                 // overlay/lockout is active (App::on_key covers those cases).
                 let free = conn.is_some() && app.modal.is_none() && app.busy.is_none();
                 let action = app.keys.action(&key);
+                let before = show_key(app);
                 // Enter activates the selected row (open commit / edit file).
                 if app.modal.is_none() && action == Some(Action::Edit) {
                     activate_selection(app, &mut conn);
@@ -151,13 +152,15 @@ fn event_loop(
                 {
                     send(&mut conn, &msg);
                 } else {
-                    let before = show_key(app);
                     app.on_key(key);
                     sync_shared(shared, app);
-                    if show_key(app) != before {
-                        show_dirty = true;
-                        dirty_since = Instant::now();
-                    }
+                }
+                // Any path that changed what should be shown (moving the
+                // cursor, but also entering a commit's files or the notes
+                // view) re-Shows after the debounce.
+                if show_key(app) != before {
+                    show_dirty = true;
+                    dirty_since = Instant::now();
                 }
                 // Content changed under the same selection (stage/discard).
                 if app.needs_reshow {
