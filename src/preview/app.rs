@@ -117,6 +117,17 @@ impl PreviewApp {
         }
     }
 
+    /// The list has nothing selected any more — drop the shown diff.
+    pub fn clear(&mut self) {
+        self.current = None;
+        self.built = None;
+        self.doc = Text::default();
+        self.first_change = None;
+        self.truncated = 0;
+        self.scroll = 0;
+        self.state = State::Splash("no file selected");
+    }
+
     // ---- Show / diff results ---------------------------------------------
 
     /// Record a new Show request. Scroll resets on a file change, is preserved

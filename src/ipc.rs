@@ -57,6 +57,8 @@ pub enum ToPreview {
     GitInPane {
         argv: Vec<String>,
     },
+    /// Nothing is selected any more (list emptied) — drop the shown diff.
+    Clear,
     Quit,
 }
 

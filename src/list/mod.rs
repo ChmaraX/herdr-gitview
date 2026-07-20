@@ -285,8 +285,11 @@ fn event_loop(
         }
 
         if show_dirty && dirty_since.elapsed() >= SHOW_DEBOUNCE {
-            if let Some(msg) = current_show(app) {
-                send(&mut conn, &msg);
+            match current_show(app) {
+                Some(msg) => send(&mut conn, &msg),
+                // Nothing selectable left (e.g. the last change was
+                // discarded/committed) — clear the stale diff.
+                None => send(&mut conn, &ToPreview::Clear),
             }
             show_dirty = false;
         }

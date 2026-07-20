@@ -185,6 +185,7 @@ fn handle_ipc(app: &mut PreviewApp, msg: ToPreview, work_tx: &Sender<ShowReq>) {
         }
         ToPreview::Scroll { delta } => app.scroll_by(delta),
         ToPreview::Page { down, full } => app.page(down, full),
+        ToPreview::Clear => app.clear(),
         ToPreview::Quit => app.should_quit = true, // list initiated teardown
         // Handled directly in the event loop (they need the terminal).
         ToPreview::Edit { .. } | ToPreview::GitInPane { .. } => {}
