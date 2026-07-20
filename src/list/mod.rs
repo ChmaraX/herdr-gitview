@@ -120,6 +120,13 @@ fn event_loop(
                     && matches!(app.mode, app::Mode::Files | app::Mode::CommitFiles)
                 {
                     start_edit(app, &mut conn);
+                // Enter while nvim is already open: switch its file remotely.
+                } else if action == Some(Action::Edit)
+                    && app.busy.is_some()
+                    && app.modal.is_none()
+                    && matches!(app.mode, app::Mode::Files | app::Mode::CommitFiles)
+                {
+                    remote_open(app);
                 } else if free && action == Some(Action::Commit) && app.mode == app::Mode::Files {
                     start_commit(app, &mut conn);
                 // `r` with a dead preview link retries the connection too.
@@ -242,6 +249,38 @@ fn start_edit(app: &mut App, conn: &mut Option<Conn>) {
     }
     app.busy = Some(format!("editing {}…", file.display()));
     focus_preview();
+}
+
+/// Enter while the editor is running: nvim was started with `--listen`, so
+/// tell it to open the newly selected file instead of refusing the key.
+fn remote_open(app: &mut App) {
+    let Some((entry, _)) = app.selected_entry() else {
+        return;
+    };
+    let abs = app.repo.root.join(&entry.path);
+    if !abs.exists() {
+        app.set_status("file no longer exists — nothing to edit");
+        return;
+    }
+    let editor = app.cfg.editor.first().cloned().unwrap_or_default();
+    let server = crate::preview::editor_server_path();
+    let Some(server) = server.filter(|s| s.exists() && editor.contains("nvim")) else {
+        app.set_status("editor is open — close it first");
+        return;
+    };
+    let result = std::process::Command::new(&editor)
+        .arg("--server")
+        .arg(&server)
+        .arg("--remote")
+        .arg(&abs)
+        .output();
+    match result {
+        Ok(out) if out.status.success() => {
+            app.busy = Some(format!("editing {}…", entry.path.display()));
+            focus_preview();
+        }
+        _ => app.set_status("could not switch the editor's file"),
+    }
 }
 
 /// `c`: preflight the staged set, then run `git commit -e` on the preview PTY

@@ -196,6 +196,16 @@ fn run_editor(
     input_paused: &Arc<AtomicBool>,
 ) {
     let mut argv = app.cfg.editor.clone();
+    // nvim gets a remote-control socket so the list pane can switch the open
+    // file mid-session (Enter on another row while the editor runs).
+    let server = editor_server_path();
+    if let Some(server) = &server
+        && argv.first().map(|e| e.contains("nvim")).unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(server);
+        argv.push("--listen".into());
+        argv.push(server.display().to_string());
+    }
     let same_file = app
         .current
         .as_ref()
@@ -206,6 +216,18 @@ fn run_editor(
     }
     argv.push(app.repo.root.join(file).display().to_string());
     run_suspended(terminal, app, &argv, &[], input_paused);
+    if let Some(server) = &server {
+        let _ = std::fs::remove_file(server);
+    }
+}
+
+/// The nvim remote socket, derived from the view's IPC socket path (shared
+/// convention with the list pane).
+pub fn editor_server_path() -> Option<std::path::PathBuf> {
+    let sock = std::env::var_os("GITVIEW_SOCKET")?;
+    let mut path = std::path::PathBuf::from(sock);
+    path.set_extension("nvim");
+    Some(path)
 }
 
 /// Run `git -C <root> <argv…>` interactively on this PTY (e.g. commit -e).
