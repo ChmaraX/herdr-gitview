@@ -41,15 +41,27 @@ fn req(file: &str) -> ShowReq {
 /// A built diff doc with `n` inserted lines (plain-text path → no syntax
 /// highlighting cost, even at 20k lines).
 fn fake_diff(n: usize) -> render::DiffDoc {
-    let hl = Highlighter::new("dark");
+    let hl = Highlighter::new(herdr_gitview::config::Theme::Dark);
     let new: String = (0..n).map(|i| format!("line {i}\n")).collect();
-    render::build(&PathBuf::from("f.txt"), "", &new, &hl, "dark")
+    render::build(
+        &PathBuf::from("f.txt"),
+        "",
+        &new,
+        &hl,
+        herdr_gitview::config::Theme::Dark,
+    )
 }
 
 /// A built doc for identical content (the "no changes" case).
 fn empty_diff() -> render::DiffDoc {
-    let hl = Highlighter::new("dark");
-    render::build(&PathBuf::from("f.txt"), "same\n", "same\n", &hl, "dark")
+    let hl = Highlighter::new(herdr_gitview::config::Theme::Dark);
+    render::build(
+        &PathBuf::from("f.txt"),
+        "same\n",
+        "same\n",
+        &hl,
+        herdr_gitview::config::Theme::Dark,
+    )
 }
 
 fn draw(app: &mut PreviewApp) -> Buffer {

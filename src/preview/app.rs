@@ -103,6 +103,8 @@ pub struct PreviewApp {
     /// Pristine copies of the lines currently tinted, so a cursor move can
     /// restore them instead of re-cloning the whole (up to 20k-line) doc.
     saved_tint: Vec<(usize, ratatui::text::Line<'static>)>,
+    /// The file the current doc was built for (cursor-preservation check).
+    shown_file: Option<PathBuf>,
     /// Rendered indices of injected note-card lines (excluded from ranges).
     card_lines: Vec<usize>,
     /// Note id to scroll to once its file's diff arrives (notes view hover).
@@ -142,6 +144,7 @@ impl PreviewApp {
             popup_request: None,
             notes_view_request: false,
             saved_tint: Vec::new(),
+            shown_file: None,
             card_lines: Vec::new(),
             pending_focus: None,
             notes_rev: 0,
@@ -165,6 +168,7 @@ impl PreviewApp {
     pub fn clear(&mut self) {
         self.current = None;
         self.built = None;
+        self.shown_file = None;
         self.saved_tint.clear();
         self.doc = Text::default();
         self.first_change = None;
@@ -224,9 +228,19 @@ impl PreviewApp {
             self.clamp_scroll();
             return;
         }
+        // A same-file refresh (auto-poll, stage toggle) keeps the cursor and
+        // any live selection; only a *different* file resets them.
+        let same_file = self
+            .current
+            .as_ref()
+            .map(|req| self.shown_file.as_ref() == Some(&req.file))
+            .unwrap_or(false);
+        self.shown_file = self.current.as_ref().map(|req| req.file.clone());
         self.built = Some(built);
-        self.cursor_line = 0;
-        self.select_anchor = None;
+        if !same_file {
+            self.cursor_line = 0;
+            self.select_anchor = None;
+        }
         self.state = State::Diff;
         self.clamp_scroll();
         self.rebuild();
@@ -503,13 +517,12 @@ impl PreviewApp {
         if !matches!(self.state, State::Diff) {
             return;
         }
-        let dark = self.cfg.theme != "light";
-        let cursor_bg = if dark {
+        let cursor_bg = if !self.cfg.theme.is_light() {
             Color::Rgb(0x31, 0x32, 0x44)
         } else {
             Color::Rgb(0xea, 0xed, 0xf2)
         };
-        let select_bg = if dark {
+        let select_bg = if !self.cfg.theme.is_light() {
             Color::Rgb(0x45, 0x47, 0x5a)
         } else {
             Color::Rgb(0xd8, 0xdd, 0xe6)

@@ -500,7 +500,7 @@ fn spawn_diff_worker(tx: Sender<Event>, repo: Repo, cfg: Config) -> Sender<ShowR
     let (work_tx, work_rx) = mpsc::channel::<ShowReq>();
     thread::spawn(move || {
         // The highlighter is expensive to set up — build it once per process.
-        let hl = highlight::Highlighter::new(&cfg.theme);
+        let hl = highlight::Highlighter::new(cfg.theme);
         // Branch-scope base resolution cached per HEAD (it only moves when
         // HEAD does) so holding j doesn't spawn a git storm.
         let mut base_cache: Option<(String, String)> = None; // (head, merge_base)
@@ -510,7 +510,7 @@ fn spawn_diff_worker(tx: Sender<Event>, repo: Repo, cfg: Config) -> Sender<ShowR
                 req = newer;
             }
             let result = fetch_contents(&repo, &cfg, &req, &mut base_cache)
-                .map(|(old, new)| render::build(&req.file, &old, &new, &hl, &cfg.theme));
+                .map(|(old, new)| render::build(&req.file, &old, &new, &hl, cfg.theme));
             if tx.send(Event::Diff { req, result }).is_err() {
                 break;
             }

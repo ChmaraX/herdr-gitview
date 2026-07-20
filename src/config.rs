@@ -22,9 +22,8 @@ pub struct Config {
     /// Auto-refresh interval in ms; 0 disables polling.
     pub poll_ms: u64,
     pub show_untracked: bool,
-    /// Diff color flavor: "dark" (default) or "light" — picks the syntax
-    /// theme and the red/green background tints.
-    pub theme: String,
+    /// Diff color flavor — picks the syntax theme and all UI tints.
+    pub theme: Theme,
     /// action name -> key string, overrides `keymap::DEFAULT_KEYS`.
     pub keybindings: HashMap<String, String>,
 }
@@ -36,6 +35,20 @@ pub enum ListSide {
     Left,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl Theme {
+    pub fn is_light(self) -> bool {
+        self == Theme::Light
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -45,7 +58,7 @@ impl Default for Config {
             editor: vec!["nvim".into()],
             poll_ms: 2000,
             show_untracked: true,
-            theme: "dark".into(),
+            theme: Theme::Dark,
             keybindings: HashMap::new(),
         }
     }

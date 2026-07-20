@@ -102,15 +102,15 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(right, dim()),
     ]);
     frame.render_widget(
-        Paragraph::new(line).style(Style::new().bg(bar_bg(&app.cfg.theme))),
+        Paragraph::new(line).style(Style::new().bg(bar_bg(app.cfg.theme))),
         area,
     );
 }
 
 /// The surface color behind the header/footer bars, picked to fit the
 /// configured diff theme.
-fn bar_bg(flavor: &str) -> Color {
-    if flavor == "light" {
+fn bar_bg(theme: crate::config::Theme) -> Color {
+    if theme.is_light() {
         Color::Rgb(0xe6, 0xe9, 0xef)
     } else {
         Color::Rgb(0x31, 0x32, 0x44)
@@ -362,7 +362,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         None => footer_hints(app, area.width as usize),
     };
     frame.render_widget(
-        Paragraph::new(line).style(Style::new().bg(bar_bg(&app.cfg.theme))),
+        Paragraph::new(line).style(Style::new().bg(bar_bg(app.cfg.theme))),
         area,
     );
 }

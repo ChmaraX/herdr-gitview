@@ -40,11 +40,11 @@ pub struct Highlighter {
 }
 
 impl Highlighter {
-    /// `flavor` comes from config: "light" | "dark" (default) | ignored else.
-    pub fn new(flavor: &str) -> Highlighter {
-        let name = match flavor {
-            "light" => EmbeddedThemeName::InspiredGithub,
-            _ => EmbeddedThemeName::OneHalfDark,
+    pub fn new(theme: crate::config::Theme) -> Highlighter {
+        let name = if theme.is_light() {
+            EmbeddedThemeName::InspiredGithub
+        } else {
+            EmbeddedThemeName::OneHalfDark
         };
         let theme = themes().get(name).clone();
         let default_fg = theme
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn rust_tokenizes_into_multiple_colored_runs() {
-        let h = Highlighter::new("dark");
+        let h = Highlighter::new(crate::config::Theme::Dark);
         let lines = h.highlight("let x = 1;\n", Some("rs"));
         assert_eq!(lines.len(), 1);
         assert!(lines[0].len() > 1, "rust should split into several runs");
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn unknown_language_is_plain() {
-        let h = Highlighter::new("dark");
+        let h = Highlighter::new(crate::config::Theme::Dark);
         let lines = h.highlight("alpha\nbeta\n", None);
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].len(), 1);

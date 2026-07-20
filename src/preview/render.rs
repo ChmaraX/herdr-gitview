@@ -49,7 +49,7 @@ impl Row {
 /// (`unfold_at`), which rebuilds `text`.
 pub struct DiffDoc {
     rows: Vec<Row>,
-    flavor: String,
+    theme: crate::config::Theme,
     default_fg: Rgb,
     /// Rendered line index → index into `rows`.
     line_rows: Vec<usize>,
@@ -72,10 +72,23 @@ impl DiffDoc {
         }
     }
 
-    /// The rendered line showing new-file line `no`, if visible (not folded).
+    /// The rendered line showing new-file line `no`; a folded line resolves
+    /// to its fold row, so anchors never silently jump to the top.
     pub fn line_for_new(&self, no: u32) -> Option<usize> {
-        (0..self.line_rows.len())
+        if let Some(line) = (0..self.line_rows.len())
             .find(|&i| self.numbers_of_line(i).and_then(|(_, n)| n) == Some(no))
+        {
+            return Some(line);
+        }
+        // Hidden inside a fold?
+        (0..self.line_rows.len()).find(|&i| {
+            match self.rows.get(self.line_rows[i]) {
+                Some(Row::Fold { lines }) => lines
+                    .iter()
+                    .any(|r| matches!(r, Row::Context { new_no, .. } | Row::Insertion { new_no, .. } if *new_no == no)),
+                _ => false,
+            }
+        })
     }
 
     /// A rendered line's diff text: marker + content, no gutter. Empty for
@@ -109,7 +122,7 @@ impl DiffDoc {
     }
 
     fn rebuild(&mut self) {
-        let (text, line_rows) = to_text(&self.rows, &Palette::new(&self.flavor), self.default_fg);
+        let (text, line_rows) = to_text(&self.rows, &Palette::new(self.theme), self.default_fg);
         self.text = text;
         self.line_rows = line_rows;
     }
@@ -125,8 +138,8 @@ struct Palette {
 }
 
 impl Palette {
-    fn new(flavor: &str) -> Palette {
-        if flavor == "light" {
+    fn new(theme: crate::config::Theme) -> Palette {
+        if theme.is_light() {
             // GitHub-web-like tints.
             Palette {
                 ins_bg: (0xe6, 0xff, 0xec),
@@ -152,11 +165,17 @@ impl Palette {
 const FOLD_MARGIN: usize = 3;
 
 /// Build the full document from old and new file content.
-pub fn build(path: &Path, old: &str, new: &str, hl: &Highlighter, flavor: &str) -> DiffDoc {
+pub fn build(
+    path: &Path,
+    old: &str,
+    new: &str,
+    hl: &Highlighter,
+    theme: crate::config::Theme,
+) -> DiffDoc {
     if old.contains('\0') || new.contains('\0') {
         return DiffDoc {
             rows: Vec::new(),
-            flavor: flavor.to_string(),
+            theme,
             default_fg: hl.default_fg,
             line_rows: Vec::new(),
             text: Text::default(),
@@ -210,10 +229,10 @@ pub fn build(path: &Path, old: &str, new: &str, hl: &Highlighter, flavor: &str) 
 
     compute_emphasis(&mut rows);
     let rows = collapse_context(rows);
-    let (text, line_rows) = to_text(&rows, &Palette::new(flavor), hl.default_fg);
+    let (text, line_rows) = to_text(&rows, &Palette::new(theme), hl.default_fg);
     DiffDoc {
         rows,
-        flavor: flavor.to_string(),
+        theme,
         default_fg: hl.default_fg,
         line_rows,
         text,
@@ -546,8 +565,14 @@ mod tests {
     use std::path::PathBuf;
 
     fn doc(old: &str, new: &str) -> DiffDoc {
-        let hl = Highlighter::new("dark");
-        build(&PathBuf::from("a.rs"), old, new, &hl, "dark")
+        let hl = Highlighter::new(crate::config::Theme::Dark);
+        build(
+            &PathBuf::from("a.rs"),
+            old,
+            new,
+            &hl,
+            crate::config::Theme::Dark,
+        )
     }
 
     #[test]
