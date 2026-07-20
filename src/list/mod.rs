@@ -32,6 +32,13 @@ enum Event {
     Ipc(ToList),
     /// The preview pane went away (socket EOF).
     IpcClosed,
+    /// Background nvim probe finished. `unsaved: Some(false)` means the
+    /// editor was clean and has already been told to quit; `Some(true)` means
+    /// it holds unsaved buffers; `None` means it couldn't be asked.
+    EditorProbe {
+        then: Option<app::EditorThen>,
+        unsaved: Option<bool>,
+    },
 }
 
 /// Scope info the poll thread needs to reload with the right git command.
@@ -100,6 +107,8 @@ fn event_loop(
     // sends the initial Show.
     let mut show_dirty = true;
     let mut dirty_since = Instant::now();
+    // At most one background nvim probe at a time.
+    let mut probe_pending = false;
 
     loop {
         terminal.draw(|frame| ui::render(frame, app))?;
@@ -158,6 +167,39 @@ fn event_loop(
                     app.needs_reshow = false;
                     show_dirty = true;
                     dirty_since = Instant::now();
+                }
+                // Editor-close triggers, probed off-thread so the UI never
+                // stalls on nvim's remote API:
+                //  - an action explicitly requested it (q / c), or
+                //  - the cursor moved while editing — a clean nvim quits so
+                //    the diff preview comes back as you browse.
+                if app.busy.is_some() && !probe_pending {
+                    let moved = matches!(
+                        action,
+                        Some(Action::Down | Action::Up | Action::Top | Action::Bottom)
+                    ) && app.modal.is_none();
+                    if let Some(then) = app.editor_close_request.take() {
+                        probe_pending = true;
+                        spawn_editor_probe(tx.clone(), app.cfg.editor.first().cloned(), Some(then));
+                    } else if moved {
+                        probe_pending = true;
+                        spawn_editor_probe(tx.clone(), app.cfg.editor.first().cloned(), None);
+                    }
+                } else {
+                    app.editor_close_request = None; // probe already in flight
+                }
+            }
+            Ok(Event::EditorProbe { then, unsaved }) => {
+                probe_pending = false;
+                match (unsaved, then) {
+                    // Clean — already told to quit; EditDone resumes `then`.
+                    (Some(false), then) => app.after_edit = then,
+                    // Dirty + an action waiting → ask.
+                    (Some(true), Some(then)) => app.modal = Some(app::Modal::EditorClose { then }),
+                    // Dirty + just browsing → leave nvim alone, hint once.
+                    (Some(true), None) => app.set_status("editor has unsaved changes — stays open"),
+                    (None, Some(_)) => app.set_status("editor is open — close it first"),
+                    (None, None) => {}
                 }
             }
             Ok(Event::Refresh(entries)) => {
@@ -255,6 +297,19 @@ fn start_edit(app: &mut App, conn: &mut Option<Conn>) {
     }
     app.busy = Some(format!("editing {}…", file.display()));
     focus_preview();
+}
+
+/// Probe the remote nvim on a background thread: a clean editor is told to
+/// quit immediately; the result comes back as `Event::EditorProbe`.
+fn spawn_editor_probe(tx: Sender<Event>, editor: Option<String>, then: Option<app::EditorThen>) {
+    thread::spawn(move || {
+        let editor = editor.unwrap_or_default();
+        let unsaved = app::editor_has_unsaved(&editor);
+        if unsaved == Some(false) {
+            let _ = app::editor_remote(&editor, &["--remote-send", "<C-\\><C-n>:qa!<CR>"]);
+        }
+        let _ = tx.send(Event::EditorProbe { then, unsaved });
+    });
 }
 
 /// Enter while the editor is running: nvim was started with `--listen`, so

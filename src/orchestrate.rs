@@ -24,6 +24,13 @@ struct ViewState {
 pub fn toggle() -> Result<()> {
     let repo = resolve_repo()?;
     match read_state(&repo) {
+        // Open + invoked from some other tab → jump to the view instead of
+        // closing it; only a toggle from inside the view's own tab closes.
+        Some(state) if tab_alive(&state.tab_id) && !invoked_from(&state.tab_id) => {
+            log(format!("focusing existing view tab {}", state.tab_id));
+            herdr_json(&["tab", "focus", &state.tab_id])?;
+            Ok(())
+        }
         Some(state) if tab_alive(&state.tab_id) => close_view(&repo, &state),
         Some(state) => {
             log("stale state file (tab gone) — cleaning up and reopening");
@@ -231,6 +238,21 @@ fn collect_cwds(value: &Value, out: &mut Vec<PathBuf>) {
         }
         Value::Array(items) => items.iter().for_each(|v| collect_cwds(v, out)),
         _ => {}
+    }
+}
+
+/// Was the action invoked from inside the given tab? Falls back to `true`
+/// (→ close behavior) when no invocation context is available.
+fn invoked_from(tab_id: &str) -> bool {
+    let Ok(raw) = std::env::var("HERDR_PLUGIN_CONTEXT_JSON") else {
+        return true;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return true;
+    };
+    match find_str(&value, "tab_id") {
+        Some(ctx_tab) => ctx_tab == tab_id,
+        None => true,
     }
 }
 

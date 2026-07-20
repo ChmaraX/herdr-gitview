@@ -116,6 +116,9 @@ pub struct App {
     pub needs_reshow: bool,
     /// Action to resume after the editor finishes closing (EditDone).
     pub after_edit: Option<EditorThen>,
+    /// Set by `on_key` when an action needs the editor closed; the run loop
+    /// picks it up and probes nvim on a background thread (no UI stall).
+    pub editor_close_request: Option<EditorThen>,
 }
 
 impl App {
@@ -150,6 +153,7 @@ impl App {
             busy: None,
             needs_reshow: false,
             after_edit: None,
+            editor_close_request: None,
         };
         app.rebuild_rows();
         app
@@ -255,11 +259,11 @@ impl App {
         if self.busy.is_some() {
             match action {
                 Action::Quit if self.mode == Mode::Files => {
-                    self.request_editor_close(EditorThen::QuitView);
+                    self.editor_close_request = Some(EditorThen::QuitView);
                     return;
                 }
                 Action::Commit => {
-                    self.request_editor_close(EditorThen::Commit);
+                    self.editor_close_request = Some(EditorThen::Commit);
                     return;
                 }
                 Action::Edit => return, // remote file switch happens in the run loop
@@ -387,60 +391,20 @@ impl App {
 
     // ---- graceful editor close --------------------------------------------
 
-    /// Something needs the editor gone: close it right away when it has no
-    /// unsaved changes, otherwise ask (save / discard / cancel).
-    fn request_editor_close(&mut self, then: EditorThen) {
-        match self.editor_has_unsaved() {
-            None => self.set_status("editor is open — close it first"), // not remote-controllable
-            Some(false) => self.close_editor(false, then),
-            Some(true) => self.modal = Some(Modal::EditorClose { then }),
-        }
-    }
-
     /// Quit the remote nvim (`:wqa` / `:qa!`); the resumed action runs when
-    /// its exit comes back as EditDone.
-    fn close_editor(&mut self, save: bool, then: EditorThen) {
+    /// its exit comes back as EditDone. One remote-send is fast enough to do
+    /// inline (the *probing* is what happens on a background thread).
+    pub fn close_editor(&mut self, save: bool, then: EditorThen) {
         let keys = if save {
             "<C-\\><C-n>:wqa<CR>"
         } else {
             "<C-\\><C-n>:qa!<CR>"
         };
-        match self.editor_remote(&["--remote-send", keys]) {
+        let editor = self.cfg.editor.first().cloned().unwrap_or_default();
+        match editor_remote(&editor, &["--remote-send", keys]) {
             Some(out) if out.status.success() => self.after_edit = Some(then),
             _ => self.set_status("could not close the editor"),
         }
-    }
-
-    /// Does the remote nvim hold modified buffers? `None` = can't ask (not
-    /// nvim, or no remote socket).
-    fn editor_has_unsaved(&self) -> Option<bool> {
-        let out = self.editor_remote(&[
-            "--remote-expr",
-            r#"len(filter(getbufinfo(), "v:val.changed"))"#,
-        ])?;
-        if !out.status.success() {
-            return None;
-        }
-        let count = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        Some(!count.is_empty() && count != "0")
-    }
-
-    /// Run an nvim remote command against the editor's `--listen` socket.
-    fn editor_remote(&self, args: &[&str]) -> Option<std::process::Output> {
-        let editor = self.cfg.editor.first()?;
-        if !editor.contains("nvim") {
-            return None;
-        }
-        let server = crate::preview::editor_server_path()?;
-        if !server.exists() {
-            return None;
-        }
-        std::process::Command::new(editor)
-            .arg("--server")
-            .arg(&server)
-            .args(args)
-            .output()
-            .ok()
     }
 
     fn run_pending(&mut self, pending: PendingAction) {
@@ -693,4 +657,39 @@ impl App {
 /// First line of an error (git errors embed stderr; the top line is the news).
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or(s).trim().to_string()
+}
+
+/// Run an nvim remote command against the editor's `--listen` socket.
+/// `None` = not remote-controllable (not nvim, or no live socket).
+pub(crate) fn editor_remote(editor: &str, args: &[&str]) -> Option<std::process::Output> {
+    if !editor.contains("nvim") {
+        return None;
+    }
+    let server = crate::preview::editor_server_path()?;
+    if !server.exists() {
+        return None;
+    }
+    std::process::Command::new(editor)
+        .arg("--server")
+        .arg(&server)
+        .args(args)
+        .output()
+        .ok()
+}
+
+/// Does the remote nvim hold modified buffers? Runs two child processes —
+/// call from a background thread, never the UI loop.
+pub(crate) fn editor_has_unsaved(editor: &str) -> Option<bool> {
+    let out = editor_remote(
+        editor,
+        &[
+            "--remote-expr",
+            r#"len(filter(getbufinfo(), "v:val.changed"))"#,
+        ],
+    )?;
+    if !out.status.success() {
+        return None;
+    }
+    let count = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Some(!count.is_empty() && count != "0")
 }
