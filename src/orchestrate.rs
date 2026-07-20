@@ -86,6 +86,8 @@ fn open_view(repo: &Path) -> Result<()> {
         &[],
     )?;
     let tab_id = pane_tab_id(&preview_pane)?;
+    // Label the tab so the tab bar reads as ours, not as a generic pane title.
+    let _ = herdr_json(&["tab", "rename", &tab_id, "gitview"]);
     let list_pane = open_pane(
         repo,
         &socket,
