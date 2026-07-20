@@ -179,7 +179,7 @@ impl Conn {
                             }
                         }
                         Err(err) => {
-                            eprintln!("ipc: skipping undecodable line: {err}");
+                            crate::logx::log(format!("ipc: skipping undecodable line: {err}"));
                         }
                     }
                 }

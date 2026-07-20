@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
 use crate::config::Config;
-use crate::git::{ChangeKind, FileEntry, Repo, Scope, StageState};
+use crate::git::{ChangeKind, Repo, Scope};
 use crate::keymap::{Action, Keymap};
 
 /// Hard cap on rendered diff lines; beyond this we show a truncation notice so
@@ -30,20 +30,6 @@ pub struct ShowReq {
     pub kind: ChangeKind,
     /// History view: show this commit's change instead of a live diff.
     pub commit: Option<String>,
-}
-
-impl ShowReq {
-    /// A minimal `FileEntry` for `diff_ansi` (only path/orig/kind are read).
-    pub fn to_entry(&self) -> FileEntry {
-        FileEntry {
-            path: self.file.clone(),
-            orig_path: self.orig_path.clone(),
-            kind: self.kind,
-            stage: StageState::NA,
-            adds: None,
-            dels: None,
-        }
-    }
 }
 
 /// A batched review note, anchored to a file (and optionally a line range).

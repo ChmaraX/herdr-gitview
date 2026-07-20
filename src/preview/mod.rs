@@ -24,6 +24,12 @@ use crate::git::{Repo, Scope};
 use crate::ipc::{Conn, ToList, ToPreview};
 use crate::keymap::Keymap;
 
+/// Which popup interaction an answer belongs to.
+enum PreviewPopup {
+    Annotate,
+    PickAgent,
+}
+
 /// Everything the main loop can be woken by.
 enum Event {
     Key(KeyEvent),
@@ -102,85 +108,85 @@ fn event_loop(
     // Held once connected so the UI thread can send `ToList` (e.g. `Ready`).
     let mut conn: Option<Conn> = None;
     // Popup answers we are waiting on.
-    let mut annotate_answer: Option<std::path::PathBuf> = None;
-    let mut pick_answer: Option<std::path::PathBuf> = None;
+    let mut popups: crate::popup::Popups<PreviewPopup> = Default::default();
     let mut last_notes_rev = 0u64;
 
     loop {
         // Open popups the app requested (annotate input / agent picker).
-        match app.popup_request.take() {
-            Some(app::PopupReq::Annotate) if annotate_answer.is_none() => {
-                let title = app
-                    .pending_note
-                    .as_ref()
-                    .map(|n| {
-                        if n.end == 0 {
-                            format!("note for {}", n.file.display())
-                        } else {
-                            format!("note for {}:{}-{}", n.file.display(), n.start, n.end)
-                        }
-                    })
-                    .unwrap_or_default();
-                let envs = [("GITVIEW_ASK_TEXT".to_string(), title)];
-                match crate::popup::spawn("annotate", &envs, 64, 8) {
-                    Some(path) => annotate_answer = Some(path),
-                    None => {
+        // A request while another popup is open is put back for later.
+        if let Some(req) = app.popup_request.take() {
+            match req {
+                app::PopupReq::Annotate if popups.is_open() => {
+                    app.popup_request = Some(app::PopupReq::Annotate);
+                }
+                app::PopupReq::Annotate => {
+                    let title = app
+                        .pending_note
+                        .as_ref()
+                        .map(|n| {
+                            if n.end == 0 {
+                                format!("note for {}", n.file.display())
+                            } else {
+                                format!("note for {}:{}-{}", n.file.display(), n.start, n.end)
+                            }
+                        })
+                        .unwrap_or_default();
+                    let envs = [("GITVIEW_ASK_TEXT".to_string(), title)];
+                    if !popups.open("annotate", &envs, (64, 8), PreviewPopup::Annotate) {
                         app.pending_note = None;
-                        app.flash(
-                            "popup failed — needs herdr ≥0.7.4 + re-linked plugin (see debug log)",
-                        );
+                        app.flash("couldn't open the note popup (see debug log)");
+                    }
+                }
+                app::PopupReq::PickAgent if popups.is_open() => {
+                    app.popup_request = Some(app::PopupReq::PickAgent);
+                }
+                app::PopupReq::PickAgent => {
+                    let agents = crate::popup::workspace_agents();
+                    if agents.is_empty() {
+                        app.flash("no agent panes in this workspace");
+                    } else {
+                        let json = serde_json::to_string(&agents).unwrap_or_default();
+                        let envs = [
+                            ("GITVIEW_AGENTS".to_string(), json),
+                            (
+                                "GITVIEW_ASK_TEXT".to_string(),
+                                format!("send {} note(s) to…", app.notes.len()),
+                            ),
+                        ];
+                        let size = (74, (agents.len() as u16 + 6).min(14));
+                        if !popups.open("pick-agent", &envs, size, PreviewPopup::PickAgent) {
+                            app.flash("couldn't open the agent picker (see debug log)");
+                        }
                     }
                 }
             }
-            Some(app::PopupReq::PickAgent) if pick_answer.is_none() => {
-                let agents = crate::popup::workspace_agents();
-                if agents.is_empty() {
-                    app.flash("no agent panes in this workspace");
+        }
+        // Popup outcomes (a dead popup pane just cancels the interaction).
+        match popups.poll() {
+            Some((PreviewPopup::Annotate, crate::popup::Answer::Text(text))) => {
+                if text.is_empty() {
+                    app.pending_note = None; // cancelled
                 } else {
-                    let json = serde_json::to_string(&agents).unwrap_or_default();
-                    let envs = [
-                        ("GITVIEW_AGENTS".to_string(), json),
-                        (
-                            "GITVIEW_ASK_TEXT".to_string(),
-                            format!("send {} note(s) to…", app.notes.len()),
-                        ),
-                    ];
-                    match crate::popup::spawn(
-                        "pick-agent",
-                        &envs,
-                        74,
-                        (agents.len() as u16 + 6).min(14),
-                    ) {
-                        Some(path) => pick_answer = Some(path),
-                        None => app.flash(
-                            "popup failed — needs herdr ≥0.7.4 + re-linked plugin (see debug log)",
-                        ),
+                    app.finish_annotate(text);
+                }
+            }
+            Some((PreviewPopup::Annotate, crate::popup::Answer::Dead)) => {
+                app.pending_note = None;
+            }
+            Some((PreviewPopup::PickAgent, crate::popup::Answer::Text(answer))) => {
+                if answer != "cancel"
+                    && let Some((pane, mode)) = answer.split_once('\t')
+                {
+                    match deliver_notes(app, pane, mode == "submit") {
+                        Ok(agent) => {
+                            app.clear_notes();
+                            app.flash(format!("notes sent to {agent}"));
+                        }
+                        Err(err) => app.flash(format!("send failed: {err}")),
                     }
                 }
             }
-            Some(_) => {} // a popup is already open
-            None => {}
-        }
-        // Annotate answer: non-empty text commits the note.
-        if let Some(text) = crate::popup::poll(&mut annotate_answer) {
-            if text.is_empty() {
-                app.pending_note = None; // cancelled
-            } else {
-                app.finish_annotate(text);
-            }
-        }
-        // Agent-picker answer: "pane\tplace|submit" or "cancel".
-        if let Some(answer) = crate::popup::poll(&mut pick_answer)
-            && answer != "cancel"
-            && let Some((pane, mode)) = answer.split_once('\t')
-        {
-            match deliver_notes(app, pane, mode == "submit") {
-                Ok(agent) => {
-                    app.clear_notes();
-                    app.flash(format!("notes sent to {agent}"));
-                }
-                Err(err) => app.flash(format!("send failed: {err}")),
-            }
+            Some((PreviewPopup::PickAgent, crate::popup::Answer::Dead)) | None => {}
         }
 
         // `n` in the preview opens the notes view over in the list pane.
@@ -212,9 +218,8 @@ fn event_loop(
             Ok(Event::Mouse(m)) => app.on_mouse(m.kind, m.row),
 
             Ok(Event::Connected(new_conn)) => {
-                // Split the reader onto a thread that forwards `ToList`-shaped
-                // frames? No — the list sends `ToPreview`; decode those and
-                // fan them into our event channel, with EOF → IpcClosed.
+                // Decode incoming `ToPreview` frames on a reader thread and
+                // fan them into our event channel; EOF becomes IpcClosed.
                 let (ipc_tx, ipc_rx) = mpsc::channel::<ToPreview>();
                 let mut c = new_conn.spawn_reader(ipc_tx);
                 spawn_ipc_forwarder(ipc_rx, tx.clone());
@@ -545,6 +550,18 @@ fn fetch_contents(repo: &Repo, cfg: &Config, req: &ShowReq) -> Result<(String, S
             let old = some(repo.file_at("HEAD", old_path))?;
             let new = some(repo.file_at(":0", path))?;
             Ok((old, new))
+        }
+        Scope::Worktree if req.kind == crate::git::ChangeKind::Conflicted => {
+            // Unmerged paths have no stage-0 entry; diff "ours" (stage 2,
+            // falling back to HEAD) against the conflicted worktree file so
+            // the markers show as real insertions instead of a bogus
+            // whole-file add.
+            let ours = match repo.file_at(":2", path).map_err(err)? {
+                Some(content) => content,
+                None => some(repo.file_at("HEAD", path))?,
+            };
+            let new = repo.file_in_worktree(path).unwrap_or_default();
+            Ok((ours, new))
         }
         Scope::Worktree => {
             // Unstaged view: index vs working tree (untracked → empty old).

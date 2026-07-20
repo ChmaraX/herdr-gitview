@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use herdr_gitview::git::{ChangeKind, Repo, Scope, StageState};
+use herdr_gitview::git::{ChangeKind, Repo, StageState};
 
 /// Minimal tempdir: unique path under the OS temp dir, removed on drop.
 struct TempRepo {
@@ -184,110 +184,59 @@ fn conflicted_file_sorts_first() {
     assert_eq!(entries[1].path, PathBuf::from("aaa.txt"));
 }
 
-// ---- diff_ansi ------------------------------------------------------------
-
-fn find<'a>(
-    entries: &'a [herdr_gitview::git::FileEntry],
-    p: &str,
-) -> &'a herdr_gitview::git::FileEntry {
-    entries
-        .iter()
-        .find(|e| e.path == *p)
-        .expect("entry for path")
-}
+// ---- file content fetching (feeds the structured diff renderer) -----------
 
 #[test]
-fn diff_ansi_unstaged_has_color_and_line() {
-    let t = fixture("diff-unstaged");
-    write(&t.dir, "base.txt", "one\ntwo\nthree\n");
-    let entries = t.repo.worktree_status(true).unwrap();
-    let e = find(&entries, "base.txt");
-    let out = t.repo.diff_ansi(e, Scope::Worktree, false, None).unwrap();
-    // ANSI escape byte present + the newly added line shows up.
-    assert!(out.contains(&0x1b), "expected ANSI escape bytes in diff");
-    assert!(
-        String::from_utf8_lossy(&out).contains("three"),
-        "expected added line"
-    );
-}
-
-#[test]
-fn diff_ansi_cached_vs_unstaged() {
-    let t = fixture("diff-cached");
-    write(&t.dir, "base.txt", "one\ntwo\nstaged\n");
+fn file_at_reads_index_head_and_commits() {
+    let t = fixture("file-at");
+    // modify + stage, then modify again: three distinct versions
+    write(&t.dir, "base.txt", "staged version\n");
     git(&t.dir, &["add", "base.txt"]);
-    let entries = t.repo.worktree_status(true).unwrap();
-    let e = find(&entries, "base.txt");
-    // Staged view shows the change; unstaged view is empty (nothing left).
-    let cached = t.repo.diff_ansi(e, Scope::Worktree, true, None).unwrap();
-    assert!(String::from_utf8_lossy(&cached).contains("staged"));
-    let unstaged = t.repo.diff_ansi(e, Scope::Worktree, false, None).unwrap();
-    assert!(unstaged.is_empty(), "no unstaged changes expected");
-}
+    write(&t.dir, "base.txt", "worktree version\n");
 
-#[test]
-fn diff_ansi_untracked_full_add() {
-    let t = fixture("diff-untracked");
-    write(&t.dir, "fresh.txt", "alpha\nbeta\n");
-    let entries = t.repo.worktree_status(true).unwrap();
-    let e = find(&entries, "fresh.txt");
-    let out = t.repo.diff_ansi(e, Scope::Worktree, false, None).unwrap();
-    let text = String::from_utf8_lossy(&out);
-    assert!(
-        text.contains("alpha") && text.contains("beta"),
-        "full-file add diff"
+    assert_eq!(
+        t.repo
+            .file_at("HEAD", Path::new("base.txt"))
+            .unwrap()
+            .as_deref(),
+        Some("one\ntwo\n")
     );
-    assert!(out.contains(&0x1b), "expected ANSI escape bytes");
-}
-
-#[test]
-fn diff_ansi_branch_scope() {
-    let t = fixture("diff-branch");
-    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
-    write(&t.dir, "base.txt", "one\ntwo\nbranch\n");
-    git(&t.dir, &["commit", "-q", "-am", "edit"]);
-    let mb = t.repo.merge_base("main").unwrap();
-    let entries = t.repo.branch_changes(&mb).unwrap();
-    let e = find(&entries, "base.txt");
-    let out = t.repo.diff_ansi(e, Scope::Branch, false, None).unwrap();
-    assert!(
-        String::from_utf8_lossy(&out).contains("branch"),
-        "branch-scope change line"
+    assert_eq!(
+        t.repo
+            .file_at(":0", Path::new("base.txt"))
+            .unwrap()
+            .as_deref(),
+        Some("staged version\n")
     );
-    assert!(out.contains(&0x1b), "expected ANSI escape bytes");
-}
-
-#[test]
-fn diff_ansi_branch_rename() {
-    let t = fixture("diff-rename");
-    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
-    git(&t.dir, &["mv", "base.txt", "moved.txt"]);
-    git(&t.dir, &["commit", "-q", "-m", "rename"]);
-    let mb = t.repo.merge_base("main").unwrap();
-    let entries = t.repo.branch_changes(&mb).unwrap();
-    let e = entries
-        .iter()
-        .find(|e| e.kind == ChangeKind::Renamed)
-        .expect("renamed entry");
-    assert_eq!(e.orig_path, Some(PathBuf::from("base.txt")));
-    let out = t.repo.diff_ansi(e, Scope::Branch, false, None).unwrap();
-    let text = String::from_utf8_lossy(&out);
-    // Rename diff references the paths (pathspec included both orig + new).
-    assert!(
-        text.contains("moved.txt") || text.contains("base.txt"),
-        "rename diff mentions paths"
+    assert_eq!(
+        t.repo.file_in_worktree(Path::new("base.txt")).as_deref(),
+        Some("worktree version\n")
     );
+    // missing path at a rev → None, not an error
+    assert_eq!(t.repo.file_at("HEAD", Path::new("nope.txt")).unwrap(), None);
 }
 
 #[test]
-fn fingerprint_changes_with_worktree() {
-    let t = fixture("fingerprint");
-    let clean = t.repo.fingerprint();
-    write(&t.dir, "new.txt", "x\n");
-    let dirty = t.repo.fingerprint();
-    assert_ne!(clean, dirty);
-    std::fs::remove_file(t.dir.join("new.txt")).unwrap();
-    assert_eq!(t.repo.fingerprint(), clean);
+fn file_at_commit_sha_and_parent() {
+    let t = fixture("file-at-sha");
+    write(&t.dir, "base.txt", "second\n");
+    git(&t.dir, &["commit", "-q", "-am", "second"]);
+    let sha = t.repo.log_commits(1).unwrap()[0].sha.clone();
+
+    assert_eq!(
+        t.repo
+            .file_at(&sha, Path::new("base.txt"))
+            .unwrap()
+            .as_deref(),
+        Some("second\n")
+    );
+    assert_eq!(
+        t.repo
+            .file_at(&format!("{sha}^"), Path::new("base.txt"))
+            .unwrap()
+            .as_deref(),
+        Some("one\ntwo\n")
+    );
 }
 
 // ---- phase 5: write side ---------------------------------------------------

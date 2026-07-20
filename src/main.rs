@@ -11,7 +11,9 @@ fn main() -> anyhow::Result<()> {
         Some("annotate") => herdr_gitview::annotate::run_annotate(),
         Some("pick-agent") => herdr_gitview::annotate::run_pick_agent(),
         Some(other) => {
-            anyhow::bail!("unknown mode: {other} (expected list|preview|toggle|open|close|ask)")
+            anyhow::bail!(
+                "unknown mode: {other} (expected list|preview|toggle|open|close|ask|annotate|pick-agent)"
+            )
         }
     }
 }

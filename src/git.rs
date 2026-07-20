@@ -98,19 +98,6 @@ impl Repo {
             .with_context(|| format!("spawning git {args:?}"))
     }
 
-    /// For commands where exit 1 means "differences found" / "clean absence"
-    /// (e.g. `diff --no-index`): 0 and 1 are both success.
-    fn git_tristate(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let out = self.git_lenient(args)?;
-        match out.status.code() {
-            Some(0) | Some(1) => Ok(out.stdout),
-            _ => bail!(
-                "git {args:?} failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        }
-    }
-
     // ---- branch / base ----------------------------------------------------
 
     /// Current branch name, None when detached.
@@ -217,101 +204,6 @@ impl Repo {
 
     // ---- diff rendering ---------------------------------------------------
 
-    /// Colored unified diff for one entry as raw bytes (ANSI escapes included).
-    ///
-    /// The command matrix (see `00-shared-contracts.md`):
-    /// - worktree unstaged: `git diff -- <p>`
-    /// - worktree staged view: `git diff --cached -- <p>`
-    /// - untracked: `git diff --no-index -- /dev/null <p>` (exit 1 is fine)
-    /// - branch scope: `git diff <merge_base> -- <p>` (renames add `-M` and
-    ///   both the orig and new paths to the pathspec)
-    ///
-    /// Color and pager settings are forced regardless of the user's git config
-    /// so the output is always colorized and never piped to a pager.
-    /// Branch scope resolves its own merge base (via `detect_base` +
-    /// `merge_base`) so the contract signature `diff_ansi(e, scope, cached)`
-    /// is kept exactly.
-    /// The diff for one entry. `commit: Some(sha)` shows that commit's change
-    /// to the file (history view) and ignores `scope`/`cached`.
-    pub fn diff_ansi(
-        &self,
-        e: &FileEntry,
-        scope: Scope,
-        cached: bool,
-        commit: Option<&str>,
-    ) -> Result<Vec<u8>> {
-        let path = e.path.to_string_lossy().into_owned();
-        if let Some(sha) = commit {
-            // `show` handles root commits (no parent) transparently.
-            let mut args: Vec<String> = vec![
-                "-c".into(),
-                "color.diff=always".into(),
-                "-c".into(),
-                "core.pager=cat".into(),
-                "show".into(),
-                "--color=always".into(),
-                "--no-ext-diff".into(),
-                "--format=".into(),
-                "-M".into(),
-                sha.into(),
-                "--".into(),
-            ];
-            if let Some(orig) = &e.orig_path {
-                args.push(orig.to_string_lossy().into_owned());
-            }
-            args.push(path);
-            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            return self.git(&refs);
-        }
-        let mut args: Vec<String> = vec![
-            "-c".into(),
-            "color.diff=always".into(),
-            "-c".into(),
-            "core.pager=cat".into(),
-            "diff".into(),
-            "--color=always".into(),
-            "--no-ext-diff".into(),
-        ];
-
-        let untracked = scope == Scope::Worktree && e.kind == ChangeKind::Untracked;
-        match scope {
-            Scope::Worktree if untracked => {
-                // Compare an empty file against the untracked file: full `+` diff.
-                args.push("--no-index".into());
-                args.push("--".into());
-                args.push("/dev/null".into());
-                args.push(path);
-            }
-            Scope::Worktree => {
-                if cached {
-                    args.push("--cached".into());
-                }
-                args.push("--".into());
-                args.push(path);
-            }
-            Scope::Branch => {
-                // Diff the merge base against the working tree, following renames.
-                let base = self.detect_base();
-                let mb = self.merge_base(&base)?;
-                args.push("-M".into());
-                args.push(mb);
-                args.push("--".into());
-                if let Some(orig) = &e.orig_path {
-                    args.push(orig.to_string_lossy().into_owned());
-                }
-                args.push(path);
-            }
-        }
-
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        if untracked {
-            // `--no-index` exits 1 when files differ — that is the normal case.
-            self.git_tristate(&refs)
-        } else {
-            self.git(&refs)
-        }
-    }
-
     // ---- file content (for the structured diff renderer) ------------------
 
     /// A file's content at `rev` (e.g. `HEAD`, a sha, `<sha>^`), or at the
@@ -370,29 +262,13 @@ impl Repo {
 
     /// Files changed by one commit (vs its parent; root commits work too).
     pub fn commit_files(&self, sha: &str) -> Result<Vec<FileEntry>> {
-        let raw = self.git(&[
-            "diff-tree",
-            "-r",
-            "--root",
-            "--name-status",
-            "-z",
-            "-M",
-            sha,
-        ])?;
-        // diff-tree prefixes its output with the commit id line; skip it.
-        let body = match raw.iter().position(|b| *b == 0) {
-            Some(i) if raw.get(..40).is_some_and(|s| !s.contains(&b'\t')) => &raw[i + 1..],
-            _ => &raw[..],
-        };
-        let mut entries = parse_name_status(body)?;
+        let common = ["diff-tree", "-r", "--root", "--no-commit-id", "-z", "-M"];
+        let raw = self.git(&[&common[..], &["--name-status", sha]].concat())?;
+        let mut entries = parse_name_status(&raw)?;
 
-        let numstat = self.git(&["diff-tree", "-r", "--root", "--numstat", "-z", "-M", sha])?;
-        let nbody = match numstat.iter().position(|b| *b == 0) {
-            Some(i) if numstat.get(..40).is_some_and(|s| !s.contains(&b'\t')) => &numstat[i + 1..],
-            _ => &numstat[..],
-        };
+        let numstat = self.git(&[&common[..], &["--numstat", sha]].concat())?;
         let mut stats: HashMap<PathBuf, Option<(u32, u32)>> = HashMap::new();
-        for (path, stat) in parse_numstat(nbody) {
+        for (path, stat) in parse_numstat(&numstat) {
             merge_stat(&mut stats, path, stat);
         }
         for entry in &mut entries {
@@ -476,10 +352,16 @@ impl Repo {
     // ---- change detection -------------------------------------------------
 
     /// Cheap fingerprint of the working tree state; a change means the file
-    /// list should refresh. FNV-1a over the raw status bytes.
-    pub fn fingerprint(&self) -> u64 {
+    /// list should refresh. FNV-1a over the raw status bytes. Honors the
+    /// untracked setting so hidden untracked churn can't cause refreshes.
+    pub fn fingerprint(&self, show_untracked: bool) -> u64 {
+        let untracked = if show_untracked {
+            "--untracked-files=all"
+        } else {
+            "--untracked-files=no"
+        };
         let raw = self
-            .git(&["status", "--porcelain=v2", "-z", "--untracked-files=all"])
+            .git(&["status", "--porcelain=v2", "-z", untracked])
             .unwrap_or_default();
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in &raw {
