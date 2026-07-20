@@ -18,8 +18,11 @@ impl Drop for TempRepo {
     }
 }
 
-fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
+/// Run git with a deterministic identity + config, returning the raw output.
+/// Every git invocation must share this identity so operations that record a
+/// committer (merge, commit) behave the same on every git version and CI host.
+fn git_raw(dir: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -28,12 +31,22 @@ fn git(dir: &Path, args: &[&str]) {
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@t")
         .output()
-        .expect("spawn git");
+        .expect("spawn git")
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = git_raw(dir, args);
     assert!(
         out.status.success(),
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// Like `git`, but tolerates a non-zero exit (e.g. a conflicting merge, which
+/// git reports with exit code 1 after leaving the conflict markers in place).
+fn git_lenient(dir: &Path, args: &[&str]) {
+    let _ = git_raw(dir, args);
 }
 
 fn write(dir: &Path, rel: &str, content: &str) {
@@ -168,12 +181,7 @@ fn conflicted_file_sorts_first() {
     write(&t.dir, "base.txt", "main version\n");
     git(&t.dir, &["commit", "-q", "-am", "main edit"]);
     // merge conflicts: git merge exits non-zero, so run it leniently
-    let _ = Command::new("git")
-        .arg("-C")
-        .arg(&t.dir)
-        .args(["merge", "feature"])
-        .output()
-        .unwrap();
+    git_lenient(&t.dir, &["merge", "feature"]);
     // add a second, boring change that would sort before by path
     write(&t.dir, "aaa.txt", "x\n");
 
@@ -346,12 +354,7 @@ fn discard_conflicted_is_refused() {
     git(&t.dir, &["checkout", "-q", "main"]);
     write(&t.dir, "base.txt", "main\n");
     git(&t.dir, &["commit", "-q", "-am", "m"]);
-    let _ = Command::new("git")
-        .arg("-C")
-        .arg(&t.dir)
-        .args(["merge", "feature"])
-        .output()
-        .unwrap();
+    git_lenient(&t.dir, &["merge", "feature"]);
 
     let entries = t.repo.worktree_status(true).unwrap();
     let err = t.repo.discard(entry_for(&entries, "base.txt")).unwrap_err();
