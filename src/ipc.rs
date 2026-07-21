@@ -63,6 +63,9 @@ pub enum ToPreview {
     AddNote {
         file: PathBuf,
         text: String,
+        /// Whether the file was in the staged section when annotated, so the
+        /// notes view later re-shows the same (staged vs. worktree) diff.
+        cached: bool,
     },
     /// The list asked to send the batched notes (preview owns the store).
     SendNotes,
@@ -107,6 +110,9 @@ pub struct NoteMeta {
     pub start: u32,
     pub end: u32,
     pub text: String,
+    /// Whether this note's diff was the staged (cached) side, so the notes
+    /// view re-shows the same diff the note was written against.
+    pub cached: bool,
 }
 
 /// One end of the IPC link: a write half plus an optional reader half.

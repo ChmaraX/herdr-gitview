@@ -131,7 +131,8 @@ pub struct App {
     pub notes: Vec<crate::ipc::NoteMeta>,
     /// Where `n` was pressed, so the notes view can return there.
     notes_return: Option<Mode>,
-    pub annotate_request: Option<std::path::PathBuf>,
+    /// Path plus whether it was selected in the staged section.
+    pub annotate_request: Option<(std::path::PathBuf, bool)>,
     pub send_notes_request: bool,
     /// Edit/delete requests for the run loop (they need popups / the conn).
     pub edit_note_request: Option<(u64, String)>,
@@ -352,7 +353,9 @@ impl App {
                     self.set_status("notes work on staged/unstaged changes only");
                 } else {
                     match self.selected_entry() {
-                        Some((entry, _)) => self.annotate_request = Some(entry.path.clone()),
+                        Some((entry, staged)) => {
+                            self.annotate_request = Some((entry.path.clone(), staged))
+                        }
                         None => self.set_status("select a file to annotate"),
                     }
                 }

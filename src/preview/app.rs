@@ -43,6 +43,9 @@ pub struct Note {
     pub text: String,
     /// The selected diff lines (`-`/`+`/space prefixed), possibly empty.
     pub snippet: String,
+    /// Whether this note was written against the staged (cached) diff, so
+    /// re-showing it later (notes view) picks the same side.
+    pub cached: bool,
 }
 
 /// A popup the run loop should open on our behalf.
@@ -606,6 +609,7 @@ impl PreviewApp {
             end,
             text: String::new(),
             snippet,
+            cached: req.cached,
         });
         self.popup_request = Some(PopupReq::Annotate);
     }
@@ -624,7 +628,7 @@ impl PreviewApp {
     }
 
     /// A whole-file note from the list pane.
-    pub fn add_file_note(&mut self, file: PathBuf, text: String) {
+    pub fn add_file_note(&mut self, file: PathBuf, text: String, cached: bool) {
         self.notes.push(Note {
             id: self.next_note_id,
             file,
@@ -632,6 +636,7 @@ impl PreviewApp {
             end: 0,
             text,
             snippet: String::new(),
+            cached,
         });
         self.next_note_id += 1;
         self.notes_rev += 1;

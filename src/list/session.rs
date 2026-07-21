@@ -51,7 +51,7 @@ pub struct Shared {
 /// Which popup interaction an answer belongs to.
 enum ListPopup {
     Confirm,
-    AnnotateFile(PathBuf),
+    AnnotateFile(PathBuf, bool),
     EditNote(u64),
 }
 
@@ -356,7 +356,7 @@ impl Session {
         // Popups (whole-file annotate, note edit, confirm dialogs) run
         // through one manager with liveness tracking: a popup pane dying
         // without an answer cancels the interaction instead of wedging it.
-        if let Some(file) = self.app.annotate_request.take() {
+        if let Some((file, cached)) = self.app.annotate_request.take() {
             let envs = [(
                 "GITVIEW_ASK_TEXT".to_string(),
                 format!("note for {}", file.display()),
@@ -366,10 +366,10 @@ impl Session {
                 "annotate",
                 &envs,
                 (64, 8),
-                ListPopup::AnnotateFile(file.clone()),
+                ListPopup::AnnotateFile(file.clone(), cached),
             ) {
                 if self.popups.is_open() {
-                    self.app.annotate_request = Some(file); // retry when free
+                    self.app.annotate_request = Some((file, cached)); // retry when free
                 } else {
                     self.app
                         .set_status("couldn't open the note popup (see debug log)");
@@ -448,9 +448,9 @@ impl Session {
                     self.mark_dirty();
                 }
             }
-            Some((ListPopup::AnnotateFile(file), Answer::Text(text))) => {
+            Some((ListPopup::AnnotateFile(file, cached), Answer::Text(text))) => {
                 if !text.is_empty() {
-                    self.send(&ToPreview::AddNote { file, text });
+                    self.send(&ToPreview::AddNote { file, text, cached });
                 }
             }
             Some((ListPopup::EditNote(id), Answer::Text(text))) => {
@@ -664,7 +664,8 @@ fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
 
 /// The Show for a hovered note: its file's live worktree diff.
 fn note_show(app: &App, id: u64) -> Option<ToPreview> {
-    let file = &app.notes.iter().find(|n| n.id == id)?.file;
+    let note = app.notes.iter().find(|n| n.id == id)?;
+    let file = &note.file;
     // Prefer real entry metadata when the file is among the current entries;
     // otherwise synthesize (kind only affects rename pathspecs).
     let entry = app.entries.iter().find(|e| &e.path == file);
@@ -672,7 +673,7 @@ fn note_show(app: &App, id: u64) -> Option<ToPreview> {
         file: file.clone(),
         orig_path: entry.and_then(|e| e.orig_path.clone()),
         scope: Scope::Worktree,
-        cached: false,
+        cached: note.cached,
         kind: entry
             .map(|e| e.kind)
             .unwrap_or(crate::git::ChangeKind::Modified),

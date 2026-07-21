@@ -298,6 +298,44 @@ fn note_flow_annotate_edit_delete_syncs_both_panes() {
 }
 
 #[test]
+fn staged_note_notes_view_previews_the_staged_diff() {
+    // Regression: a whole-file note added on a *staged* file used to force
+    // the notes-view preview to `cached: false` (worktree side), which is
+    // empty for a fully staged file — "no changes in this view" even though
+    // the note and its diff both exist.
+    let repo = fixture("staged-note");
+    write(&repo.dir, "base.txt", "one\ntwo\nchanged\n");
+    let mut w = World::new(repo);
+
+    w.press("s"); // stage the only change
+    let staged_rows = w
+        .list
+        .app
+        .rows
+        .iter()
+        .filter(|r| matches!(r, list::app::ListRow::Entry { staged: true, .. }))
+        .count();
+    assert_eq!(staged_rows, 1);
+
+    // Whole-file note from the list, on the now-staged file.
+    w.press("a");
+    w.answer_popup("annotate", "please refactor this");
+    assert_eq!(w.preview.app.notes.len(), 1);
+    assert!(w.preview.app.notes[0].cached, "note remembers staged side");
+
+    // Open the notes view and hover the note — the preview must re-show the
+    // staged diff, not an empty worktree one.
+    w.press("n");
+    assert_eq!(w.list.app.mode, Mode::Notes);
+    w.pump();
+    assert!(
+        !matches!(w.preview.app.state, State::Empty),
+        "staged diff should render, not 'no changes in this view'"
+    );
+    assert!(w.diff_text().contains("changed"));
+}
+
+#[test]
 fn dead_popup_cancels_instead_of_wedging() {
     // Regression: a popup pane dying without an answer used to permanently
     // wedge the popup subsystem (invisible modal eating keys).

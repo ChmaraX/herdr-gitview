@@ -167,7 +167,7 @@ impl Session {
             ToPreview::Scroll { delta } => self.app.scroll_by(delta),
             ToPreview::Page { down, full } => self.app.page(down, full),
             ToPreview::Clear => self.app.clear(),
-            ToPreview::AddNote { file, text } => self.app.add_file_note(file, text),
+            ToPreview::AddNote { file, text, cached } => self.app.add_file_note(file, text, cached),
             ToPreview::FocusNote { id } => self.app.focus_note(id),
             ToPreview::EditNote { id, text } => self.app.edit_note(id, text),
             ToPreview::DeleteNote { id } => self.app.delete_note(id),
@@ -210,6 +210,7 @@ impl Session {
                     start: n.start,
                     end: n.end,
                     text: n.text.clone(),
+                    cached: n.cached,
                 })
                 .collect();
             self.send(&ToList::Notes { notes: snapshot });
