@@ -23,12 +23,16 @@ https://github.com/user-attachments/assets/1cfdf22a-fc5a-40e2-af6c-546156d05c3b
 
 - **Grouped changes** - conflicts, staged, and unstaged changes in separate
   sections. `s` moves a file between staged and unstaged.
+  <img width="1541" height="780" alt="image" src="https://github.com/user-attachments/assets/bf0bbe92-817f-4db2-b023-04cd35fe90f8" />
+
 - **Readable diffs** - syntax highlighting, word-level emphasis on edited
   lines, and collapsible context folds you expand with a click.
 - **Edit in real nvim** - `Enter` turns the diff pane into your actual nvim:
   full LSP, plugins, colors. Edit the file right there at the changed line,
   `:wq`, and the diff refreshes. No embedded-terminal emulation - it runs on
   the pane's own PTY.
+  <img width="1546" height="779" alt="image" src="https://github.com/user-attachments/assets/b6f05932-38b0-470d-9541-c5c24246987f" />
+
 - **Stage, discard, commit inline** - the commit message opens in nvim too;
   discards confirm first.
 - **Commit history** - `l` opens a `git log` view; pick a commit to browse its
@@ -36,6 +40,9 @@ https://github.com/user-attachments/assets/1cfdf22a-fc5a-40e2-af6c-546156d05c3b
 - **Review notes to any agent** - select diff lines, annotate, and send the
   batch into the input of any agent pane you pick in the workspace. It types;
   you decide when to press enter.
+  <img width="1539" height="778" alt="image" src="https://github.com/user-attachments/assets/23ee0639-4a6e-42c5-a003-6e71ab619c43" />
+  <img width="1544" height="777" alt="image" src="https://github.com/user-attachments/assets/9b615b5b-3202-4ad4-8967-3bab03050e6c" />
+
 - **Branch vs. worktree scope** - `w` toggles between your working-tree
   changes and everything on your branch (diff against the merge base).
 - **Mouse support** - click to select, double-click to open, drag-select diff
