@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::style::Modifier;
 
 use herdr_gitview::config::Config;
 use herdr_gitview::git::{ChangeKind, FileEntry, Repo, StageState};
@@ -76,17 +75,23 @@ fn markers_and_stats_render() {
 
     // Grouped VSCode-style layout: staged section first, then changes.
     // y=0 header · y=1 "STAGED CHANGES" · y=2 new.rs · y=3 "CHANGES"
-    // · y=4 main.rs · y=5 notes.txt
+    // · y=4 "src/" dir row (main.rs nests under it) · y=5 main.rs · y=6 notes.txt
     assert!(row_text(&buf, 1).contains("STAGED CHANGES"));
     let staged = row_text(&buf, 2);
     assert!(row_text(&buf, 3).contains("CHANGES"));
-    let modified = row_text(&buf, 4);
-    let untracked = row_text(&buf, 5);
+    assert!(
+        row_text(&buf, 4).contains("src/"),
+        "dir row: {}",
+        row_text(&buf, 4)
+    );
+    let modified = row_text(&buf, 5);
+    let untracked = row_text(&buf, 6);
 
-    // Markers sit after the 2-column section indent.
+    // Markers sit after the 2-column section indent (dirs push files one
+    // tree-depth deeper, so main.rs's marker shifts one column right).
     assert_eq!(buf[(2, 2)].symbol(), "A");
-    assert_eq!(buf[(2, 4)].symbol(), "M");
-    assert_eq!(buf[(2, 5)].symbol(), "U");
+    assert_eq!(buf[(4, 5)].symbol(), "M");
+    assert_eq!(buf[(2, 6)].symbol(), "U");
 
     // Stats colored + right-aligned, zero sides dropped (− is unicode minus).
     assert!(modified.contains("+3 −1"), "modified: {modified:?}");
@@ -128,16 +133,13 @@ fn selected_row_is_reversed() {
     app.cursor = 2;
     let buf = draw(&mut app);
 
-    let selected = buf[(1, 3)]
-        .style()
-        .add_modifier
-        .contains(Modifier::REVERSED);
-    let other = buf[(1, 2)]
-        .style()
-        .add_modifier
-        .contains(Modifier::REVERSED);
-    assert!(selected, "selected row should be REVERSED");
-    assert!(!other, "non-selected row should not be REVERSED");
+    let selected_bg = buf[(1, 3)].style().bg;
+    let other_bg = buf[(1, 2)].style().bg;
+    assert!(selected_bg.is_some(), "selected row should have a bg tint");
+    assert_ne!(
+        selected_bg, other_bg,
+        "non-selected row should not share the highlight tint"
+    );
 }
 
 #[test]

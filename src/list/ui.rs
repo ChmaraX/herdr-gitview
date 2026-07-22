@@ -87,24 +87,56 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
             format!(" {branch}  {scope_label}")
         }
     };
-    let right = match app.mode {
-        Mode::Log => format!("{} commits ", app.commits.len()),
-        Mode::Notes => format!("{} notes ", app.notes.len()),
-        _ => format!("{} files ", app.entries.len()),
-    };
+    let right_spans = header_right_spans(app);
+    let right_width: usize = right_spans.iter().map(Span::width).sum();
 
     let width = area.width as usize;
-    let left = elide_tail(&left, width.saturating_sub(right.width() + 1));
-    let pad = width.saturating_sub(left.width() + right.width());
-    let line = Line::from(vec![
+    let left = elide_tail(&left, width.saturating_sub(right_width + 1));
+    let pad = width.saturating_sub(left.width() + right_width);
+    let mut line_spans = vec![
         Span::styled(left, Style::new().add_modifier(Modifier::BOLD)),
         Span::raw(" ".repeat(pad)),
-        Span::styled(right, dim()),
-    ]);
+    ];
+    line_spans.extend(right_spans);
+    let line = Line::from(line_spans);
     frame.render_widget(
         Paragraph::new(line).style(Style::new().bg(bar_bg(app.cfg.theme))),
         area,
     );
+}
+
+/// The header's right-aligned summary: commit/note counts for history
+/// views, or "N files +A −D" (zero sides dropped, like the per-file stats)
+/// for Files/CommitFiles.
+fn header_right_spans(app: &App) -> Vec<Span<'static>> {
+    match app.mode {
+        Mode::Log => vec![Span::styled(
+            format!("{} commits ", app.commits.len()),
+            dim(),
+        )],
+        Mode::Notes => vec![Span::styled(format!("{} notes ", app.notes.len()), dim())],
+        _ => {
+            let adds: u32 = app.entries.iter().filter_map(|e| e.adds).sum();
+            let dels: u32 = app.entries.iter().filter_map(|e| e.dels).sum();
+            let mut spans = vec![Span::styled(format!("{} files", app.entries.len()), dim())];
+            if adds > 0 {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    format!("+{adds}"),
+                    Style::new().fg(Color::Green),
+                ));
+            }
+            if dels > 0 {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    format!("−{dels}"),
+                    Style::new().fg(Color::Red),
+                ));
+            }
+            spans.push(Span::raw(" "));
+            spans
+        }
+    }
 }
 
 /// The surface color behind the header/footer bars, picked to fit the
@@ -148,11 +180,17 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .map(|row| match row {
             ListRow::Header { title, count } => header_row(title, *count),
-            ListRow::Entry { idx, .. } => match app.entries.get(*idx) {
+            ListRow::Dir { depth, name } => dir_row(
+                name,
+                *depth,
+                app.mode == Mode::Files && app.scope == Scope::Worktree,
+            ),
+            ListRow::Entry { idx, depth, .. } => match app.entries.get(*idx) {
                 Some(e) => entry_row(
                     e,
                     area.width,
                     app.mode == Mode::Files && app.scope == Scope::Worktree,
+                    *depth,
                 ),
                 None => ListItem::new(""),
             },
@@ -166,7 +204,12 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
             },
         })
         .collect();
-    let list = List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+    let highlight_bg = if app.cfg.theme.is_light() {
+        Color::Rgb(0xe4, 0xe7, 0xee)
+    } else {
+        Color::Rgb(0x2e, 0x2f, 0x40)
+    };
+    let list = List::new(items).highlight_style(Style::new().bg(highlight_bg));
 
     let mut state = ListState::default().with_offset(app.list_offset);
     state.select(Some(app.cursor));
@@ -184,30 +227,37 @@ fn header_row(title: &str, count: usize) -> ListItem<'static> {
     ]))
 }
 
-/// One file row: `  <marker> <path>  <+a −d>` — marker colored by kind, dirs
-/// dimmed, stats colored green/red flush right. `indent`
-/// only in the grouped worktree view.
-fn entry_row(entry: &FileEntry, width: u16, grouped: bool) -> ListItem<'static> {
+/// A tree directory row: dim, indented 2 spaces per depth (plus the
+/// section's own indent), with a trailing slash on the (possibly folded)
+/// name. Visual only — never selectable, clicks on it are a no-op.
+fn dir_row(name: &str, depth: usize, grouped: bool) -> ListItem<'static> {
+    let section_indent = if grouped { "  " } else { " " };
+    let indent = format!("{section_indent}{}", "  ".repeat(depth));
+    ListItem::new(Line::from(Span::styled(format!("{indent}{name}"), dim())))
+}
+
+/// One file row: `  <marker> <name>  <+a −d>` — marker colored by kind, name
+/// is the basename only (the tree already shows the directory nesting),
+/// stats colored green/red flush right. `indent` combines the section's own
+/// indent (grouped worktree view vs. flat) with 2 spaces per tree depth.
+fn entry_row(entry: &FileEntry, width: u16, grouped: bool, depth: usize) -> ListItem<'static> {
     let width = width as usize;
-    let indent = if grouped { "  " } else { " " };
+    let section_indent = if grouped { "  " } else { " " };
+    let indent = format!("{section_indent}{}", "  ".repeat(depth));
     let (stats_text, stats_spans) = stats(entry);
     let gap = if stats_text.is_empty() { 0 } else { 2 };
     let marker_w = 2; // letter + space
-    let fixed = indent.len() + marker_w + stats_text.width() + gap;
+    let fixed = indent.width() + marker_w + stats_text.width() + gap;
 
-    let path_text = path_text(entry);
-    let shown = elide_head(&path_text, width.saturating_sub(fixed).max(1));
-    let (dir, base) = split_dir(&shown);
+    let name_text = basename_text(entry);
+    let shown = elide_head(&name_text, width.saturating_sub(fixed).max(1));
 
     let (letter, color) = marker(entry.kind);
     let mut spans = vec![
-        Span::raw(indent.to_string()),
+        Span::raw(indent),
         Span::styled(format!("{letter} "), Style::new().fg(color)),
+        Span::raw(shown),
     ];
-    if !dir.is_empty() {
-        spans.push(Span::styled(dir.to_string(), dim()));
-    }
-    spans.push(Span::raw(base.to_string()));
     if !stats_text.is_empty() {
         let used: usize = spans.iter().map(Span::width).sum();
         let pad = width.saturating_sub(used + stats_text.width());
@@ -290,18 +340,17 @@ fn stats(entry: &FileEntry) -> (String, Vec<Span<'static>>) {
     (text, spans)
 }
 
-fn path_text(entry: &FileEntry) -> String {
-    match &entry.orig_path {
-        Some(orig) => format!("{} → {}", orig.display(), entry.path.display()),
-        None => entry.path.display().to_string(),
+/// The name shown on a file row: just the basename (the tree already shows
+/// the directory nesting), or "old-basename → new-basename" for renames.
+fn basename_text(entry: &FileEntry) -> String {
+    fn base(p: &std::path::Path) -> String {
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.display().to_string())
     }
-}
-
-/// Split a path into (dir-prefix-including-slash, basename).
-fn split_dir(s: &str) -> (&str, &str) {
-    match s.rfind('/') {
-        Some(i) => (&s[..=i], &s[i + 1..]),
-        None => ("", s),
+    match &entry.orig_path {
+        Some(orig) => format!("{} → {}", base(orig), base(&entry.path)),
+        None => base(&entry.path),
     }
 }
 

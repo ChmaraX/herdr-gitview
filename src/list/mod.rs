@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod session;
+mod tree;
 pub mod ui;
 
 pub use app::App;

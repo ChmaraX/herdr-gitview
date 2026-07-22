@@ -72,7 +72,7 @@ fn emit(node: &DirNode, depth: usize, rows: &mut Vec<TreeRow>) {
         });
         emit(cur, depth + 1, rows);
     }
-    for (_, idx) in &node.files {
+    for idx in node.files.values() {
         rows.push(TreeRow::File { depth, idx: *idx });
     }
 }
