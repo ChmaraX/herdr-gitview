@@ -17,7 +17,7 @@ Inspired by [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr),
 rebuilt around a real editor - edit diffs in place with full nvim + LSP
 support, not just view them.
 
-![demo](assets/demo.gif)
+https://github.com/user-attachments/assets/1cfdf22a-fc5a-40e2-af6c-546156d05c3b
 
 ## Features
 
