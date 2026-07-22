@@ -5,7 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.1.0]
+## [0.1.0] - 2026-07-22
 
 ### Added
 
@@ -33,3 +33,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   width-aware footers, standalone `herdr-gitview list` mode.
 - Release packaging: platform binaries with checksum-verified installer
   and source-build fallback.
+
+[Unreleased]: https://github.com/ChmaraX/herdr-gitview/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ChmaraX/herdr-gitview/releases/tag/v0.1.0
