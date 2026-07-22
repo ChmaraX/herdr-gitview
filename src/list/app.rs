@@ -38,15 +38,27 @@ pub enum Mode {
 /// section decides which diff the preview shows (`staged` → `--cached`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListRow {
-    Header { title: &'static str, count: usize },
-    Entry { idx: usize, staged: bool },
+    Header {
+        title: &'static str,
+        count: usize,
+    },
+    /// A directory row in the file tree — visual only, never selectable.
+    Dir {
+        depth: usize,
+        name: String,
+    },
+    Entry {
+        idx: usize,
+        staged: bool,
+        depth: usize,
+    },
     Commit(usize),
     Note(usize),
 }
 
 impl ListRow {
     pub fn selectable(&self) -> bool {
-        !matches!(self, ListRow::Header { .. })
+        !matches!(self, ListRow::Header { .. } | ListRow::Dir { .. })
     }
 }
 
@@ -216,15 +228,22 @@ impl App {
         self.rows = match self.mode {
             Mode::Log => (0..self.commits.len()).map(ListRow::Commit).collect(),
             Mode::Notes => (0..self.notes.len()).map(ListRow::Note).collect(),
-            Mode::CommitFiles => (0..self.entries.len())
-                .map(|idx| ListRow::Entry { idx, staged: false })
-                .collect(),
-            Mode::Files if self.scope == Scope::Branch => (0..self.entries.len())
-                .map(|idx| ListRow::Entry { idx, staged: false })
-                .collect(),
+            Mode::CommitFiles => self.flat_tree_rows(),
+            Mode::Files if self.scope == Scope::Branch => self.flat_tree_rows(),
             Mode::Files => self.grouped_rows(),
         };
         self.snap_cursor();
+    }
+
+    /// One tree spanning every entry, unsectioned (Branch scope, CommitFiles).
+    fn flat_tree_rows(&self) -> Vec<ListRow> {
+        let pairs: Vec<(usize, &std::path::Path)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.path.as_path()))
+            .collect();
+        tree_rows(&pairs, false)
     }
 
     /// Worktree sections: conflicts, staged, changes. A partially staged file
@@ -245,7 +264,11 @@ impl App {
                         title,
                         count: idxs.len(),
                     });
-                    rows.extend(idxs.into_iter().map(|idx| ListRow::Entry { idx, staged }));
+                    let pairs: Vec<(usize, &std::path::Path)> = idxs
+                        .iter()
+                        .map(|&idx| (idx, self.entries[idx].path.as_path()))
+                        .collect();
+                    rows.extend(tree_rows(&pairs, staged));
                 }
             };
         section(
@@ -281,7 +304,7 @@ impl App {
     /// The selected entry and whether it sits in the staged section.
     pub fn selected_entry(&self) -> Option<(&FileEntry, bool)> {
         match self.rows.get(self.cursor)? {
-            ListRow::Entry { idx, staged } => Some((self.entries.get(*idx)?, *staged)),
+            ListRow::Entry { idx, staged, .. } => Some((self.entries.get(*idx)?, *staged)),
             _ => None,
         }
     }
@@ -711,7 +734,7 @@ impl App {
             // Same path + same section first; then same path anywhere.
             let find = |want_staged: Option<bool>| {
                 self.rows.iter().position(|row| match row {
-                    ListRow::Entry { idx, staged: s } => {
+                    ListRow::Entry { idx, staged: s, .. } => {
                         self.entries
                             .get(*idx)
                             .map(|e| e.path == path)
@@ -814,4 +837,16 @@ impl App {
 /// First line of an error (git errors embed stderr; the top line is the news).
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or(s).trim().to_string()
+}
+
+/// Build tree rows (dirs + files) for one section's `(idx, path)` pairs,
+/// converting the pure `tree::TreeRow`s into `ListRow`s.
+fn tree_rows(pairs: &[(usize, &std::path::Path)], staged: bool) -> Vec<ListRow> {
+    super::tree::build_tree(pairs)
+        .into_iter()
+        .map(|row| match row {
+            super::tree::TreeRow::Dir { depth, name } => ListRow::Dir { depth, name },
+            super::tree::TreeRow::File { depth, idx } => ListRow::Entry { idx, staged, depth },
+        })
+        .collect()
 }

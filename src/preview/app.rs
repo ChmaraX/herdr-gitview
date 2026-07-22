@@ -521,9 +521,9 @@ impl PreviewApp {
             return;
         }
         let cursor_bg = if !self.cfg.theme.is_light() {
-            Color::Rgb(0x31, 0x32, 0x44)
+            Color::Rgb(0x2a, 0x2b, 0x38)
         } else {
-            Color::Rgb(0xea, 0xed, 0xf2)
+            Color::Rgb(0xee, 0xf0, 0xf5)
         };
         let select_bg = if !self.cfg.theme.is_light() {
             Color::Rgb(0x45, 0x47, 0x5a)

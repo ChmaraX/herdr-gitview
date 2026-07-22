@@ -135,6 +135,8 @@ struct Palette {
     ins_emph_bg: Rgb,
     del_emph_bg: Rgb,
     gutter: Rgb,
+    fold_fg: Rgb,
+    fold_bg: Rgb,
 }
 
 impl Palette {
@@ -147,6 +149,8 @@ impl Palette {
                 ins_emph_bg: (0xab, 0xf2, 0xbc),
                 del_emph_bg: (0xff, 0xc0, 0xc0),
                 gutter: (0x9a, 0xa0, 0xa6),
+                fold_fg: (0x7a, 0x80, 0x89),
+                fold_bg: (0xdf, 0xe3, 0xea),
             }
         } else {
             // Catppuccin-ish tints for dark terminals.
@@ -156,6 +160,8 @@ impl Palette {
                 ins_emph_bg: (0x30, 0x55, 0x3f),
                 del_emph_bg: (0x6e, 0x34, 0x46),
                 gutter: (0x6c, 0x70, 0x86),
+                fold_fg: (0x8a, 0x8e, 0xa3),
+                fold_bg: (0x2a, 0x2b, 0x3c),
             }
         }
     }
@@ -403,35 +409,31 @@ fn collapse_context(rows: Vec<Row>, margin: usize) -> Vec<Row> {
 
 // ---- painting --------------------------------------------------------------
 
-/// Chars of gutter + marker before the content on a change line
-/// (`"{:>4}     "` or `"     {:>4}"` = 9, plus `"- "`/`"+ "` = 2).
-const GUTTER_CHARS: u32 = 11;
+/// Chars before the content on a rendered row: a 1-char change-bar cell,
+/// a right-aligned 4-char line number, and one space separator (1 + 4 + 1).
+const GUTTER_CHARS: u32 = 6;
 
 /// Rows → ratatui text plus a rendered-line → row-index map (for clicks):
 /// `old new marker` gutter, tinted backgrounds on change lines, stronger tint
 /// on emphasized ranges.
 fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> (Text<'static>, Vec<usize>) {
     let gutter_style = Style::new().fg(rgb(p.gutter));
+    let fold_style = Style::new().fg(rgb(p.fold_fg));
     let mut lines = Vec::with_capacity(rows.len());
     let mut line_rows = Vec::with_capacity(rows.len());
     for (row_idx, row) in rows.iter().enumerate() {
         let line = match row {
             Row::Fold { lines: hidden } => Line::from(Span::styled(
-                format!(
-                    "      ▸ ⋯ {} unchanged lines — click to expand",
-                    hidden.len()
-                ),
-                gutter_style,
-            )),
+                format!("  ▸ ⋯ {} unchanged lines — click to expand", hidden.len()),
+                fold_style,
+            ))
+            .style(Style::new().bg(rgb(p.fold_bg))),
             Row::Context {
-                old_no,
+                old_no: _,
                 new_no,
                 runs,
             } => {
-                let mut spans = vec![Span::styled(
-                    format!("{old_no:>4} {new_no:>4}   "),
-                    gutter_style,
-                )];
+                let mut spans = vec![Span::styled(format!(" {new_no:>4} "), gutter_style)];
                 spans.extend(paint(runs, None, &[], default_fg));
                 Line::from(spans)
             }
@@ -440,12 +442,10 @@ fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> (Text<'static>, Vec<us
                 runs,
                 emphasis,
             } => {
+                let bar_style = Style::new().fg(Color::Red).bg(rgb(p.del_bg));
                 let mut spans = vec![
-                    Span::styled(format!("{old_no:>4}      "), gutter_style),
-                    Span::styled(
-                        "- ".to_string(),
-                        Style::new().fg(Color::Red).bg(rgb(p.del_bg)),
-                    ),
+                    Span::styled("▌".to_string(), bar_style),
+                    Span::styled(format!("{old_no:>4} "), gutter_style),
                 ];
                 spans.extend(paint(runs, Some(p.del_bg), emphasis, default_fg));
                 line_with_bg(spans, p.del_bg)
@@ -455,12 +455,10 @@ fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> (Text<'static>, Vec<us
                 runs,
                 emphasis,
             } => {
+                let bar_style = Style::new().fg(Color::Green).bg(rgb(p.ins_bg));
                 let mut spans = vec![
-                    Span::styled(format!("     {new_no:>4}"), gutter_style),
-                    Span::styled(
-                        "+ ".to_string(),
-                        Style::new().fg(Color::Green).bg(rgb(p.ins_bg)),
-                    ),
+                    Span::styled("▌".to_string(), bar_style),
+                    Span::styled(format!("{new_no:>4} "), gutter_style),
                 ];
                 spans.extend(paint(runs, Some(p.ins_bg), emphasis, default_fg));
                 line_with_bg(spans, p.ins_bg)
@@ -604,9 +602,12 @@ mod tests {
             .collect();
         let del = flat.iter().find(|l| l.contains("beta")).unwrap();
         let ins = flat.iter().find(|l| l.contains("BETA")).unwrap();
-        assert!(del.contains("- "), "deletion marker: {del:?}");
-        assert!(ins.contains("+ "), "insertion marker: {ins:?}");
-        assert!(del.trim_start().starts_with('2'), "old line no: {del:?}");
+        assert!(del.starts_with('▌'), "deletion bar: {del:?}");
+        assert!(ins.starts_with('▌'), "insertion bar: {ins:?}");
+        assert!(
+            del.trim_start_matches('▌').trim_start().starts_with('2'),
+            "old line no: {del:?}"
+        );
         // Deletion line has the red tint as line style.
         let del_line = d
             .text
