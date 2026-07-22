@@ -205,9 +205,9 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
     let highlight_bg = if app.cfg.theme.is_light() {
-        Color::Rgb(0xe4, 0xe7, 0xee)
+        Color::Rgb(0xd9, 0xde, 0xe8)
     } else {
-        Color::Rgb(0x2e, 0x2f, 0x40)
+        Color::Rgb(0x3d, 0x3f, 0x54)
     };
     let list = List::new(items).highlight_style(Style::new().bg(highlight_bg));
 
