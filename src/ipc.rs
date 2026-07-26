@@ -98,6 +98,9 @@ pub enum ToList {
     Notes { notes: Vec<NoteMeta> },
     /// The preview pane asked to open the notes view (n works everywhere).
     ShowNotesView,
+    /// Enter in the preview pane: open the current selection in the editor
+    /// exactly as if Enter was pressed in the list.
+    EditRequest,
 }
 
 /// A review note as shared between the panes. The preview owns the store and

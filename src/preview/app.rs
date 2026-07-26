@@ -103,6 +103,9 @@ pub struct PreviewApp {
     pub popup_request: Option<PopupReq>,
     /// `n` pressed here: ask the list pane to open the notes view.
     pub notes_view_request: bool,
+    /// Enter pressed here: ask the list pane to open the editor on the
+    /// current selection (same flow as Enter in the list).
+    pub edit_request: bool,
     /// Pristine copies of the lines currently tinted, so a cursor move can
     /// restore them instead of re-cloning the whole (up to 20k-line) doc.
     saved_tint: Vec<(usize, ratatui::text::Line<'static>)>,
@@ -146,6 +149,7 @@ impl PreviewApp {
             pending_note: None,
             popup_request: None,
             notes_view_request: false,
+            edit_request: false,
             saved_tint: Vec::new(),
             shown_file: None,
             card_lines: Vec::new(),
@@ -446,6 +450,10 @@ impl PreviewApp {
             }
             Action::Annotate => self.begin_annotate(),
             Action::NotesView => self.notes_view_request = true,
+            // Enter: open the editor, same as Enter over in the list. The
+            // list owns that flow (busy lockout, tab-nvim reuse), so just
+            // ask it.
+            Action::Edit => self.edit_request = true,
             Action::SendNotes => {
                 if self.notes.is_empty() {
                     self.flash("no notes yet — select lines and press a");

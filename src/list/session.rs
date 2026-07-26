@@ -273,6 +273,7 @@ impl Session {
                     _ => unreachable!(),
                 }
             }
+            ToList::EditRequest => self.activate_selection(),
             ToList::ShowNotesView => {
                 if self.app.mode != app::Mode::Notes && !self.app.notes.is_empty() {
                     self.app.toggle_notes_view();

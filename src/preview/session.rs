@@ -196,6 +196,13 @@ impl Session {
             self.send(&ToList::ShowNotesView);
         }
 
+        // Enter in the preview: the list runs its Enter flow (editor /
+        // tab-nvim reuse) on the current selection.
+        if self.app.edit_request {
+            self.app.edit_request = false;
+            self.send(&ToList::EditRequest);
+        }
+
         // Keep the list's notes view in sync whenever the store changes
         // (add/edit/delete/clear all funnel through here).
         if self.app.notes_rev != self.last_notes_rev {
