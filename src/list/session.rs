@@ -499,6 +499,8 @@ impl Session {
 
     /// Enter on the selected entry: guard deleted files, then hand the
     /// preview pane the Edit and the focus. Lockout ends on `EditDone`.
+    /// If another pane of this tab already runs an nvim (sidebar mode),
+    /// the file opens there instead and the diff preview stays up.
     fn start_edit(&mut self) {
         let Some((entry, _)) = self.app.selected_entry() else {
             return; // empty list or header row
@@ -511,12 +513,43 @@ impl Session {
             return;
         }
         let file = entry.path.clone();
+        if self.open_in_tab_nvim(&file) {
+            return;
+        }
         self.send(&ToPreview::Edit { file: file.clone() });
         if self.conn.is_none() {
             return; // send failed — preview link just broke
         }
         self.app.busy = Some(format!("editing {}…", file.display()));
         self.focus_preview();
+    }
+
+    /// Try to open `path` in an nvim already running in another pane of
+    /// this tab (e.g. the herdr-nvim sidebar, or a plain `nvim` pane).
+    /// Returns true when the file was handed off (and that pane focused).
+    fn open_in_tab_nvim(&mut self, path: &std::path::Path) -> bool {
+        if !self.app.cfg.reuse_tab_nvim {
+            return false;
+        }
+        let Some(own) = self.env.own_pane.clone() else {
+            return false; // standalone — no herdr to ask
+        };
+        let mut exclude: Vec<&str> = Vec::new();
+        if let Some(preview) = &self.env.preview_pane {
+            exclude.push(preview);
+        }
+        let Some(target) = crate::herdr_cli::find_nvim_in_tab(&self.env.herdr_bin, &own, &exclude)
+        else {
+            return false;
+        };
+        let abs = self.app.repo.root.join(path);
+        let editor = self.app.cfg.editor.first().cloned().unwrap_or_default();
+        if crate::nvim::open_file(&editor, Some(&target.socket), &abs) {
+            crate::herdr_cli::focus_pane(&self.env.herdr_bin, &target.pane_id);
+            true
+        } else {
+            false // dead socket etc. — fall through to the preview editor
+        }
     }
 
     /// Enter while the editor is running: nvim was started with `--listen`,

@@ -36,6 +36,10 @@ pub struct Config {
     /// How much of the gitview area the file list takes (percent). Clamped
     /// to 10..=80.
     pub list_width_percent: u8,
+    /// Sidebar mode: when another pane of the tab already runs nvim (plain
+    /// or the herdr-nvim sidebar), Enter opens the file there instead of
+    /// starting an editor on the gitview diff pane.
+    pub reuse_tab_nvim: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -81,6 +85,7 @@ impl Default for Config {
             keybindings: HashMap::new(),
             view_width_percent: 40,
             list_width_percent: 25,
+            reuse_tab_nvim: true,
         }
     }
 }
