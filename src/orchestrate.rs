@@ -6,12 +6,27 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::layout::{Dir, MoveStep};
 use crate::logx::{log, state_dir};
 
 const PLUGIN_ID: &str = "chmarax.gitview";
 
+/// How the view is laid out.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewMode {
+    /// Full-height sidebar in the invoking tab (existing layout squeezed
+    /// left).
+    #[default]
+    Sidebar,
+    /// The view's own dedicated tab (the original behavior).
+    Tab,
+}
+
 /// Everything needed to find and tear down an open view later, keyed on disk
-/// by a hash of the repo root (see `views_dir`).
+/// by a hash of the repo root (see `views_dir`). For `Sidebar` mode `tab_id`
+/// is the *host* tab the sidebar lives in; for `Tab` mode it is the view's
+/// own tab.
 #[derive(Serialize, Deserialize)]
 struct ViewState {
     repo: PathBuf,
@@ -19,37 +34,63 @@ struct ViewState {
     preview_pane: String,
     list_pane: String,
     socket: PathBuf,
+    #[serde(default)]
+    mode: ViewMode,
+    /// Tab mode: the tab the toggle was invoked from, refocused on close
+    /// (herdr's own fallback is "previous tab in order", not "where you
+    /// came from").
+    #[serde(default)]
+    origin_tab: Option<String>,
+}
+
+/// Written just before evacuating panes to a parking tab, so an interrupted
+/// open can move them back on the next toggle instead of stranding them.
+#[derive(Serialize, Deserialize)]
+struct RecoverState {
+    tab: String,
+    parking_tab: String,
+    parked: Vec<String>,
+    steps: Vec<MoveStep>,
 }
 
 pub fn toggle() -> Result<()> {
+    toggle_mode(ViewMode::Sidebar)
+}
+
+pub fn toggle_tab() -> Result<()> {
+    toggle_mode(ViewMode::Tab)
+}
+
+fn toggle_mode(mode: ViewMode) -> Result<()> {
     let repo = resolve_repo()?;
     match read_state(&repo) {
         // Open + invoked from some other tab → jump to the view instead of
         // closing it; only a toggle from inside the view's own tab closes.
-        Some(state) if tab_alive(&state.tab_id) && !invoked_from(&state.tab_id) => {
+        // (Whichever mode the open view uses — one view per repo.)
+        Some(state) if view_alive(&state) && !invoked_from(&state.tab_id) => {
             log(format!("focusing existing view tab {}", state.tab_id));
             herdr_json(&["tab", "focus", &state.tab_id])?;
             Ok(())
         }
-        Some(state) if tab_alive(&state.tab_id) => close_view(&repo, &state),
+        Some(state) if view_alive(&state) => close_view(&repo, &state),
         Some(state) => {
-            log("stale state file (tab gone) — cleaning up and reopening");
+            log("stale state file (panes gone) — cleaning up and reopening");
             cleanup(&repo, &state);
-            open_view(&repo)
+            open_view(&repo, mode)
         }
-        None => open_view(&repo),
+        None => open_view(&repo, mode),
     }
 }
 
 pub fn open() -> Result<()> {
     let repo = resolve_repo()?;
     match read_state(&repo) {
-        Some(state) if tab_alive(&state.tab_id) => Ok(()), // already open
+        Some(state) if view_alive(&state) => Ok(()), // already open
         Some(state) => {
             cleanup(&repo, &state);
-            open_view(&repo)
+            open_view(&repo, ViewMode::Sidebar)
         }
-        None => open_view(&repo),
+        None => open_view(&repo, ViewMode::Sidebar),
     }
 }
 
@@ -71,8 +112,19 @@ pub fn spawn_close() {
 
 // ---- open/close ----------------------------------------------------------
 
-fn open_view(repo: &Path) -> Result<()> {
-    log(format!("opening view for {}", repo.display()));
+fn open_view(repo: &Path, mode: ViewMode) -> Result<()> {
+    match mode {
+        ViewMode::Sidebar => open_sidebar_view(repo),
+        ViewMode::Tab => open_tab_view(repo),
+    }
+}
+
+/// Open the view in its own dedicated tab (the original behavior):
+/// preview + list panes, list at `list_width_percent` of the tab.
+fn open_tab_view(repo: &Path) -> Result<()> {
+    log(format!("opening tab view for {}", repo.display()));
+    let origin_tab = view_context().ok().map(|ctx| ctx.tab);
+    let cfg = crate::config::Config::load();
     let views = views_dir();
     std::fs::create_dir_all(&views)?;
     let socket = views.join(format!("{}.sock", repo_hash(repo)));
@@ -85,11 +137,13 @@ fn open_view(repo: &Path) -> Result<()> {
         &["--placement", "tab", "--no-focus"],
         &[],
     )?;
-    let tab_id = pane_tab_id(&preview_pane)?;
+    let reply = herdr_json(&["pane", "get", &preview_pane])?;
+    let tab_id = find_str(&reply, "tab_id")
+        .map(str::to_string)
+        .context("no tab_id in `herdr pane get` reply")?;
     // Label the tab so the tab bar reads as ours, not as a generic pane title.
     let _ = herdr_json(&["tab", "rename", &tab_id, "gitview"]);
 
-    let cfg = crate::config::Config::load();
     let list_pane = open_pane(
         repo,
         &socket,
@@ -106,8 +160,9 @@ fn open_view(repo: &Path) -> Result<()> {
         &[("GITVIEW_PREVIEW_PANE", &preview_pane)],
     )?;
 
-    // `list_side = "left"`: panes are opened preview-left/list-right (the
-    // preview must exist first so the list knows its pane id), then swapped.
+    // Cut the tab into preview/list at `list_width_percent` (the split
+    // lands at 50/50; `pane resize` sets the real size).
+    let list_frac = f64::from(cfg.list_width_percent) / 100.0;
     if cfg.list_side == crate::config::ListSide::Left {
         let _ = herdr_json(&[
             "pane",
@@ -117,6 +172,15 @@ fn open_view(repo: &Path) -> Result<()> {
             "--target-pane",
             &list_pane,
         ]);
+        if list_frac < 0.5 {
+            resize_pane(&preview_pane, "left", 0.5 - list_frac);
+        } else {
+            resize_pane(&list_pane, "right", list_frac - 0.5);
+        }
+    } else if list_frac < 0.5 {
+        resize_pane(&preview_pane, "right", 0.5 - list_frac);
+    } else {
+        resize_pane(&list_pane, "left", list_frac - 0.5);
     }
 
     let state = ViewState {
@@ -125,18 +189,170 @@ fn open_view(repo: &Path) -> Result<()> {
         preview_pane,
         list_pane,
         socket,
+        mode: ViewMode::Tab,
+        origin_tab,
+    };
+    std::fs::write(state_path(repo), serde_json::to_vec_pretty(&state)?)?;
+    log("tab view opened");
+    Ok(())
+}
+
+/// Open the view as a full-height sidebar in the *current* tab: the whole
+/// existing layout is squeezed to the left (via a parking tab + rebuild,
+/// herdr-nvim style) and preview+list take the right `view_width_percent`.
+fn open_sidebar_view(repo: &Path) -> Result<()> {
+    log(format!("opening view for {}", repo.display()));
+    replay_recovery(repo); // best-effort: undo an interrupted earlier open
+
+    let ctx = view_context()?;
+    let cfg = crate::config::Config::load();
+    let views = views_dir();
+    std::fs::create_dir_all(&views)?;
+    let socket = views.join(format!("{}.sock", repo_hash(repo)));
+    let _ = std::fs::remove_file(&socket);
+
+    let rects = pane_rects(&ctx.focused_pane)?;
+    let plan = crate::layout::plan_rebuild(&rects)?;
+
+    // Evacuate every non-anchor pane to a hidden parking tab so the sidebar
+    // split spans the full tab height, recording how to put them back first.
+    let mut parking: Option<(String, String)> = None; // (tab, placeholder pane)
+    if rects.len() > 1 {
+        let (parking_tab, placeholder) = create_parking_tab(&ctx.workspace)?;
+        let parked: Vec<String> = rects
+            .iter()
+            .filter(|r| r.pane_id != plan.anchor)
+            .map(|r| r.pane_id.clone())
+            .collect();
+        let recover = RecoverState {
+            tab: ctx.tab.clone(),
+            parking_tab: parking_tab.clone(),
+            parked: parked.clone(),
+            steps: plan.steps.clone(),
+        };
+        std::fs::write(recover_path(repo), serde_json::to_vec_pretty(&recover)?)?;
+        for pane in &parked {
+            move_pane(pane, &parking_tab, Dir::Right, None, None)?;
+        }
+        parking = Some((parking_tab, placeholder));
+    }
+
+    // Sidebar region: split the anchor, then re-cut to the configured width.
+    // `plugin pane open` has no --ratio and herdr refuses same-tab `pane
+    // move` re-splits (reason: same_tab), so the split lands at 50/50 and a
+    // `pane resize` (amount = ratio delta of that split) sets the real size.
+    let sidebar_frac = f64::from(cfg.view_width_percent) / 100.0;
+    let preview_pane = open_pane(
+        repo,
+        &socket,
+        "preview",
+        &[
+            "--placement",
+            "split",
+            "--direction",
+            "right",
+            "--target-pane",
+            &plan.anchor,
+            "--no-focus",
+        ],
+        &[],
+    )?;
+    // Sidebar currently holds 0.5 of the tab; bring it to `sidebar_frac`.
+    if sidebar_frac < 0.5 {
+        resize_pane(&plan.anchor, "right", 0.5 - sidebar_frac);
+    } else {
+        resize_pane(&preview_pane, "left", sidebar_frac - 0.5);
+    }
+
+    let list_pane = open_pane(
+        repo,
+        &socket,
+        "list",
+        &[
+            "--placement",
+            "split",
+            "--direction",
+            "right",
+            "--target-pane",
+            &preview_pane,
+            "--focus",
+        ],
+        &[("GITVIEW_PREVIEW_PANE", &preview_pane)],
+    )?;
+
+    // Cut the sidebar region into preview/list at `list_width_percent`.
+    let list_frac = f64::from(cfg.list_width_percent) / 100.0;
+    if cfg.list_side == crate::config::ListSide::Left {
+        // Swap contents so the list sits left, then size the split.
+        let _ = herdr_json(&[
+            "pane",
+            "swap",
+            "--source-pane",
+            &preview_pane,
+            "--target-pane",
+            &list_pane,
+        ]);
+        if list_frac < 0.5 {
+            resize_pane(&preview_pane, "left", 0.5 - list_frac);
+        } else {
+            resize_pane(&list_pane, "right", list_frac - 0.5);
+        }
+    } else if list_frac < 0.5 {
+        resize_pane(&preview_pane, "right", 0.5 - list_frac);
+    } else {
+        resize_pane(&list_pane, "left", list_frac - 0.5);
+    }
+
+    // Rebuild the original layout inside the anchor's (now squeezed) slot.
+    for step in &plan.steps {
+        move_pane(
+            &step.pane,
+            &ctx.tab,
+            step.dir,
+            Some(&step.target),
+            Some(step.ratio),
+        )?;
+    }
+    if let Some((_, placeholder)) = parking {
+        let _ = herdr_json(&["pane", "close", &placeholder]);
+    }
+    let _ = std::fs::remove_file(recover_path(repo));
+    let _ = herdr_json(&["plugin", "pane", "focus", &list_pane]);
+
+    let state = ViewState {
+        repo: repo.to_path_buf(),
+        tab_id: ctx.tab,
+        preview_pane,
+        list_pane,
+        socket,
+        mode: ViewMode::Sidebar,
+        origin_tab: None,
     };
     std::fs::write(state_path(repo), serde_json::to_vec_pretty(&state)?)?;
     log("view opened");
     Ok(())
 }
 
+/// Sidebar: closing the panes hands their space back to the squeezed
+/// layout. Tab: close the whole dedicated tab (pane-by-pane fallback).
 fn close_view(repo: &Path, state: &ViewState) -> Result<()> {
     log(format!("closing view (tab {})", state.tab_id));
-    if herdr_json(&["tab", "close", &state.tab_id]).is_err() {
-        // Tab-level close failed (already gone?) — try pane by pane.
-        let _ = herdr_json(&["pane", "close", &state.preview_pane]);
-        let _ = herdr_json(&["pane", "close", &state.list_pane]);
+    match state.mode {
+        ViewMode::Tab => {
+            if herdr_json(&["tab", "close", &state.tab_id]).is_err() {
+                let _ = herdr_json(&["pane", "close", &state.list_pane]);
+                let _ = herdr_json(&["pane", "close", &state.preview_pane]);
+            }
+            // Return to where the view was opened from, not to herdr's
+            // "previous tab in order" fallback.
+            if let Some(origin) = &state.origin_tab {
+                let _ = herdr_json(&["tab", "focus", origin]);
+            }
+        }
+        ViewMode::Sidebar => {
+            let _ = herdr_json(&["pane", "close", &state.list_pane]);
+            let _ = herdr_json(&["pane", "close", &state.preview_pane]);
+        }
     }
     cleanup(repo, state);
     Ok(())
@@ -145,6 +361,39 @@ fn close_view(repo: &Path, state: &ViewState) -> Result<()> {
 fn cleanup(repo: &Path, state: &ViewState) {
     let _ = std::fs::remove_file(&state.socket);
     let _ = std::fs::remove_file(state_path(repo));
+}
+
+/// The view is alive as long as either of its panes still exists.
+fn view_alive(state: &ViewState) -> bool {
+    pane_alive(&state.preview_pane) || pane_alive(&state.list_pane)
+}
+
+/// If an earlier open crashed mid-evacuation, move the parked panes back to
+/// their recorded positions and drop the parking tab. Best-effort: a pane
+/// that no longer exists is skipped.
+fn replay_recovery(repo: &Path) {
+    let Ok(bytes) = std::fs::read(recover_path(repo)) else {
+        return;
+    };
+    let Ok(rec) = serde_json::from_slice::<RecoverState>(&bytes) else {
+        let _ = std::fs::remove_file(recover_path(repo));
+        return;
+    };
+    log("replaying interrupted-open recovery");
+    for step in &rec.steps {
+        if !rec.parked.contains(&step.pane) || !pane_alive(&step.pane) {
+            continue;
+        }
+        let _ = move_pane(
+            &step.pane,
+            &rec.tab,
+            step.dir,
+            Some(&step.target),
+            Some(step.ratio),
+        );
+    }
+    let _ = herdr_json(&["tab", "close", &rec.parking_tab]);
+    let _ = std::fs::remove_file(recover_path(repo));
 }
 
 /// Open one of our plugin panes and return its pane id. Prefers the id from
@@ -280,6 +529,10 @@ fn state_path(repo: &Path) -> PathBuf {
     views_dir().join(format!("{}.json", repo_hash(repo)))
 }
 
+fn recover_path(repo: &Path) -> PathBuf {
+    views_dir().join(format!("{}.recover.json", repo_hash(repo)))
+}
+
 fn read_state(repo: &Path) -> Option<ViewState> {
     let bytes = std::fs::read(state_path(repo)).ok()?;
     serde_json::from_slice(&bytes).ok()
@@ -298,15 +551,116 @@ fn repo_hash(repo: &Path) -> String {
 
 // ---- herdr CLI ------------------------------------------------------------
 
-fn tab_alive(tab_id: &str) -> bool {
-    herdr_json(&["tab", "get", tab_id]).is_ok()
+fn pane_alive(pane_id: &str) -> bool {
+    herdr_json(&["pane", "get", pane_id]).is_ok()
 }
 
-fn pane_tab_id(pane_id: &str) -> Result<String> {
-    let reply = herdr_json(&["pane", "get", pane_id])?;
-    find_str(&reply, "tab_id")
+/// Where the sidebar should open: the invoking workspace/tab/focused pane.
+/// Prefers the action's context JSON; falls back to the pane env vars (when
+/// invoked from inside one of our own panes).
+struct ViewCtx {
+    workspace: String,
+    tab: String,
+    focused_pane: String,
+}
+
+fn view_context() -> Result<ViewCtx> {
+    let ctx_json = std::env::var("HERDR_PLUGIN_CONTEXT_JSON")
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let from_ctx = |key: &str| {
+        ctx_json
+            .as_ref()
+            .and_then(|v| find_str(v, key))
+            .map(str::to_string)
+    };
+
+    let focused_pane = from_ctx("focused_pane_id")
+        .or_else(|| std::env::var("HERDR_PANE_ID").ok())
+        .context("no focused pane in context or HERDR_PANE_ID")?;
+    let workspace = from_ctx("workspace_id")
+        .or_else(|| std::env::var("HERDR_WORKSPACE_ID").ok())
+        .context("no workspace in context or HERDR_WORKSPACE_ID")?;
+    let tab = match from_ctx("tab_id") {
+        Some(tab) => tab,
+        None => {
+            let reply = herdr_json(&["pane", "get", &focused_pane])?;
+            find_str(&reply, "tab_id")
+                .map(str::to_string)
+                .context("no tab_id in `herdr pane get` reply")?
+        }
+    };
+    Ok(ViewCtx {
+        workspace,
+        tab,
+        focused_pane,
+    })
+}
+
+/// The pane rectangles of the tab containing `pane`.
+fn pane_rects(pane: &str) -> Result<Vec<crate::layout::PaneRect>> {
+    let reply = herdr_json(&["pane", "layout", "--pane", pane])?;
+    crate::layout::parse_pane_rects(&reply)
+}
+
+/// Create a hidden parking tab; returns (tab_id, placeholder root pane id).
+fn create_parking_tab(workspace: &str) -> Result<(String, String)> {
+    let reply = herdr_json(&["tab", "create", "--workspace", workspace, "--no-focus"])?;
+    let tab = find_str(&reply, "tab_id")
         .map(str::to_string)
-        .context("no tab_id in `herdr pane get` reply")
+        .context("no tab_id in `herdr tab create` reply")?;
+    let placeholder = find_str(&reply, "pane_id")
+        .map(str::to_string)
+        .context("no root pane_id in `herdr tab create` reply")?;
+    Ok((tab, placeholder))
+}
+
+/// Grow `pane` toward `dir` ("left"/"right"/"up"/"down") by `amount`,
+/// a ratio delta of the split that owns that edge. Best-effort.
+fn resize_pane(pane: &str, dir: &str, amount: f64) {
+    if amount.abs() < 0.01 {
+        return;
+    }
+    let _ = herdr_json(&[
+        "pane",
+        "resize",
+        "--pane",
+        pane,
+        "--direction",
+        dir,
+        "--amount",
+        &amount.to_string(),
+    ]);
+}
+
+/// `herdr pane move`: re-split `pane` into `tab`, optionally as a split of
+/// `target` where the target keeps `ratio` of the region.
+fn move_pane(
+    pane: &str,
+    tab: &str,
+    dir: Dir,
+    target: Option<&str>,
+    ratio: Option<f64>,
+) -> Result<()> {
+    let ratio_s = ratio.map(|r| r.to_string());
+    let mut args = vec![
+        "pane",
+        "move",
+        pane,
+        "--tab",
+        tab,
+        "--split",
+        dir.as_cli_arg(),
+    ];
+    if let Some(target) = target {
+        args.extend(["--target-pane", target]);
+    }
+    if let Some(r) = ratio_s.as_deref() {
+        args.extend(["--ratio", r]);
+    }
+    args.push("--no-focus");
+    herdr_json(&args)?;
+    Ok(())
 }
 
 fn pane_ids() -> Result<Vec<String>> {

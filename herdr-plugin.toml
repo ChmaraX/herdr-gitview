@@ -8,7 +8,7 @@ platforms = ["macos", "linux"]
 [[panes]]
 id = "preview"
 title = "gitview: diff"
-placement = "tab"
+placement = "split"
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" preview"]
 
 [[panes]]
@@ -37,9 +37,15 @@ command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" pick-agent"]
 
 [[actions]]
 id = "toggle"
-title = "gitview: toggle"
+title = "gitview: toggle sidebar"
 contexts = ["pane", "workspace"]
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle"]
+
+[[actions]]
+id = "toggle-tab"
+title = "gitview: toggle in own tab"
+contexts = ["pane", "workspace"]
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" toggle-tab"]
 
 [[build]]
 command = ["bash", "herdr/install.sh"]

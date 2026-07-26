@@ -29,6 +29,13 @@ pub struct Config {
     pub context_lines: usize,
     /// action name -> key string, overrides `keymap::DEFAULT_KEYS`.
     pub keybindings: HashMap<String, String>,
+    /// How much of the tab the whole gitview sidebar takes (percent of the
+    /// tab width). The existing layout is squeezed into the rest. Clamped
+    /// to 20..=80.
+    pub view_width_percent: u8,
+    /// How much of the gitview area the file list takes (percent). Clamped
+    /// to 10..=80.
+    pub list_width_percent: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -72,6 +79,8 @@ impl Default for Config {
             default_scope: ScopePref::Worktree,
             context_lines: 3,
             keybindings: HashMap::new(),
+            view_width_percent: 40,
+            list_width_percent: 25,
         }
     }
 }
@@ -98,6 +107,8 @@ impl Config {
             }
         };
         cfg.context_lines = cfg.context_lines.min(20);
+        cfg.view_width_percent = cfg.view_width_percent.clamp(20, 80);
+        cfg.list_width_percent = cfg.list_width_percent.clamp(10, 80);
         // A tiny non-zero poll interval would hammer git; keep it sane.
         if cfg.poll_ms > 0 {
             cfg.poll_ms = cfg.poll_ms.max(250);
@@ -151,6 +162,16 @@ mod tests {
         assert_eq!(Config::parse("poll_ms = 5").poll_ms, 250);
         assert_eq!(Config::parse("poll_ms = 0").poll_ms, 0); // disabled
         assert_eq!(Config::parse("poll_ms = 1000").poll_ms, 1000);
+    }
+
+    #[test]
+    fn width_percents_default_and_clamp() {
+        let cfg = Config::parse("");
+        assert_eq!(cfg.view_width_percent, 40);
+        assert_eq!(cfg.list_width_percent, 25);
+        let cfg = Config::parse("view_width_percent = 5\nlist_width_percent = 99");
+        assert_eq!(cfg.view_width_percent, 20);
+        assert_eq!(cfg.list_width_percent, 80);
     }
 
     #[test]

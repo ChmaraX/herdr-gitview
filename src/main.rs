@@ -5,6 +5,7 @@ fn main() -> anyhow::Result<()> {
         Some("list") => herdr_gitview::list::run(),
         Some("preview") => herdr_gitview::preview::run(),
         Some("toggle") | None => herdr_gitview::orchestrate::toggle(),
+        Some("toggle-tab") => herdr_gitview::orchestrate::toggle_tab(),
         Some("open") => herdr_gitview::orchestrate::open(),
         Some("close") => herdr_gitview::orchestrate::close(),
         Some("ask") => herdr_gitview::ask::run(),
@@ -12,7 +13,7 @@ fn main() -> anyhow::Result<()> {
         Some("pick-agent") => herdr_gitview::annotate::run_pick_agent(),
         Some(other) => {
             anyhow::bail!(
-                "unknown mode: {other} (expected list|preview|toggle|open|close|ask|annotate|pick-agent)"
+                "unknown mode: {other} (expected list|preview|toggle|toggle-tab|open|close|ask|annotate|pick-agent)"
             )
         }
     }

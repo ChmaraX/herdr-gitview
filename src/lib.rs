@@ -6,6 +6,7 @@ pub mod herdr_cli;
 pub mod hostenv;
 pub mod ipc;
 pub mod keymap;
+pub mod layout;
 pub mod list;
 pub mod logx;
 pub mod nvim;
