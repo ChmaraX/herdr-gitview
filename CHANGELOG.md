@@ -5,6 +5,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Collapsible file-tree directories in the list pane: directory rows are
+  now selectable (keyboard and mouse); `Enter` or a single click collapses
+  or expands the subtree. Collapse state survives refreshes and is kept
+  per section (staged vs. changes).
+- `list_width_percent` config (default `25`): how much of the gitview area
+  the file list takes (was a fixed 50/50 split).
+- `view_width_percent` config (default `40`): how much of the tab the
+  whole gitview sidebar takes.
+- Sidebar mode: the `toggle` action now opens the view as a full-height
+  sidebar on the right of the *current* tab (herdr-nvim style) — the
+  existing pane layout is squeezed to the left and preview + list take
+  the right `view_width_percent`. Toggling again closes the sidebar and
+  gives the space back; an interrupted open is recovered on the next
+  toggle (parked panes are moved back).
+- `toggle-tab` action: the original dedicated-tab view, kept alongside
+  the sidebar. Closing it refocuses the tab it was invoked from.
+- Reuse an existing nvim (`reuse_tab_nvim`, default on): in sidebar
+  mode, when another pane of the tab already runs nvim (plain or the
+  herdr-nvim sidebar), Enter opens the file there — the diff preview
+  stays up.
+- Enter in the diff pane opens the editor on the current selection,
+  exactly like Enter in the file list.
+
 ## [0.1.0] - 2026-07-22
 
 ### Added
