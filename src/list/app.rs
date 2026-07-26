@@ -42,10 +42,16 @@ pub enum ListRow {
         title: &'static str,
         count: usize,
     },
-    /// A directory row in the file tree — visual only, never selectable.
+    /// A directory row in the file tree — selectable; Enter or a click
+    /// collapses/expands the subtree below it. `path` (full path from the
+    /// tree root, trailing slash) plus `staged` (which section, in the
+    /// grouped worktree view) is its stable collapse identity.
     Dir {
         depth: usize,
         name: String,
+        path: String,
+        staged: bool,
+        collapsed: bool,
     },
     Entry {
         idx: usize,
@@ -58,7 +64,7 @@ pub enum ListRow {
 
 impl ListRow {
     pub fn selectable(&self) -> bool {
-        !matches!(self, ListRow::Header { .. } | ListRow::Dir { .. })
+        !matches!(self, ListRow::Header { .. })
     }
 }
 
@@ -136,6 +142,9 @@ pub struct App {
     pub editor_close_request: Option<EditorThen>,
     /// Last left-click (row, time) for double-click detection.
     last_click: Option<(usize, Instant)>,
+    /// Collapsed tree directories, keyed by (staged section, full path).
+    /// Survives refreshes/rebuilds; stale keys are harmless.
+    collapsed: std::collections::HashSet<(bool, String)>,
     /// True while the current modal is being shown as a native herdr popup
     /// pane instead of the in-pane overlay (the answer arrives via file).
     pub modal_external: bool,
@@ -207,6 +216,7 @@ impl App {
             after_edit: None,
             editor_close_request: None,
             last_click: None,
+            collapsed: std::collections::HashSet::new(),
             modal_external: false,
             notes: Vec::new(),
             notes_return: None,
@@ -243,7 +253,17 @@ impl App {
             .enumerate()
             .map(|(i, e)| (i, e.path.as_path()))
             .collect();
-        tree_rows(&pairs, false)
+        tree_rows(&pairs, false, &self.collapsed_for(false))
+    }
+
+    /// The collapsed paths for one section, in the shape `tree::build_tree`
+    /// wants.
+    fn collapsed_for(&self, staged: bool) -> std::collections::HashSet<String> {
+        self.collapsed
+            .iter()
+            .filter(|(s, _)| *s == staged)
+            .map(|(_, p)| p.clone())
+            .collect()
     }
 
     /// Worktree sections: conflicts, staged, changes. A partially staged file
@@ -268,7 +288,7 @@ impl App {
                         .iter()
                         .map(|&idx| (idx, self.entries[idx].path.as_path()))
                         .collect();
-                    rows.extend(tree_rows(&pairs, staged));
+                    rows.extend(tree_rows(&pairs, staged, &self.collapsed_for(staged)));
                 }
             };
         section(
@@ -307,6 +327,35 @@ impl App {
             ListRow::Entry { idx, staged, .. } => Some((self.entries.get(*idx)?, *staged)),
             _ => None,
         }
+    }
+
+    /// The selected directory row's (path, staged) identity, if the cursor
+    /// sits on one.
+    pub fn selected_dir(&self) -> Option<(&str, bool)> {
+        match self.rows.get(self.cursor)? {
+            ListRow::Dir { path, staged, .. } => Some((path.as_str(), *staged)),
+            _ => None,
+        }
+    }
+
+    /// Collapse/expand the directory under the cursor. Returns true when the
+    /// cursor was on a directory row (the toggle happened).
+    pub fn toggle_selected_dir(&mut self) -> bool {
+        let Some((path, staged)) = self.selected_dir().map(|(p, s)| (p.to_string(), s)) else {
+            return false;
+        };
+        let key = (staged, path.clone());
+        if !self.collapsed.remove(&key) {
+            self.collapsed.insert(key);
+        }
+        self.rebuild_rows();
+        // Keep the cursor on the toggled directory.
+        if let Some(i) = self.rows.iter().position(|row| {
+            matches!(row, ListRow::Dir { path: p, staged: s, .. } if *p == path && *s == staged)
+        }) {
+            self.cursor = i;
+        }
+        true
     }
 
     pub fn selected_commit(&self) -> Option<&CommitInfo> {
@@ -406,6 +455,9 @@ impl App {
 
             // Edit/Commit are intercepted by the run loop (they need the IPC
             // link); reaching here means there is no preview connection.
+            // Enter on a directory row still collapses/expands it — that
+            // needs no link.
+            Action::Edit if self.toggle_selected_dir() => {}
             Action::Edit | Action::Commit => {
                 if std::env::var_os("HERDR_PANE_ID").is_none() {
                     self.set_status("editing needs the preview pane (run inside herdr)")
@@ -433,6 +485,13 @@ impl App {
                 let idx = self.list_offset + (y - 1) as usize;
                 if self.rows.get(idx).map(ListRow::selectable).unwrap_or(false) {
                     self.cursor = idx;
+                    // A single click on a directory row toggles its collapse
+                    // (VSCode-style); no double-click needed.
+                    if matches!(self.rows.get(idx), Some(ListRow::Dir { .. })) {
+                        self.toggle_selected_dir();
+                        self.last_click = None;
+                        return false;
+                    }
                     // Double-click on the same row = activate.
                     let now = Instant::now();
                     let double = matches!(
@@ -724,30 +783,46 @@ impl App {
     // ---- internals --------------------------------------------------------
 
     /// What the cursor points at, in a refresh-stable form.
-    fn cursor_identity(&self) -> Option<(std::path::PathBuf, bool)> {
-        self.selected_entry()
-            .map(|(e, staged)| (e.path.clone(), staged))
+    fn cursor_identity(&self) -> Option<CursorId> {
+        match self.rows.get(self.cursor)? {
+            ListRow::Entry { .. } => self
+                .selected_entry()
+                .map(|(e, staged)| CursorId::Entry(e.path.clone(), staged)),
+            ListRow::Dir { path, staged, .. } => Some(CursorId::Dir(path.clone(), *staged)),
+            _ => None,
+        }
     }
 
-    fn restore_cursor(&mut self, keep: Option<(std::path::PathBuf, bool)>) {
-        if let Some((path, staged)) = keep {
-            // Same path + same section first; then same path anywhere.
-            let find = |want_staged: Option<bool>| {
-                self.rows.iter().position(|row| match row {
-                    ListRow::Entry { idx, staged: s, .. } => {
-                        self.entries
-                            .get(*idx)
-                            .map(|e| e.path == path)
-                            .unwrap_or(false)
-                            && want_staged.map(|w| *s == w).unwrap_or(true)
-                    }
-                    _ => false,
-                })
-            };
-            if let Some(i) = find(Some(staged)).or_else(|| find(None)) {
-                self.cursor = i;
-                return;
+    fn restore_cursor(&mut self, keep: Option<CursorId>) {
+        match keep {
+            Some(CursorId::Entry(path, staged)) => {
+                // Same path + same section first; then same path anywhere.
+                let find = |want_staged: Option<bool>| {
+                    self.rows.iter().position(|row| match row {
+                        ListRow::Entry { idx, staged: s, .. } => {
+                            self.entries
+                                .get(*idx)
+                                .map(|e| e.path == path)
+                                .unwrap_or(false)
+                                && want_staged.map(|w| *s == w).unwrap_or(true)
+                        }
+                        _ => false,
+                    })
+                };
+                if let Some(i) = find(Some(staged)).or_else(|| find(None)) {
+                    self.cursor = i;
+                    return;
+                }
             }
+            Some(CursorId::Dir(path, staged)) => {
+                if let Some(i) = self.rows.iter().position(|row| {
+                    matches!(row, ListRow::Dir { path: p, staged: s, .. } if *p == path && *s == staged)
+                }) {
+                    self.cursor = i;
+                    return;
+                }
+            }
+            None => {}
         }
         self.snap_cursor();
     }
@@ -839,13 +914,34 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or(s).trim().to_string()
 }
 
+/// What the cursor pointed at before a refresh, in a rebuild-stable form.
+enum CursorId {
+    Entry(std::path::PathBuf, bool),
+    Dir(String, bool),
+}
+
 /// Build tree rows (dirs + files) for one section's `(idx, path)` pairs,
 /// converting the pure `tree::TreeRow`s into `ListRow`s.
-fn tree_rows(pairs: &[(usize, &std::path::Path)], staged: bool) -> Vec<ListRow> {
-    super::tree::build_tree(pairs)
+fn tree_rows(
+    pairs: &[(usize, &std::path::Path)],
+    staged: bool,
+    collapsed: &std::collections::HashSet<String>,
+) -> Vec<ListRow> {
+    super::tree::build_tree(pairs, collapsed)
         .into_iter()
         .map(|row| match row {
-            super::tree::TreeRow::Dir { depth, name } => ListRow::Dir { depth, name },
+            super::tree::TreeRow::Dir {
+                depth,
+                name,
+                path,
+                collapsed,
+            } => ListRow::Dir {
+                depth,
+                name,
+                path,
+                staged,
+                collapsed,
+            },
             super::tree::TreeRow::File { depth, idx } => ListRow::Entry { idx, staged, depth },
         })
         .collect()

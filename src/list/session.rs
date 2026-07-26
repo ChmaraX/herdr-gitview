@@ -338,6 +338,9 @@ impl Session {
             } else {
                 match current_show(&self.app) {
                     Some(msg) => self.send(&msg),
+                    // Cursor resting on a directory row: keep showing the
+                    // last diff instead of blanking the preview.
+                    None if self.app.selected_dir().is_some() => {}
                     // Nothing selectable left (e.g. the last change was
                     // discarded/committed) — clear the stale diff.
                     None => self.send(&ToPreview::Clear),
@@ -475,6 +478,10 @@ impl Session {
                 }
             }
             app::Mode::Files | app::Mode::CommitFiles => {
+                // Enter on a directory row collapses/expands it.
+                if self.app.toggle_selected_dir() {
+                    return;
+                }
                 if self.app.busy.is_some() {
                     self.remote_open();
                 } else if self.conn.is_some() {

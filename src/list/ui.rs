@@ -180,10 +180,16 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .map(|row| match row {
             ListRow::Header { title, count } => header_row(title, *count),
-            ListRow::Dir { depth, name } => dir_row(
+            ListRow::Dir {
+                depth,
+                name,
+                collapsed,
+                ..
+            } => dir_row(
                 name,
                 *depth,
                 app.mode == Mode::Files && app.scope == Scope::Worktree,
+                *collapsed,
             ),
             ListRow::Entry { idx, depth, .. } => match app.entries.get(*idx) {
                 Some(e) => entry_row(
@@ -228,12 +234,16 @@ fn header_row(title: &str, count: usize) -> ListItem<'static> {
 }
 
 /// A tree directory row: dim, indented 2 spaces per depth (plus the
-/// section's own indent), with a trailing slash on the (possibly folded)
-/// name. Visual only — never selectable, clicks on it are a no-op.
-fn dir_row(name: &str, depth: usize, grouped: bool) -> ListItem<'static> {
+/// section's own indent), with a collapse arrow and a trailing slash on the
+/// (possibly folded) name. Selectable — Enter or a click toggles collapse.
+fn dir_row(name: &str, depth: usize, grouped: bool, collapsed: bool) -> ListItem<'static> {
     let section_indent = if grouped { "  " } else { " " };
     let indent = format!("{section_indent}{}", "  ".repeat(depth));
-    ListItem::new(Line::from(Span::styled(format!("{indent}{name}"), dim())))
+    let arrow = if collapsed { "▸" } else { "▾" };
+    ListItem::new(Line::from(Span::styled(
+        format!("{indent}{arrow} {name}"),
+        dim(),
+    )))
 }
 
 /// One file row: `  <marker> <name>  <+a −d>` — marker colored by kind, name
