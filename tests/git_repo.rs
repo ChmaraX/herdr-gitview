@@ -366,3 +366,73 @@ fn discard_conflicted_is_refused() {
             .contains("<<<<<<<")
     );
 }
+
+// ---- branch-scoped log -----------------------------------------------------
+
+#[test]
+fn log_branch_commits_only_lists_this_branch() {
+    let t = fixture("log-branch");
+    // two more commits on main, then a feature branch with two of its own
+    write(&t.dir, "base.txt", "main2\n");
+    git(&t.dir, &["commit", "-q", "-am", "main second"]);
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "f1.txt", "a\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "feature one"]);
+    write(&t.dir, "f2.txt", "b\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "feature two"]);
+
+    let all = t.repo.log_commits(50).unwrap();
+    assert_eq!(all.len(), 4, "full history: base + main second + 2 feature");
+
+    let mb = t.repo.merge_base("main").unwrap();
+    let branch = t.repo.log_branch_commits(&mb, 50).unwrap();
+    let subjects: Vec<&str> = branch.iter().map(|c| c.subject.as_str()).collect();
+    assert_eq!(subjects, vec!["feature two", "feature one"]);
+}
+
+#[test]
+fn log_branch_commits_is_empty_on_the_base_branch() {
+    let t = fixture("log-branch-empty");
+    let mb = t.repo.merge_base("main").unwrap();
+    assert!(t.repo.log_branch_commits(&mb, 50).unwrap().is_empty());
+}
+
+// ---- folder-wide staging ---------------------------------------------------
+
+#[test]
+fn stage_and_unstage_many_move_a_whole_folder() {
+    let t = fixture("stage-many");
+    write(&t.dir, "src/a.rs", "a\n");
+    write(&t.dir, "src/deep/b.rs", "b\n");
+    write(&t.dir, "other.rs", "o\n");
+
+    let paths: Vec<PathBuf> = vec!["src/a.rs".into(), "src/deep/b.rs".into()];
+    t.repo.stage_many(&paths).unwrap();
+
+    let entries = t.repo.worktree_status(true).unwrap();
+    assert_eq!(entry_for(&entries, "src/a.rs").stage, StageState::Staged);
+    assert_eq!(
+        entry_for(&entries, "src/deep/b.rs").stage,
+        StageState::Staged
+    );
+    // the sibling outside the folder is untouched
+    assert_eq!(entry_for(&entries, "other.rs").stage, StageState::Untracked);
+
+    t.repo.unstage_many(&paths).unwrap();
+    let entries = t.repo.worktree_status(true).unwrap();
+    assert_eq!(entry_for(&entries, "src/a.rs").stage, StageState::Untracked);
+    assert_eq!(
+        entry_for(&entries, "src/deep/b.rs").stage,
+        StageState::Untracked
+    );
+}
+
+#[test]
+fn stage_many_with_no_paths_is_a_no_op() {
+    let t = fixture("stage-many-empty");
+    t.repo.stage_many(&[]).unwrap();
+    t.repo.unstage_many(&[]).unwrap();
+    assert_eq!(status_len(&t), 0);
+}

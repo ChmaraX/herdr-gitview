@@ -187,11 +187,7 @@ mod tests {
 
     #[test]
     fn collapsed_dir_hides_everything_under_it() {
-        let owned = paths(&[
-            (0, "src/preview/mod.rs"),
-            (1, "src/list.rs"),
-            (2, "top.rs"),
-        ]);
+        let owned = paths(&[(0, "src/preview/mod.rs"), (1, "src/list.rs"), (2, "top.rs")]);
         let collapsed = HashSet::from(["src/".to_string()]);
         let rows = build_tree(&refs(&owned), &collapsed);
         // The whole src/ subtree (including the nested preview/ dir) is

@@ -247,14 +247,30 @@ impl Repo {
 
     /// Recent commits, newest first.
     pub fn log_commits(&self, limit: usize) -> Result<Vec<CommitInfo>> {
+        self.log_range(None, limit)
+    }
+
+    /// Commits reachable from HEAD but not from `merge_base` — i.e. the
+    /// commits this branch added on top of its base.
+    pub fn log_branch_commits(&self, merge_base: &str, limit: usize) -> Result<Vec<CommitInfo>> {
+        self.log_range(Some(&format!("{merge_base}..HEAD")), limit)
+    }
+
+    /// `git log [range]`, newest first. `range` is any revision range
+    /// (`<base>..HEAD`); `None` walks all of HEAD's history.
+    pub fn log_range(&self, range: Option<&str>, limit: usize) -> Result<Vec<CommitInfo>> {
         let n = limit.to_string();
-        let raw = self.git(&[
+        let mut args = vec![
             "log",
             "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00",
             "--date=short",
             "-n",
             &n,
-        ])?;
+        ];
+        if let Some(range) = range {
+            args.push(range);
+        }
+        let raw = self.git(&args)?;
         let text = String::from_utf8_lossy(&raw);
         let mut fields = text.split('\0');
         let mut commits = Vec::new();
@@ -306,12 +322,34 @@ impl Repo {
     // ---- write side (phase 5) ---------------------------------------------
 
     pub fn stage(&self, p: &Path) -> Result<()> {
-        self.git(&["add", "--", &p.to_string_lossy()])?;
-        Ok(())
+        self.stage_many(std::slice::from_ref(&p.to_path_buf()))
     }
 
     pub fn unstage(&self, p: &Path) -> Result<()> {
-        self.git(&["restore", "--staged", "--", &p.to_string_lossy()])?;
+        self.unstage_many(std::slice::from_ref(&p.to_path_buf()))
+    }
+
+    /// Stage several paths in one `git add` (used for whole folders).
+    pub fn stage_many(&self, paths: &[PathBuf]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let owned: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into()).collect();
+        let mut args = vec!["add", "--"];
+        args.extend(owned.iter().map(String::as_str));
+        self.git(&args)?;
+        Ok(())
+    }
+
+    /// Unstage several paths in one `git restore --staged`.
+    pub fn unstage_many(&self, paths: &[PathBuf]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let owned: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into()).collect();
+        let mut args = vec!["restore", "--staged", "--"];
+        args.extend(owned.iter().map(String::as_str));
+        self.git(&args)?;
         Ok(())
     }
 

@@ -34,9 +34,12 @@ https://github.com/user-attachments/assets/1cfdf22a-fc5a-40e2-af6c-546156d05c3b
   <img width="1546" height="779" alt="image" src="https://github.com/user-attachments/assets/b6f05932-38b0-470d-9541-c5c24246987f" />
 
 - **Stage, discard, commit inline** - the commit message opens in nvim too;
-  discards confirm first.
+  discards confirm first. `s`/`u`/`x` work on a directory row too, applying to
+  every file under it in that section.
 - **Commit history** - `l` opens a `git log` view; pick a commit to browse its
-  files and per-commit diffs.
+  files and per-commit diffs. `w` filters it to just the commits your branch
+  added on top of its base (and opening the log from branch scope starts
+  there).
 - **Review notes to any agent** - select diff lines, annotate, and send the
   batch into the input of any agent pane you pick in the workspace. It types;
   you decide when to press enter.
@@ -108,8 +111,11 @@ Editing, commits, history diffs, and notes need the second pane, i.e. herdr.
    `:wq`, and you're back on the refreshed diff, focus on the list.
 4. **Stage & commit.** `s` to stage (the file moves up), `x` to discard
    (asks first), `c` to commit - write the message in nvim, `:wq` commits,
-   `:q!` aborts.
-5. **Review for your agent.** Focus the diff pane, `v` + `j`/`k` (or drag) to
+   `:q!` aborts. On a directory row the same keys apply to the whole folder.
+5. **See what your branch did.** `w` switches the file list to "vs the base
+   branch"; `l` then opens the log already filtered to your branch's commits
+   (`w` toggles that filter in the log view too).
+6. **Review for your agent.** Focus the diff pane, `v` + `j`/`k` (or drag) to
    select lines, `a` to annotate. Notes pile up as cards under the code.
    `p` → pick an agent → the batch lands in its input.
 

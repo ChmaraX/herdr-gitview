@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Branch-only commit history: `w` in the log view toggles between all of
+  `HEAD`'s commits and just the ones this branch added on top of its base
+  (`<merge-base>..HEAD`). Opening the log (`l`) while the file list is in
+  branch scope starts filtered, so "what did my agent commit here?" is one
+  keypress. The header shows `log — <branch> vs <base>` or `log — <branch>
+  all`, and the footer advertises the toggle.
+- Folder-wide stage / unstage / discard: with the cursor on a directory row,
+  `s`, `u` and `x` apply to every file under it instead of doing nothing.
+  They stay section-aware — `s` on `src/` under *staged changes* unstages the
+  subtree, under *changes* it stages it — and never touch conflicted files.
+  Discarding a folder confirms with the file count first.
+
 - Collapsible file-tree directories in the list pane: directory rows are
   now selectable (keyboard and mouse); `Enter` or a single click collapses
   or expands the subtree. Collapse state survives refreshes and is kept

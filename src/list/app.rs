@@ -83,9 +83,40 @@ pub enum Modal {
     },
 }
 
-/// What a confirmed modal should do.
+/// What a confirmed modal should do. Paths are resolved back to entries when
+/// the action actually runs, so a refresh between ask and answer is harmless.
 pub enum PendingAction {
-    Discard,
+    Discard { paths: Vec<std::path::PathBuf> },
+}
+
+/// What a mutating action (stage / unstage / discard) operates on: the file
+/// under the cursor, or every file under the selected directory row that
+/// belongs to that row's section.
+enum Target {
+    File {
+        idx: usize,
+        staged: bool,
+    },
+    Dir {
+        path: String,
+        staged: bool,
+        idxs: Vec<usize>,
+    },
+}
+
+impl Target {
+    fn staged(&self) -> bool {
+        match self {
+            Target::File { staged, .. } | Target::Dir { staged, .. } => *staged,
+        }
+    }
+
+    fn indices(&self) -> Vec<usize> {
+        match self {
+            Target::File { idx, .. } => vec![*idx],
+            Target::Dir { idxs, .. } => idxs.clone(),
+        }
+    }
 }
 
 /// What to do once the editor has been closed (delivered via EditDone).
@@ -107,6 +138,9 @@ pub struct App {
     pub entries: Vec<FileEntry>,
     /// Commits backing the Log view.
     pub commits: Vec<CommitInfo>,
+    /// Log view filter: true = only the commits this branch added on top of
+    /// its base (`<merge-base>..HEAD`), false = all of HEAD's history.
+    pub log_branch_only: bool,
     /// The commit whose files the CommitFiles view shows.
     pub commit: Option<CommitInfo>,
 
@@ -201,6 +235,7 @@ impl App {
             scope,
             entries,
             commits: Vec::new(),
+            log_branch_only: false,
             commit: None,
             rows: Vec::new(),
             cursor: 0,
@@ -510,20 +545,91 @@ impl App {
     // ---- history view -----------------------------------------------------
 
     /// `l`: enter the log view; `l` again (or q/esc) returns to files.
+    /// Entering from branch scope keeps that framing: the log opens filtered
+    /// to the commits this branch added on top of its base.
     fn toggle_log(&mut self) {
         match self.mode {
             Mode::Notes => self.set_status("leave the notes view first (n)"),
-            Mode::Files => match self.repo.log_commits(LOG_LIMIT) {
-                Ok(commits) if commits.is_empty() => self.set_status("no commits yet"),
-                Ok(commits) => {
-                    self.commits = commits;
-                    self.mode = Mode::Log;
-                    self.cursor = 0;
-                    self.rebuild_rows();
+            Mode::Files => {
+                self.log_branch_only = self.scope == Scope::Branch && self.merge_base.is_some();
+                match self.load_commits() {
+                    Ok(commits) if commits.is_empty() && !self.log_branch_only => {
+                        self.set_status("no commits yet")
+                    }
+                    Ok(commits) => {
+                        let empty = commits.is_empty();
+                        self.commits = commits;
+                        self.mode = Mode::Log;
+                        self.cursor = 0;
+                        self.rebuild_rows();
+                        if empty {
+                            self.set_status(format!(
+                                "no commits on this branch vs {} — w shows all",
+                                self.base_or_default()
+                            ));
+                        }
+                    }
+                    Err(err) => self.set_status(format!("log failed: {err}")),
                 }
-                Err(err) => self.set_status(format!("log failed: {err}")),
-            },
+            }
             Mode::Log | Mode::CommitFiles => self.leave_history(),
+        }
+    }
+
+    /// Load the commit vector the current log filter asks for.
+    fn load_commits(&self) -> Result<Vec<CommitInfo>> {
+        match (self.log_branch_only, self.merge_base.as_deref()) {
+            (true, Some(mb)) => self.repo.log_branch_commits(mb, LOG_LIMIT),
+            _ => self.repo.log_commits(LOG_LIMIT),
+        }
+    }
+
+    /// `w` in the log view: flip between "this branch's commits" and the
+    /// full history. Resolves the base lazily, exactly like scope toggling.
+    fn toggle_log_filter(&mut self) {
+        if !self.log_branch_only && self.merge_base.is_none() {
+            match self.repo.resolve_base(&self.cfg.base) {
+                Ok((base, mb)) => {
+                    self.base = base;
+                    self.merge_base = Some(mb);
+                }
+                Err(err) => {
+                    self.set_status(format!("no base found: {err}"));
+                    return;
+                }
+            }
+        }
+        self.log_branch_only = !self.log_branch_only;
+        match self.load_commits() {
+            Ok(commits) => {
+                self.commits = commits;
+                self.cursor = 0;
+                self.list_offset = 0;
+                self.rebuild_rows();
+                let msg = if self.log_branch_only {
+                    format!(
+                        "{} commits on this branch vs {}",
+                        self.commits.len(),
+                        self.base_or_default()
+                    )
+                } else {
+                    "showing all commits".to_string()
+                };
+                self.set_status(msg);
+            }
+            Err(err) => {
+                self.log_branch_only = !self.log_branch_only; // roll back
+                self.set_status(format!("log failed: {err}"));
+            }
+        }
+    }
+
+    /// The base ref label, with a placeholder when it hasn't resolved.
+    pub fn base_or_default(&self) -> String {
+        if self.base.is_empty() {
+            "base".to_string()
+        } else {
+            self.base.clone()
         }
     }
 
@@ -633,7 +739,7 @@ impl App {
 
     fn run_pending(&mut self, pending: PendingAction) {
         match pending {
-            PendingAction::Discard => self.discard_selected(),
+            PendingAction::Discard { paths } => self.discard_paths(&paths),
         }
     }
 
@@ -641,21 +747,30 @@ impl App {
 
     /// `s`: section-aware — in "staged changes" it unstages, in "changes" it
     /// stages. The file then moves to the other section (VSCode-style).
+    /// On a directory row it applies to every file under it in that section.
     fn stage_toggle(&mut self) {
-        if !self.can_stage() {
-            return;
-        }
-        let Some((entry, staged_section)) = self.selected_entry() else {
+        let Some(target) = self.mutation_target() else {
             return;
         };
-        let result = if staged_section {
-            self.repo.unstage(&entry.path)
+        let paths = self.target_paths(&target);
+        let count = paths.len();
+        let result = if target.staged() {
+            self.repo.unstage_many(&paths)
         } else {
-            self.repo.stage(&entry.path)
+            self.repo.stage_many(&paths)
         };
         if let Err(err) = result {
             self.set_status(first_line(&err.to_string()));
             return;
+        }
+        if let Target::Dir { path, .. } = &target {
+            let verb = if target.staged() {
+                "unstaged"
+            } else {
+                "staged"
+            };
+            let msg = format!("{verb} {count} file(s) under {path}");
+            self.set_status(msg);
         }
         self.force_refresh();
         self.needs_reshow = true;
@@ -666,19 +781,27 @@ impl App {
         }
     }
 
-    /// `u`: explicitly unstage the selected file, whichever section it's in.
+    /// `u`: explicitly unstage the selected file (or folder), whichever
+    /// section it's in.
     fn unstage_selected(&mut self) {
-        if !self.can_stage() {
-            return;
-        }
-        let Some((entry, _)) = self.selected_entry() else {
+        let Some(target) = self.mutation_target() else {
             return;
         };
-        if matches!(entry.stage, StageState::Unstaged | StageState::Untracked) {
-            self.set_status("nothing staged for this file");
+        let paths: Vec<std::path::PathBuf> = target
+            .indices()
+            .into_iter()
+            .filter_map(|i| self.entries.get(i))
+            .filter(|e| matches!(e.stage, StageState::Staged | StageState::Partial))
+            .map(|e| e.path.clone())
+            .collect();
+        if paths.is_empty() {
+            self.set_status(match target {
+                Target::File { .. } => "nothing staged for this file",
+                Target::Dir { .. } => "nothing staged in this folder",
+            });
             return;
         }
-        if let Err(err) = self.repo.unstage(&entry.path) {
+        if let Err(err) = self.repo.unstage_many(&paths) {
             self.set_status(first_line(&err.to_string()));
             return;
         }
@@ -687,49 +810,102 @@ impl App {
     }
 
     /// `x`: ask before throwing changes away (refused for conflicts).
+    /// On a directory row it discards every file under it in that section.
     fn open_discard_confirm(&mut self) {
-        if !self.can_stage() {
-            return;
-        }
-        let Some((entry, _)) = self.selected_entry() else {
+        let Some(target) = self.mutation_target() else {
             return;
         };
-        self.modal = Some(Modal::Confirm {
-            text: format!(
+        let paths = self.target_paths(&target);
+        if paths.is_empty() {
+            return;
+        }
+        let text = match &target {
+            Target::File { .. } => format!(
                 "Discard changes to {}? This cannot be undone. (y/n)",
-                entry.path.display()
+                paths[0].display()
             ),
-            pending: PendingAction::Discard,
+            Target::Dir { path, .. } => format!(
+                "Discard changes to {} file(s) under {path}? This cannot be undone. (y/n)",
+                paths.len()
+            ),
+        };
+        self.modal = Some(Modal::Confirm {
+            text,
+            pending: PendingAction::Discard { paths },
         });
     }
 
-    /// Shared guards for the mutating actions.
-    fn can_stage(&mut self) -> bool {
+    /// Resolve what the cursor points at into a mutation target, applying the
+    /// shared guards (working-tree scope only, no conflicts). Sets a status
+    /// message and returns None when the action can't run.
+    fn mutation_target(&mut self) -> Option<Target> {
         if self.mode != Mode::Files {
             self.set_status("read-only in history view");
-            return false;
+            return None;
         }
         if self.scope != Scope::Worktree {
             self.set_status("works in working-tree scope (w)");
-            return false;
+            return None;
         }
-        match self.selected_entry() {
-            Some((e, _)) if e.kind == ChangeKind::Conflicted => {
-                self.set_status("resolve the conflict in the editor first");
-                false
+        match self.rows.get(self.cursor).cloned()? {
+            ListRow::Entry { idx, staged, .. } => match self.entries.get(idx) {
+                Some(e) if e.kind == ChangeKind::Conflicted => {
+                    self.set_status("resolve the conflict in the editor first");
+                    None
+                }
+                Some(_) => Some(Target::File { idx, staged }),
+                None => None,
+            },
+            ListRow::Dir { path, staged, .. } => {
+                let idxs = self.entries_in_dir(&path, staged);
+                if idxs.is_empty() {
+                    self.set_status("nothing to do in this folder");
+                    return None;
+                }
+                Some(Target::Dir { path, staged, idxs })
             }
-            Some(_) => true,
-            None => false,
+            _ => None,
         }
     }
 
-    fn discard_selected(&mut self) {
-        let Some((entry, _)) = self.selected_entry() else {
-            return;
-        };
-        if let Err(err) = self.repo.discard(entry) {
-            self.set_status(first_line(&err.to_string()));
-            return;
+    /// Entry indices under a directory row, restricted to that row's section
+    /// so `s` on "staged changes / src/" only touches the staged side.
+    /// Conflicted entries are never included — they need the editor first.
+    fn entries_in_dir(&self, dir: &str, staged: bool) -> Vec<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.path.to_string_lossy().starts_with(dir))
+            .filter(|(_, e)| e.kind != ChangeKind::Conflicted && in_section(e, staged))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn target_paths(&self, target: &Target) -> Vec<std::path::PathBuf> {
+        target
+            .indices()
+            .into_iter()
+            .filter_map(|i| self.entries.get(i))
+            .map(|e| e.path.clone())
+            .collect()
+    }
+
+    /// Discard by path (the confirm modal stores paths, not indices, so a
+    /// refresh between question and answer can't discard the wrong file).
+    /// Stops at the first failure and reports it.
+    fn discard_paths(&mut self, paths: &[std::path::PathBuf]) {
+        let mut failure = None;
+        for path in paths {
+            let Some(entry) = self.entries.iter().find(|e| e.path == *path).cloned() else {
+                continue; // already gone (staged+discarded elsewhere)
+            };
+            if let Err(err) = self.repo.discard(&entry) {
+                failure = Some(first_line(&err.to_string()));
+                break;
+            }
+        }
+        if let Some(msg) = failure {
+            self.set_status(msg);
         }
         self.force_refresh();
         self.needs_reshow = true;
@@ -869,6 +1045,11 @@ impl App {
     }
 
     fn toggle_scope(&mut self) {
+        // In the log view `w` filters commits instead of switching scope.
+        if self.mode == Mode::Log {
+            self.toggle_log_filter();
+            return;
+        }
         if self.mode != Mode::Files {
             self.set_status("read-only in history view");
             return;
@@ -906,6 +1087,20 @@ impl App {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = Some((msg.into(), Instant::now()));
+    }
+}
+
+/// Does this entry belong to the grouped worktree view's staged section
+/// (`staged = true`) or its unstaged "changes" section? A partially staged
+/// file is in both, exactly like [`App::grouped_rows`] renders it.
+fn in_section(e: &FileEntry, staged: bool) -> bool {
+    if staged {
+        matches!(e.stage, StageState::Staged | StageState::Partial)
+    } else {
+        matches!(
+            e.stage,
+            StageState::Unstaged | StageState::Partial | StageState::Untracked
+        )
     }
 }
 

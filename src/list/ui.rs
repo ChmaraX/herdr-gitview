@@ -21,10 +21,13 @@ const HELP_ACTIONS: &[(Action, &str)] = &[
     (Action::Top, "jump to top"),
     (Action::Bottom, "jump to bottom"),
     (Action::Edit, "open in editor"),
-    (Action::ToggleScope, "worktree / branch"),
-    (Action::Stage, "stage / unstage file"),
-    (Action::Unstage, "unstage file"),
-    (Action::Discard, "discard changes"),
+    (
+        Action::ToggleScope,
+        "worktree / branch (log: branch commits)",
+    ),
+    (Action::Stage, "stage / unstage file or folder"),
+    (Action::Unstage, "unstage file or folder"),
+    (Action::Discard, "discard changes (file or folder)"),
     (Action::Commit, "commit"),
     (Action::Log, "commit history"),
     (Action::Annotate, "add review note"),
@@ -73,7 +76,10 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     let branch = app.branch.clone().unwrap_or_else(|| "DETACHED".to_string());
     let left = match (&app.busy, app.mode) {
         (Some(what), _) => format!(" {what}"),
-        (None, Mode::Log) => format!(" log — {branch}"),
+        (None, Mode::Log) if app.log_branch_only => {
+            format!(" log — {branch}  vs {}", base_label(app))
+        }
+        (None, Mode::Log) => format!(" log — {branch}  all"),
         (None, Mode::CommitFiles) => match &app.commit {
             Some(c) => format!(" {} {}", c.short, c.subject),
             None => " commit".to_string(),
@@ -436,6 +442,14 @@ fn footer_hints(app: &App, width: usize) -> Line<'static> {
             if !app.commits.is_empty() {
                 pairs.push((sym(app.keys.hint(Action::Edit)), "show commit"));
             }
+            pairs.push((
+                sym(app.keys.hint(Action::ToggleScope)),
+                if app.log_branch_only {
+                    "all commits"
+                } else {
+                    "branch only"
+                },
+            ));
             pairs.push((sym(app.keys.hint(Action::Quit)), "back"));
             pairs.push((sym(app.keys.hint(Action::Help)), "help"));
             pairs
@@ -462,16 +476,24 @@ fn footer_hints(app: &App, width: usize) -> Line<'static> {
             let has_files = !app.entries.is_empty();
             let worktree = app.scope == Scope::Worktree;
             let selected = app.selected_entry();
-            let sel_ok = selected
-                .map(|(e, _)| e.kind != ChangeKind::Conflicted)
-                .unwrap_or(false);
+            let on_dir = app.selected_dir().is_some();
+            // A directory row is a valid stage/discard target too, so the
+            // hints stay up while the cursor rests on one.
+            let sel_ok = on_dir
+                || selected
+                    .map(|(e, _)| e.kind != ChangeKind::Conflicted)
+                    .unwrap_or(false);
             let any_staged = app
                 .entries
                 .iter()
                 .any(|e| matches!(e.stage, StageState::Staged | StageState::Partial));
-            let sel_staged = selected
-                .map(|(e, _)| matches!(e.stage, StageState::Staged | StageState::Partial))
-                .unwrap_or(false);
+            let sel_staged = if on_dir {
+                any_staged
+            } else {
+                selected
+                    .map(|(e, _)| matches!(e.stage, StageState::Staged | StageState::Partial))
+                    .unwrap_or(false)
+            };
 
             let mut pairs = Vec::new();
             if has_files {
