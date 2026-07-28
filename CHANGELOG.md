@@ -5,6 +5,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Note input no longer hides what you type: the text wraps to the popup
+  width and follows the caret, so a note longer than the box scrolls
+  instead of being drawn past the bottom edge. The popup is also bigger
+  (72×14, was 64×8), the hint line shows a character count and an `↑ more`
+  marker when earlier lines scrolled away, and `ctrl+w` / `ctrl+backspace`
+  delete a word while `ctrl+u` clears the input.
+
 ### Added
 
 - Branch-only commit history: `w` in the log view toggles between all of

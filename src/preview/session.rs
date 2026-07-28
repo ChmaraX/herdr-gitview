@@ -254,7 +254,7 @@ impl Session {
                         &self.env,
                         "annotate",
                         &envs,
-                        (64, 8),
+                        crate::annotate::NOTE_POPUP_SIZE,
                         PreviewPopup::Annotate,
                     ) {
                         self.app.pending_note = None;

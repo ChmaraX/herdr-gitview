@@ -369,7 +369,7 @@ impl Session {
                 &self.env,
                 "annotate",
                 &envs,
-                (64, 8),
+                crate::annotate::NOTE_POPUP_SIZE,
                 ListPopup::AnnotateFile(file.clone(), cached),
             ) {
                 if self.popups.is_open() {
@@ -389,7 +389,7 @@ impl Session {
                 &self.env,
                 "annotate",
                 &envs,
-                (64, 8),
+                crate::annotate::NOTE_POPUP_SIZE,
                 ListPopup::EditNote(id),
             ) {
                 if self.popups.is_open() {
