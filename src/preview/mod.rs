@@ -67,7 +67,11 @@ pub fn run() -> Result<()> {
 
     let mut terminal = ratatui::init();
     crate::term::enable_mouse();
+    // The note composer wants shift+enter to mean "newline", which only a
+    // terminal speaking the kitty keyboard protocol can report distinctly.
+    crate::term::enable_key_disambiguation();
     let result = event_loop(&mut terminal, &mut session, &rx, &input_paused);
+    crate::term::disable_key_disambiguation();
     crate::term::disable_mouse();
     ratatui::restore();
 
@@ -117,8 +121,10 @@ impl EditorHost for TerminalHost<'_> {
     fn run(&mut self, cwd: &Path, argv: &[String], envs: &[(String, String)]) -> Result<bool> {
         self.input_paused.store(true, Ordering::SeqCst);
         crate::term::disable_mouse(); // the child owns mouse reporting
+        crate::term::disable_key_disambiguation();
         let result = editor::run_on_pty(self.terminal, cwd, argv, envs);
         crate::term::enable_mouse();
+        crate::term::enable_key_disambiguation();
         self.input_paused.store(false, Ordering::SeqCst);
         result
     }

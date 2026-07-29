@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Note and comment boxes are narrower: they leave air at the right edge and
+  stop growing at 60 columns, so a note reads as prose instead of stretching
+  across a wide pane.
 - Notes are written **inline in the diff**, not in a popup pane. `a` opens a
   composer box under the lines you selected, prefilled when editing; you type
   where the note will live and watch the box grow. `enter` saves, `esc`
@@ -15,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Whole-file notes and note edits started in the file list now hand off to
     the same composer (and the focus with them), so there is one place notes
     are written instead of two.
+  - An empty composer shows `write a note…` behind the caret.
   - The `annotate` popup entrypoint is gone; `ask` and `pick-agent` remain.
 - Review notes look like review comments now (shape borrowed from
   [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr)):
@@ -35,6 +39,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `shift+enter` inserts a newline in the note composer again. The diff pane
+  never asked for the kitty keyboard protocol, which is the only way a
+  terminal can report `shift+enter` as distinct from `enter`, so it was
+  saving the note instead. (`ctrl+j` always worked and still does.)
 - The diff pane now shows where you are. The cursor line had a tint so
   faint it was invisible in practice, and scrolling (the wheel, or
   `ctrl+d`/`ctrl+u` forwarded from the list) moved the viewport *without*

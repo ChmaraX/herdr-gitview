@@ -1096,14 +1096,27 @@ fn card_text_width(width: usize) -> usize {
 }
 
 fn card_box_width(width: usize) -> usize {
-    width
+    // Never wider than the pane allows, never narrower than a usable box.
+    let outer = width
         .saturating_sub(CARD_INDENT)
+        .max(MIN_CARD_WIDTH as usize);
+    width
+        .saturating_sub(CARD_INDENT + CARD_RIGHT_MARGIN)
+        .min(MAX_CARD_WIDTH)
         .max(MIN_CARD_WIDTH as usize)
+        .min(outer)
 }
 
 /// Indent of every card from the left edge, so a card reads as a comment
 /// *on* the code rather than another diff row.
 const CARD_INDENT: usize = 4;
+
+/// Air left to the right of a card, so it doesn't run into the pane edge.
+const CARD_RIGHT_MARGIN: usize = 6;
+
+/// Cards stop growing past this: a comment is prose, and prose set across a
+/// very wide pane is hard to read (and hard to tell apart from the diff).
+const MAX_CARD_WIDTH: usize = 60;
 
 /// The open composer as a card, with the caret drawn in place and an accented
 /// border so it is obviously the thing taking your keystrokes.
@@ -1115,6 +1128,20 @@ fn composer_card(
 ) -> Vec<Line<'static>> {
     let text_w = card_text_width(width);
     let caret = Style::new().add_modifier(Modifier::REVERSED);
+    // An empty box says what it wants, with the caret waiting in front of it.
+    if input.is_empty() {
+        let hint = crate::textarea::elide_tail("write a note…", text_w.saturating_sub(1));
+        return card_box(
+            label,
+            vec![vec![
+                Span::styled(" ", caret),
+                Span::styled(hint, Style::new().add_modifier(Modifier::DIM)),
+            ]],
+            width,
+            theme,
+            true,
+        );
+    }
     let rows = input.layout(text_w);
     let caret_row = input.caret_row(&rows);
     let body: Vec<Vec<Span<'static>>> = rows

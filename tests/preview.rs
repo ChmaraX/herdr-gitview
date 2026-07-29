@@ -758,3 +758,92 @@ fn the_cursor_cannot_walk_into_the_composer_either() {
         assert!(!on_card(&a));
     }
 }
+
+#[test]
+fn shift_enter_and_friends_insert_a_newline_rather_than_saving() {
+    for mods in [
+        KeyModifiers::SHIFT,
+        KeyModifiers::ALT,
+        KeyModifiers::CONTROL,
+    ] {
+        let mut a = app_at(1);
+        press(&mut a, 'a');
+        type_text(&mut a, "one");
+        key(&mut a, KeyCode::Enter, mods);
+        type_text(&mut a, "two");
+        assert!(a.composer.is_some(), "{mods:?} saved instead of newlining");
+        assert_eq!(
+            a.composer.as_ref().map(|c| c.input.text().to_string()),
+            Some("one\ntwo".to_string()),
+            "{mods:?}"
+        );
+    }
+    // ...and ctrl+j, the one every terminal can deliver.
+    let mut a = app_at(1);
+    press(&mut a, 'a');
+    type_text(&mut a, "one");
+    key(&mut a, KeyCode::Char('j'), KeyModifiers::CONTROL);
+    type_text(&mut a, "two");
+    assert_eq!(
+        a.composer.as_ref().map(|c| c.input.text().to_string()),
+        Some("one\ntwo".to_string())
+    );
+}
+
+#[test]
+fn the_composer_moves_the_caret_like_a_text_area() {
+    let mut a = app_at(1);
+    press(&mut a, 'a');
+    type_text(&mut a, "helo world");
+    // back to just after "hel" and fix the typo
+    for _ in 0..7 {
+        key(&mut a, KeyCode::Left, KeyModifiers::NONE);
+    }
+    type_text(&mut a, "l");
+    assert_eq!(
+        a.composer.as_ref().map(|c| c.input.text().to_string()),
+        Some("hello world".to_string())
+    );
+    // home/end and word delete
+    key(&mut a, KeyCode::End, KeyModifiers::NONE);
+    key(&mut a, KeyCode::Char('w'), KeyModifiers::CONTROL);
+    assert_eq!(
+        a.composer.as_ref().map(|c| c.input.text().to_string()),
+        Some("hello ".to_string())
+    );
+}
+
+#[test]
+fn an_empty_composer_shows_what_it_wants() {
+    let mut a = app_at(1);
+    press(&mut a, 'a');
+    let body = body_lines(&draw(&mut a));
+    assert!(
+        body.iter().any(|l| l.contains("write a note")),
+        "no placeholder: {body:?}"
+    );
+    // ...which disappears as soon as you type.
+    type_text(&mut a, "x");
+    let body = body_lines(&draw(&mut a));
+    assert!(!body.iter().any(|l| l.contains("write a note")));
+}
+
+#[test]
+fn cards_stay_readable_on_a_wide_pane_and_clear_the_right_edge() {
+    let mut a = app_with_notes(vec![note(1, 3, 3, &"word ".repeat(60))]);
+    for width in [50u16, 80, 120, 200] {
+        let mut term = Terminal::new(TestBackend::new(width, H)).unwrap();
+        term.draw(|f| ui::render(f, &mut a)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let top = (1..H - 1)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .find(|l| l.contains('╭'))
+            .expect("no card");
+        let box_w = top.trim_end().width() - top.find('╭').unwrap();
+        assert!(box_w <= 60, "width {width}: box is {box_w} cols");
+        assert!(
+            top.trim_end().width() < width as usize,
+            "width {width}: card touches the right edge"
+        );
+    }
+}
