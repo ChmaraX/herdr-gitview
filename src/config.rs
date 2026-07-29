@@ -30,7 +30,8 @@ pub struct Config {
     /// action name -> key string, overrides `keymap::DEFAULT_KEYS`.
     pub keybindings: HashMap<String, String>,
     /// How much of the tab the whole gitview sidebar takes (percent of the
-    /// tab width). The existing layout is squeezed into the rest. Clamped
+    /// tab width). The existing layout is squeezed into the rest, so the
+    /// default is an even split with whatever you already had open. Clamped
     /// to 20..=80.
     pub view_width_percent: u8,
     /// How much of the gitview area the file list takes (percent). Clamped
@@ -83,7 +84,7 @@ impl Default for Config {
             default_scope: ScopePref::Worktree,
             context_lines: 3,
             keybindings: HashMap::new(),
-            view_width_percent: 40,
+            view_width_percent: 50,
             list_width_percent: 25,
             reuse_tab_nvim: true,
         }
@@ -172,7 +173,7 @@ mod tests {
     #[test]
     fn width_percents_default_and_clamp() {
         let cfg = Config::parse("");
-        assert_eq!(cfg.view_width_percent, 40);
+        assert_eq!(cfg.view_width_percent, 50);
         assert_eq!(cfg.list_width_percent, 25);
         let cfg = Config::parse("view_width_percent = 5\nlist_width_percent = 99");
         assert_eq!(cfg.view_width_percent, 20);

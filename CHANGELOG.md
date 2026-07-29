@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The sidebar (`toggle`) now splits the tab evenly: half for the panes you
+  already had open, half for gitview. It was 40%, which read as lopsided
+  against a full-width editor. `view_width_percent` still overrides it, and
+  it is documented in the config table now — along with
+  `list_width_percent`, which was never listed.
 - Branch scope diffs against **the branch you actually branched off**, not
   always `main`/`master`. A branch cut from `develop` compares against
   `develop`; a branch stacked on another feature branch compares against that
