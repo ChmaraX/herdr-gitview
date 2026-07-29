@@ -15,6 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     and the cards re-box themselves when the pane is resized.
   - A commented line's number is accented in the gutter, so an annotated
     line stays recognizable after its card scrolls out of view.
+  - Note cards are decoration, not content: the cursor steps over a whole
+    card instead of into it, clicks on one are inert, a drag extends past
+    it, and a selection spanning a card leaves it untinted. Annotating a
+    range that covers no source line is refused rather than silently
+    becoming a whole-file note.
   - The notes panel groups notes under a heading per file and gives each
     note two lines — its anchor (`lines 12-20`, `line 7`, `whole file`) and
     its text — rather than one crowded row.

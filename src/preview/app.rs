@@ -379,7 +379,9 @@ impl PreviewApp {
                 if self.select_anchor.is_none() {
                     self.select_anchor = Some(self.cursor_line);
                 }
-                self.cursor_line = line;
+                // Dragging across a card extends past it, never onto it.
+                let dir = if line >= self.cursor_line { 1 } else { -1 };
+                self.cursor_line = self.snap_off_card(line, dir);
                 self.restyle();
             }
             _ => {}
@@ -457,6 +459,9 @@ impl PreviewApp {
         let top = self.scroll as usize;
         let bottom = (top + self.viewport_h.max(1) as usize - 1).min(last);
         let clamped = self.cursor_line.clamp(top.min(bottom), bottom);
+        // Snapping away from the clamp edge keeps the cursor on screen.
+        let dir = if clamped < self.cursor_line { -1 } else { 1 };
+        let clamped = self.snap_off_card(clamped, dir);
         if clamped != self.cursor_line {
             self.cursor_line = clamped;
             self.restyle();
@@ -540,11 +545,16 @@ impl PreviewApp {
     /// cursor is invisible otherwise).
     fn move_cursor(&mut self, delta: i32) {
         let last = self.content_lines().saturating_sub(1);
-        self.cursor_line = match delta {
-            i32::MIN => 0,
-            i32::MAX => last,
-            d => (self.cursor_line as i64 + i64::from(d)).clamp(0, last as i64) as usize,
+        let (target, dir) = match delta {
+            i32::MIN => (0, 1),
+            i32::MAX => (last, -1),
+            d => (
+                (self.cursor_line as i64 + i64::from(d)).clamp(0, last as i64) as usize,
+                if d < 0 { -1 } else { 1 },
+            ),
         };
+        // Step over a whole card rather than into it.
+        self.cursor_line = self.snap_off_card(target, dir);
         // Keep the cursor inside the viewport.
         let vh = self.viewport_h.max(1) as usize;
         if self.cursor_line < self.scroll as usize {
@@ -553,6 +563,28 @@ impl PreviewApp {
             self.scroll = (self.cursor_line + 1 - vh) as u16;
         }
         self.restyle();
+    }
+
+    /// The nearest line that is not part of a note card, searching in `dir`
+    /// (-1 back, +1 forward) first and the other way if that runs out.
+    ///
+    /// Cards are read-only decoration. Letting the cursor land on one means
+    /// you can select and annotate your own annotation, which is nonsense —
+    /// and the doc↔source mapping has no line to give it either.
+    fn snap_off_card(&self, line: usize, dir: i32) -> usize {
+        let last = self.content_lines().saturating_sub(1);
+        let line = line.min(last);
+        if !self.card_lines.contains(&line) {
+            return line;
+        }
+        let forward = (line..=last).find(|i| !self.card_lines.contains(i));
+        let backward = (0..=line).rev().find(|i| !self.card_lines.contains(i));
+        let (first, second) = if dir < 0 {
+            (backward, forward)
+        } else {
+            (forward, backward)
+        };
+        first.or(second).unwrap_or(line)
     }
 
     /// The selected rendered-line range (anchor..=cursor), or the cursor line.
@@ -569,6 +601,9 @@ impl PreviewApp {
     fn rebuild(&mut self) {
         self.sync_doc();
         self.saved_tint.clear();
+        // Cards have just moved (a note was added, edited, deleted, or the
+        // pane was resized) and may now sit under the cursor.
+        self.cursor_line = self.snap_off_card(self.cursor_line, 1);
         self.restyle();
     }
 
@@ -616,7 +651,9 @@ impl PreviewApp {
         match self.select_anchor {
             Some(_) => {
                 let (a, b) = self.selection();
-                for idx in a..=b {
+                // Cards inside the range stay untinted — they are not part of
+                // the selection and contribute nothing to the note.
+                for idx in (a..=b).filter(|i| !self.card_lines.contains(i)) {
                     tint(idx, select_bg, &mut saved, &mut self.doc.lines);
                 }
             }
@@ -666,9 +703,14 @@ impl PreviewApp {
                 snippet.push('\n');
             }
         }
+        // A range that mapped to no source line at all (only cards, or only
+        // folds) would silently become a whole-file note — refuse instead.
         let (start, end) = match (numbers.iter().min(), numbers.iter().max()) {
             (Some(&s), Some(&e)) if s > 0 => (s, e),
-            _ => (0, 0),
+            _ => {
+                self.flash("select some code to annotate");
+                return;
+            }
         };
         self.pending_note = Some(Note {
             id: 0, // allocated when committed

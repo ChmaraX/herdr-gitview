@@ -437,3 +437,153 @@ fn cards_are_re_boxed_when_the_pane_width_changes() {
         "the box must still close: {narrow_top:?}"
     );
 }
+
+// ---- cards are decoration, not content -------------------------------------
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+
+fn press(a: &mut PreviewApp, c: char) {
+    a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+}
+
+/// Is the cursor sitting on a line that belongs to a note card?
+fn on_card(a: &PreviewApp) -> bool {
+    let line = &a.doc.lines[a.cursor_line];
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    text.contains('╭') || text.contains('│') || text.contains('╰')
+}
+
+#[test]
+fn the_cursor_steps_over_a_card_instead_of_into_it() {
+    let mut a = app_with_notes(vec![note(1, 3, 3, "a\nmulti\nline\nnote")]);
+    // Walk the whole document downwards, then back up.
+    for _ in 0..a.doc.lines.len() + 2 {
+        press(&mut a, 'j');
+        assert!(
+            !on_card(&a),
+            "cursor landed inside a card at {}",
+            a.cursor_line
+        );
+    }
+    for _ in 0..a.doc.lines.len() + 2 {
+        press(&mut a, 'k');
+        assert!(
+            !on_card(&a),
+            "cursor landed inside a card at {}",
+            a.cursor_line
+        );
+    }
+}
+
+#[test]
+fn home_and_end_skip_cards_at_the_edges() {
+    // A whole-file note puts a card at the very top of the document.
+    let mut a = app_with_notes(vec![
+        note(1, 0, 0, "whole file"),
+        note(2, 10, 10, "last line"),
+    ]);
+    a.on_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+    assert!(!on_card(&a), "home landed on the leading card");
+    a.on_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    assert!(!on_card(&a), "end landed on the trailing card");
+}
+
+#[test]
+fn a_card_appearing_under_the_cursor_pushes_it_off() {
+    let mut a = app_with_notes(vec![]);
+    for _ in 0..3 {
+        press(&mut a, 'j');
+    }
+    let before = a.cursor_line;
+    // A note lands right where the cursor is sitting.
+    a.notes = vec![note(1, 3, 3, "new note\nwith two lines")];
+    let r = req("f.txt");
+    a.apply_diff(&r, Ok(fake_diff(10)));
+    draw(&mut a);
+    assert!(!on_card(&a), "cursor was left inside the new card");
+    assert!(a.cursor_line >= before);
+}
+
+#[test]
+fn dragging_across_a_card_does_not_land_on_it() {
+    let mut a = app_with_notes(vec![note(1, 2, 2, "one\ntwo\nthree")]);
+    draw(&mut a);
+    a.on_mouse(MouseEventKind::Down(MouseButton::Left), 1);
+    for y in 2..9u16 {
+        a.on_mouse(MouseEventKind::Drag(MouseButton::Left), y);
+        assert!(!on_card(&a), "drag rested on a card at row {y}");
+    }
+}
+
+#[test]
+fn clicking_a_card_leaves_the_cursor_where_it_was() {
+    let mut a = app_with_notes(vec![note(1, 2, 2, "note text")]);
+    draw(&mut a);
+    a.on_mouse(MouseEventKind::Down(MouseButton::Left), 1);
+    let before = a.cursor_line;
+    // Row 4 is inside the card (line 1 anchor, then the card's three rows).
+    a.on_mouse(MouseEventKind::Down(MouseButton::Left), 4);
+    assert_eq!(a.cursor_line, before, "a click on a card must be inert");
+}
+
+#[test]
+fn annotating_a_range_with_no_source_lines_is_refused() {
+    let mut a = app_with_notes(vec![note(1, 2, 2, "existing")]);
+    draw(&mut a);
+    // Force the selection onto the card itself, which no key or click can do
+    // — this is the guard of last resort for the annotate path.
+    let card = (0..a.doc.lines.len())
+        .find(|i| {
+            let t: String = a.doc.lines[*i]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            t.contains('╭')
+        })
+        .unwrap();
+    a.cursor_line = card;
+    a.select_anchor = Some(card);
+    press(&mut a, 'a');
+    assert!(a.popup_request.is_none(), "should not open the note popup");
+    assert_eq!(a.active_flash(), Some("select some code to annotate"));
+}
+
+#[test]
+fn the_header_always_has_a_line_number_to_show() {
+    let mut a = app_with_notes(vec![note(1, 3, 3, "x\ny\nz")]);
+    for _ in 0..a.doc.lines.len() {
+        press(&mut a, 'j');
+        assert!(
+            a.cursor_file_line().is_some(),
+            "no source line at doc line {}",
+            a.cursor_line
+        );
+    }
+}
+
+#[test]
+fn a_selection_spanning_a_card_leaves_the_card_untinted() {
+    let mut a = app_with_notes(vec![note(1, 3, 3, "one\ntwo")]);
+    draw(&mut a);
+    press(&mut a, 'v'); // start selecting at the top
+    for _ in 0..6 {
+        press(&mut a, 'j'); // extend down, across the card
+    }
+    let buf = draw(&mut a);
+
+    let selected_bg = buf[(0, 1)].style().bg;
+    let mut saw_card = false;
+    for y in 1..H - 1 {
+        let text = row(&buf, y);
+        if text.contains('╭') || text.contains('│') || text.contains('╰') {
+            saw_card = true;
+            assert_ne!(
+                buf[(0, y)].style().bg,
+                selected_bg,
+                "card row {y} is tinted as selected: {text:?}"
+            );
+        }
+    }
+    assert!(saw_card, "the card should be inside the selected range");
+}
