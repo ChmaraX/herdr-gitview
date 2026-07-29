@@ -118,6 +118,18 @@ pub struct NoteMeta {
     pub cached: bool,
 }
 
+/// Collapse a (possibly multi-line) note into one display line. Note text is
+/// free-form now that the input is a text area, but the list rows and the
+/// preview's note cards are one line each — a raw newline inside a span
+/// corrupts the render, so line breaks become a visible marker instead.
+pub fn one_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" \u{23ce} ")
+}
+
 /// One end of the IPC link: a write half plus an optional reader half.
 pub struct Conn {
     writer: UnixStream,
@@ -294,5 +306,33 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod note_display_tests {
+    use super::one_line;
+
+    #[test]
+    fn single_line_text_is_unchanged() {
+        assert_eq!(one_line("just a note"), "just a note");
+    }
+
+    #[test]
+    fn line_breaks_become_a_visible_marker() {
+        assert_eq!(one_line("first\nsecond"), "first ⏎ second");
+    }
+
+    #[test]
+    fn blank_lines_and_trailing_space_are_dropped() {
+        assert_eq!(one_line("a\n\n\nb  \n"), "a ⏎ b");
+        assert_eq!(one_line("\n\n"), "");
+    }
+
+    #[test]
+    fn the_result_never_contains_a_newline() {
+        for text in ["a\nb", "\n", "", "a\r\nb", "x\n\ny"] {
+            assert!(!one_line(text).contains('\n'), "{text:?}");
+        }
     }
 }

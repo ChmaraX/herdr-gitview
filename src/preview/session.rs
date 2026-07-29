@@ -408,15 +408,17 @@ impl Session {
     fn deliver_notes(&self, pane: &str, submit: bool) -> Result<String> {
         let mut msg = String::new();
         for note in &self.app.notes {
+            // Multi-line notes keep their line breaks, but continuation
+            // lines are indented so the anchor stays readable in the batch.
+            let text = indent_continuations(&note.text);
             if note.end == 0 {
-                msg.push_str(&format!("{} — {}\n", note.file.display(), note.text));
+                msg.push_str(&format!("{} — {text}\n", note.file.display()));
             } else {
                 msg.push_str(&format!(
-                    "{}:{}-{} — {}\n",
+                    "{}:{}-{} — {text}\n",
                     note.file.display(),
                     note.start,
                     note.end,
-                    note.text
                 ));
             }
             if !note.snippet.is_empty() {
@@ -544,4 +546,39 @@ fn fetch_contents(
 /// First line of an error message (git failures embed stderr).
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or(s).trim().to_string()
+}
+
+/// Keep a note's line breaks but indent everything after the first line, so
+/// the `file:12-20 — …` anchor still reads as the start of one note.
+fn indent_continuations(text: &str) -> String {
+    let mut lines = text.lines();
+    let mut out = lines.next().unwrap_or_default().to_string();
+    for line in lines {
+        out.push_str("\n  ");
+        out.push_str(line);
+    }
+    out
+}
+
+#[cfg(test)]
+mod note_format_tests {
+    use super::indent_continuations;
+
+    #[test]
+    fn a_single_line_note_is_unchanged() {
+        assert_eq!(indent_continuations("one line"), "one line");
+    }
+
+    #[test]
+    fn continuation_lines_are_indented_under_the_anchor() {
+        assert_eq!(
+            indent_continuations("first\nsecond\nthird"),
+            "first\n  second\n  third"
+        );
+    }
+
+    #[test]
+    fn an_empty_note_stays_empty() {
+        assert_eq!(indent_continuations(""), "");
+    }
 }

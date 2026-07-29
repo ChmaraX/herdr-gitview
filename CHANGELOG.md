@@ -7,12 +7,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Note input no longer hides what you type: the text wraps to the popup
-  width and follows the caret, so a note longer than the box scrolls
-  instead of being drawn past the bottom edge. The popup is also bigger
-  (72×14, was 64×8), the hint line shows a character count and an `↑ more`
-  marker when earlier lines scrolled away, and `ctrl+w` / `ctrl+backspace`
-  delete a word while `ctrl+u` clears the input.
+- Note input no longer hides what you type. It is a real text area now:
+  the text soft-wraps to the popup width and the view follows the caret,
+  so a long note scrolls instead of being drawn past the bottom edge
+  (previously anything past the second line simply vanished).
+  - `shift+enter` (or `ctrl+j`, which every terminal can deliver) inserts a
+    newline; `enter` still saves and `esc` still cancels.
+  - Arrow keys, `home`/`end` and `ctrl+a`/`ctrl+e` move the caret, which is
+    drawn where it actually is, so text can be edited mid-note rather than
+    only appended to. `delete` removes forwards, `ctrl+w` /
+    `ctrl+backspace` delete a word, `ctrl+u` clears.
+  - The popup is bigger (72×14, was 64×8) and the title row shows a
+    character count plus `↑`/`↓` when rows are scrolled out of view.
+  - Multi-line notes render as one line in the file list and in the diff's
+    note cards (line breaks shown as `⏎`), keep their real line breaks when
+    sent to an agent, and survive being reopened for editing.
 
 ### Added
 

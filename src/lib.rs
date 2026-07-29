@@ -14,3 +14,4 @@ pub mod orchestrate;
 pub mod popup;
 pub mod preview;
 pub mod term;
+pub mod textarea;

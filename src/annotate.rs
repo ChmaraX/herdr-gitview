@@ -17,12 +17,11 @@ use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
+
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::popup::write_answer;
-
-/// The caret drawn at the end of the input.
-const CARET: char = '\u{2588}';
+use crate::textarea::TextArea;
 
 /// Popup size for the note input, shared by every caller so the wrapping
 /// width is predictable. Tall enough for a few sentences; longer notes
@@ -31,11 +30,22 @@ pub const NOTE_POPUP_SIZE: (u16, u16) = (72, 14);
 
 pub fn run_annotate() -> Result<()> {
     let title = std::env::var("GITVIEW_ASK_TEXT").unwrap_or_else(|_| "note".into());
-    // Editing an existing note pre-fills the input.
-    let mut input = std::env::var("GITVIEW_PREFILL").unwrap_or_default();
+    // Editing an existing note pre-fills the input. Newlines survive the
+    // env-var trip as an escape (herdr's --env framing is line-based).
+    let mut input = TextArea::new(decode_prefill(
+        &std::env::var("GITVIEW_PREFILL").unwrap_or_default(),
+    ));
+    // First visible row; kept between draws so the view follows the caret
+    // instead of snapping.
+    let mut scroll = 0usize;
+    let (mut scroll_above, mut scroll_below) = (false, false);
 
     let mut terminal = ratatui::init();
+    crate::term::enable_key_disambiguation();
     let answer = loop {
+        // The wrap width the last draw used, so key handling that needs it
+        // (up/down/home/end) agrees with what is on screen.
+        let mut width = 1usize;
         terminal.draw(|frame| {
             let area = frame.area();
             let chunks = Layout::vertical([
@@ -45,27 +55,35 @@ pub fn run_annotate() -> Result<()> {
             ])
             .split(area);
             frame.render_widget(
-                Paragraph::new(format!(" {title}"))
-                    .style(Style::new().add_modifier(Modifier::BOLD)),
+                header_line(&title, &input, scroll_above, scroll_below, chunks[0].width),
                 chunks[0],
             );
 
-            // Wrap by hand so the view can follow the caret: a Paragraph
-            // just clips, which silently hides everything past the last
-            // visible row once the note outgrows the box.
             let inner_w = chunks[1].width.saturating_sub(3).max(1) as usize; // borders + lead space
             let inner_h = chunks[1].height.saturating_sub(2).max(1) as usize;
-            let lines = caret_lines(&input, inner_w);
-            let scrolled = lines.len().saturating_sub(inner_h);
-            let visible: Vec<Line> = lines[scrolled..]
-                .iter()
-                .map(|l| Line::from(format!(" {l}")))
+            width = inner_w;
+
+            // Scroll the window the smallest amount that keeps the caret in
+            // it — a Paragraph would just clip, which is what used to hide
+            // everything past the last visible row.
+            let rows = input.layout(inner_w);
+            let caret_row = input.caret_row(&rows);
+            scroll = scroll.min(caret_row);
+            if caret_row >= scroll + inner_h {
+                scroll = caret_row + 1 - inner_h;
+            }
+            scroll = scroll.min(rows.len().saturating_sub(1));
+
+            let end = (scroll + inner_h).min(rows.len());
+            scroll_above = scroll > 0;
+            scroll_below = end < rows.len();
+            let lines: Vec<Line> = (scroll..end)
+                .map(|i| render_row(&input, &rows[i], i == caret_row))
                 .collect();
-            let block = Block::bordered();
-            frame.render_widget(Paragraph::new(visible).block(block), chunks[1]);
+            frame.render_widget(Paragraph::new(lines).block(Block::bordered()), chunks[1]);
 
             frame.render_widget(
-                Paragraph::new(hint_text(&input, scrolled > 0))
+                Paragraph::new(HINT)
                     .alignment(Alignment::Center)
                     .style(Style::new().add_modifier(Modifier::DIM)),
                 chunks[2],
@@ -79,113 +97,151 @@ pub fn run_annotate() -> Result<()> {
             && key.kind == KeyEventKind::Press
         {
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
+            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
             match key.code {
-                KeyCode::Enter => break input.clone(),
+                // Enter saves; every modifier combination a terminal can
+                // actually deliver for "newline" inserts one instead.
+                KeyCode::Enter if shift || alt || ctrl => input.insert_newline(),
+                KeyCode::Enter => break input.text().to_string(),
+                // ctrl+j is a literal LF: the fallback for terminals that
+                // report shift+enter as a plain enter.
+                KeyCode::Char('j') if ctrl => input.insert_newline(),
                 KeyCode::Esc => break String::new(),
-                // Long notes need more than one-char-at-a-time deletion.
+
                 KeyCode::Char('u') if ctrl => input.clear(),
-                KeyCode::Char('w') if ctrl => delete_word(&mut input),
-                KeyCode::Backspace if ctrl => delete_word(&mut input),
-                KeyCode::Backspace => {
-                    input.pop();
-                }
-                KeyCode::Char(c) if !ctrl => input.push(c),
+                KeyCode::Char('w') if ctrl => input.delete_word(),
+                KeyCode::Backspace if ctrl || alt => input.delete_word(),
+                KeyCode::Backspace => input.backspace(),
+                KeyCode::Delete => input.delete(),
+
+                KeyCode::Left => input.move_left(),
+                KeyCode::Right => input.move_right(),
+                KeyCode::Up => input.move_up(width),
+                KeyCode::Down => input.move_down(width),
+                KeyCode::Home => input.move_home(width),
+                KeyCode::End => input.move_end(width),
+                KeyCode::Char('a') if ctrl => input.move_home(width),
+                KeyCode::Char('e') if ctrl => input.move_end(width),
+
+                KeyCode::Char(c) if !ctrl && !alt => input.insert(c),
                 _ => {}
             }
         }
     };
+    crate::term::disable_key_disambiguation();
     ratatui::restore();
     write_answer(&answer)
 }
 
-/// The footer hint, with a character count once there's text and a marker
-/// when earlier lines have scrolled out of view.
-fn hint_text(input: &str, scrolled: bool) -> String {
-    let mut hint = String::from("enter save · esc cancel");
+/// One visual row, with the caret drawn as a reversed cell when it sits on
+/// this row (so it shows mid-text, not just at the end).
+fn render_row<'a>(input: &'a TextArea, row: &std::ops::Range<usize>, has_caret: bool) -> Line<'a> {
+    let text = &input.text()[row.clone()];
+    if !has_caret {
+        return Line::from(format!(" {text}"));
+    }
+    let at = input.caret() - row.start;
+    let (before, rest) = text.split_at(at);
+    let mut chars = rest.chars();
+    let under = chars.next();
+    let after: String = chars.collect();
+    vec![
+        Span::raw(format!(" {before}")),
+        Span::styled(
+            under.map(String::from).unwrap_or_else(|| " ".into()),
+            Style::new().add_modifier(Modifier::REVERSED),
+        ),
+        Span::raw(after),
+    ]
+    .into()
+}
+
+/// The footer keys. `ctrl+j` is spelled out next to `shift+enter` because
+/// only terminals speaking the kitty keyboard protocol can report the
+/// latter — everywhere else it arrives as a plain enter (i.e. save).
+const HINT: &str = "enter save · shift+enter / ctrl+j newline · esc cancel";
+
+/// The title row: the note's anchor on the left, and on the right a
+/// character count plus markers for rows scrolled out of view. Lives here
+/// rather than in the footer so neither can crowd the other out.
+fn header_line(
+    title: &str,
+    input: &TextArea,
+    above: bool,
+    below: bool,
+    width: u16,
+) -> Line<'static> {
+    let mut meta = String::new();
     if !input.is_empty() {
-        hint.push_str(&format!(" · {} chars", input.chars().count()));
+        meta.push_str(&format!("{} chars ", input.char_count()));
     }
-    if scrolled {
-        hint.push_str(" · ↑ more");
+    match (above, below) {
+        (true, true) => meta.push_str("↑↓ "),
+        (true, false) => meta.push_str("↑ "),
+        (false, true) => meta.push_str("↓ "),
+        (false, false) => {}
     }
-    hint
+    let width = width as usize;
+    // A very narrow popup keeps the counter and loses the anchor, not both.
+    if meta.width() > width {
+        meta = elide_tail(&meta, width);
+    }
+    let title = elide_tail(&format!(" {title}"), width.saturating_sub(meta.width() + 1));
+    let pad = width.saturating_sub(title.width() + meta.width());
+    Line::from(vec![
+        Span::styled(title, Style::new().add_modifier(Modifier::BOLD)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(meta, Style::new().add_modifier(Modifier::DIM)),
+    ])
 }
 
-/// Drop the trailing word (and any whitespace before it) — ctrl+w / ctrl+bs.
-fn delete_word(input: &mut String) {
-    while input.ends_with(char::is_whitespace) {
-        input.pop();
+/// Right-truncate to `max` display columns, suffixing `…` when cut.
+fn elide_tail(s: &str, max: usize) -> String {
+    if s.width() <= max {
+        return s.to_string();
     }
-    while !input.is_empty() && !input.ends_with(char::is_whitespace) {
-        input.pop();
+    if max == 0 {
+        return String::new();
     }
-}
-
-/// The wrapped input with the caret appended, always as the last line — so
-/// showing the last `height` lines keeps the caret visible at any length.
-fn caret_lines(input: &str, width: usize) -> Vec<String> {
-    let mut lines = wrap_text(input, width);
-    let caret_w = CARET.width().unwrap_or(1);
-    let last = lines.last().map(|l| l.width()).unwrap_or(0);
-    if last + caret_w > width {
-        lines.push(String::new()); // caret rolls onto the next line
-    }
-    lines.last_mut().expect("never empty").push(CARET);
-    lines
-}
-
-/// Wrap `text` to `width` display columns, breaking at spaces where that
-/// works and hard-breaking anything longer than a line (long paths, urls).
-/// Always returns at least one (possibly empty) line.
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![String::new()];
-    }
-    let mut lines: Vec<String> = Vec::new();
-    let mut line = String::new();
-    let mut line_w = 0usize;
-    // The pending run of characters that may still move to the next line
-    // together (a word), plus the spaces that preceded it on this line.
-    let mut word = String::new();
-    let mut word_w = 0usize;
-
-    let flush_word =
-        |line: &mut String, line_w: &mut usize, word: &mut String, word_w: &mut usize| {
-            line.push_str(word);
-            *line_w += *word_w;
-            word.clear();
-            *word_w = 0;
-        };
-
-    for ch in text.chars() {
+    let mut acc = 0;
+    let mut kept = String::new();
+    for ch in s.chars() {
         let cw = ch.width().unwrap_or(0);
-        if ch.is_whitespace() {
-            flush_word(&mut line, &mut line_w, &mut word, &mut word_w);
-            if line_w + cw > width {
-                lines.push(std::mem::take(&mut line));
-                line_w = 0;
-                continue; // the wrap swallows the space
-            }
-            line.push(ch);
-            line_w += cw;
+        if acc + cw > max - 1 {
+            break;
+        }
+        acc += cw;
+        kept.push(ch);
+    }
+    format!("{kept}…")
+}
+
+/// Newlines can't ride in a herdr `--env` value, so they travel as `\n`.
+pub fn encode_prefill(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('\n', "\\n")
+}
+
+/// Inverse of [`encode_prefill`].
+pub fn decode_prefill(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
             continue;
         }
-        // A word longer than a whole line can't be moved — hard-break it.
-        if word_w + cw > width {
-            flush_word(&mut line, &mut line_w, &mut word, &mut word_w);
-            lines.push(std::mem::take(&mut line));
-            line_w = 0;
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
         }
-        if line_w + word_w + cw > width {
-            lines.push(std::mem::take(&mut line));
-            line_w = 0;
-        }
-        word.push(ch);
-        word_w += cw;
     }
-    flush_word(&mut line, &mut line_w, &mut word, &mut word_w);
-    lines.push(line);
-    lines
+    out
 }
 
 pub fn run_pick_agent() -> Result<()> {
@@ -307,121 +363,112 @@ fn color_for_status(status: &str) -> Color {
 mod tests {
     use super::*;
 
-    /// The last `height` lines are what the popup actually draws.
-    fn visible(input: &str, width: usize, height: usize) -> Vec<String> {
-        let lines = caret_lines(input, width);
-        let start = lines.len().saturating_sub(height);
-        lines[start..].to_vec()
+    /// The plain text of a rendered line, for assertions.
+    fn flat(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     #[test]
-    fn short_text_stays_on_one_line_with_the_caret() {
-        assert_eq!(caret_lines("hi", 10), vec![format!("hi{CARET}")]);
+    fn the_hint_advertises_both_newline_keys() {
+        assert!(HINT.contains("shift+enter"), "{HINT}");
+        assert!(HINT.contains("ctrl+j"), "{HINT}");
+        assert!(HINT.contains("enter save"), "{HINT}");
     }
 
     #[test]
-    fn empty_input_is_just_a_caret() {
-        assert_eq!(caret_lines("", 10), vec![CARET.to_string()]);
-    }
-
-    #[test]
-    fn wraps_on_word_boundaries() {
-        // A space that still fits stays on the line it was typed on — this is
-        // a live input, so the caret must sit after the space you just typed.
+    fn the_header_reports_the_length_and_scroll_state() {
+        let empty = TextArea::new(String::new());
         assert_eq!(
-            wrap_text("the quick brown fox", 10),
-            vec!["the quick ", "brown fox"]
+            flat(&header_line("note", &empty, false, false, 40)).trim(),
+            "note"
         );
-        // A space landing exactly on the edge is swallowed by the wrap.
-        assert_eq!(wrap_text("abcde fgh", 5), vec!["abcde", "fgh"]);
+        let a = TextArea::new("abc".into());
+        assert!(flat(&header_line("note", &a, false, false, 40)).contains("3 chars"));
+        assert!(flat(&header_line("note", &a, true, false, 40)).contains("↑"));
+        assert!(flat(&header_line("note", &a, false, true, 40)).contains("↓"));
+        assert!(flat(&header_line("note", &a, true, true, 40)).contains("↑↓"));
     }
 
     #[test]
-    fn hard_breaks_words_longer_than_a_line() {
-        // A long path can't be moved to the next line whole.
-        assert_eq!(
-            wrap_text("src/preview/render.rs", 8),
-            vec!["src/prev", "iew/rend", "er.rs"]
-        );
-    }
-
-    #[test]
-    fn no_wrapped_line_exceeds_the_width() {
-        let text = "this note mentions src/list/session.rs and \
-                    a-very-long-hyphenated-identifier plus prose";
-        for width in [4, 7, 12, 20, 33] {
-            for line in wrap_text(text, width) {
-                assert!(
-                    line.width() <= width,
-                    "width {width}: {line:?} is {} cols",
-                    line.width()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn wrapping_preserves_every_word() {
-        let text = "the quick brown fox jumps over the lazy dog";
-        let joined = wrap_text(text, 11).join(" ");
-        let words: Vec<&str> = joined.split_whitespace().collect();
-        assert_eq!(words, text.split_whitespace().collect::<Vec<_>>());
-    }
-
-    /// The regression: a note longer than the box used to be drawn past the
-    /// bottom edge, hiding the caret and everything the user was typing.
-    #[test]
-    fn the_caret_stays_visible_however_long_the_note_gets() {
-        let (width, height) = (20, 4);
-        let mut input = String::new();
-        for _ in 0..200 {
-            input.push('x');
-            let shown = visible(&input, width, height);
-            assert!(shown.len() <= height, "drew {} lines", shown.len());
+    fn the_header_fits_its_width_even_with_a_long_anchor() {
+        let a = TextArea::new("x".repeat(500));
+        for width in [12u16, 20, 40, 72] {
+            let line = header_line(
+                "note for src/preview/render/very/deep/path/module.rs",
+                &a,
+                true,
+                true,
+                width,
+            );
             assert!(
-                shown.last().unwrap().contains(CARET),
-                "caret fell out of view at {} chars",
-                input.chars().count()
+                flat(&line).width() <= width as usize,
+                "width {width}: {:?}",
+                flat(&line)
             );
         }
     }
 
     #[test]
-    fn the_caret_rolls_onto_the_next_line_when_the_last_one_is_full() {
-        // "abcd" exactly fills width 4, so the caret needs a line of its own.
-        let lines = caret_lines("abcd", 4);
-        assert_eq!(lines, vec!["abcd".to_string(), CARET.to_string()]);
+    fn prefill_survives_newlines_and_backslashes() {
+        for original in [
+            "one line",
+            "two\nlines",
+            "trailing\n",
+            "\n\nblank lines\n\n",
+            r"a windows\path and a \n literal",
+            "",
+        ] {
+            let encoded = encode_prefill(original);
+            assert!(
+                !encoded.contains('\n'),
+                "{encoded:?} still has a raw newline"
+            );
+            assert_eq!(
+                decode_prefill(&encoded),
+                original,
+                "round trip {original:?}"
+            );
+        }
     }
 
     #[test]
-    fn a_degenerate_width_does_not_panic() {
-        assert_eq!(wrap_text("abc", 0), vec![String::new()]);
-        assert!(!caret_lines("abc", 1).is_empty());
+    fn decoding_a_stray_trailing_backslash_does_not_panic() {
+        assert_eq!(decode_prefill(r"ends with \"), r"ends with \");
+        assert_eq!(decode_prefill(r"\q unknown escape"), r"\q unknown escape");
     }
 
     #[test]
-    fn ctrl_w_deletes_the_trailing_word() {
-        let mut input = String::from("fix the parser bug");
-        delete_word(&mut input);
-        assert_eq!(input, "fix the parser ");
-        delete_word(&mut input);
-        assert_eq!(input, "fix the ");
+    fn the_caret_row_renders_the_character_under_the_caret() {
+        let mut input = TextArea::new("abc".into());
+        input.move_left(); // caret on 'c'
+        let rows = input.layout(10);
+        let line = render_row(&input, &rows[0], true);
+        // " ab" + reversed "c" + ""
+        assert_eq!(line.spans.len(), 3);
+        assert_eq!(line.spans[0].content, " ab");
+        assert_eq!(line.spans[1].content, "c");
+        assert!(
+            line.spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
     }
 
     #[test]
-    fn deleting_a_word_from_an_empty_or_blank_input_is_safe() {
-        let mut input = String::new();
-        delete_word(&mut input);
-        assert_eq!(input, "");
-        let mut input = String::from("   ");
-        delete_word(&mut input);
-        assert_eq!(input, "");
+    fn the_caret_at_the_end_renders_as_a_reversed_space() {
+        let input = TextArea::new("ab".into());
+        let rows = input.layout(10);
+        let line = render_row(&input, &rows[0], true);
+        assert_eq!(line.spans[1].content, " ");
     }
 
     #[test]
-    fn the_hint_reports_length_and_scrolling() {
-        assert_eq!(hint_text("", false), "enter save · esc cancel");
-        assert!(hint_text("abc", false).contains("3 chars"));
-        assert!(hint_text("abc", true).contains("↑ more"));
+    fn a_row_without_the_caret_renders_plainly() {
+        let input = TextArea::new("ab\ncd".into());
+        let rows = input.layout(10);
+        let line = render_row(&input, &rows[0], false);
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(line.spans[0].content, " ab");
     }
 }

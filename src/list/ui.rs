@@ -290,9 +290,9 @@ fn note_row(note: &crate::ipc::NoteMeta, width: u16) -> ListItem<'static> {
     } else {
         format!(" ▎ {}:{}-{}", note.file.display(), note.start, note.end)
     };
-    let text = &note.text;
+    let text = crate::ipc::one_line(&note.text);
     let avail = (width as usize).saturating_sub(anchor.width() + 3);
-    let text = elide_tail(text, avail);
+    let text = elide_tail(&text, avail);
     ListItem::new(Line::from(vec![
         Span::styled(anchor, Style::new().fg(Color::Yellow)),
         Span::styled(" · ".to_string(), dim()),

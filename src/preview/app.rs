@@ -279,10 +279,11 @@ impl PreviewApp {
                     } else {
                         built.line_for_new(n.end).map(|l| l + 1).unwrap_or(0)
                     };
+                    let text = crate::ipc::one_line(&n.text);
                     let label = if n.end == 0 {
-                        format!("          ▎ note · {}", n.text)
+                        format!("          ▎ note · {text}")
                     } else {
-                        format!("          ▎ {}-{} · {}", n.start, n.end, n.text)
+                        format!("          ▎ {}-{} · {text}", n.start, n.end)
                     };
                     (line, label)
                 })

@@ -383,7 +383,10 @@ impl Session {
         if let Some((id, current)) = self.app.edit_note_request.take() {
             let envs = [
                 ("GITVIEW_ASK_TEXT".to_string(), "edit note".to_string()),
-                ("GITVIEW_PREFILL".to_string(), current.clone()),
+                (
+                    "GITVIEW_PREFILL".to_string(),
+                    crate::annotate::encode_prefill(&current),
+                ),
             ];
             if !self.popups.open(
                 &self.env,
