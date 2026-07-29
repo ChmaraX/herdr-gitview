@@ -183,3 +183,133 @@ fn narrow_footer_drops_tail_hints_but_keeps_help() {
     let above: String = (0..30).map(|x| buf[(x, H - 2)].symbol()).collect();
     assert!(!above.contains("help"), "no wrapping: {above:?}");
 }
+
+// ---- the notes panel -------------------------------------------------------
+
+fn note(id: u64, file: &str, start: u32, end: u32, text: &str) -> herdr_gitview::ipc::NoteMeta {
+    herdr_gitview::ipc::NoteMeta {
+        id,
+        file: PathBuf::from(file),
+        start,
+        end,
+        text: text.to_string(),
+        cached: false,
+    }
+}
+
+fn notes_app(notes: Vec<herdr_gitview::ipc::NoteMeta>) -> App {
+    let mut app = app_with(vec![]);
+    app.notes = notes;
+    app.toggle_notes_view();
+    app
+}
+
+#[test]
+fn notes_are_grouped_under_a_heading_per_file() {
+    let mut app = notes_app(vec![
+        note(1, "src/a.rs", 12, 20, "first note"),
+        note(2, "src/b.rs", 3, 3, "other file"),
+        note(3, "src/a.rs", 44, 44, "second note on a"),
+    ]);
+    let buf = draw(&mut app);
+    let body: Vec<String> = (1..H - 1).map(|y| row_text(&buf, y)).collect();
+    let joined = body.join("\n");
+
+    // One heading per file, with its own count, notes gathered under it.
+    assert!(joined.contains("SRC/A.RS"), "{joined}");
+    assert!(joined.contains("SRC/B.RS"), "{joined}");
+    let a_head = body.iter().position(|l| l.contains("SRC/A.RS")).unwrap();
+    let b_head = body.iter().position(|l| l.contains("SRC/B.RS")).unwrap();
+    assert!(body[a_head].contains('2'), "a.rs count: {:?}", body[a_head]);
+    assert!(body[b_head].contains('1'), "b.rs count: {:?}", body[b_head]);
+    // Both of a.rs's notes precede b.rs's heading.
+    assert!(
+        body[a_head..b_head]
+            .iter()
+            .any(|l| l.contains("first note"))
+    );
+    assert!(
+        body[a_head..b_head]
+            .iter()
+            .any(|l| l.contains("second note on a"))
+    );
+}
+
+#[test]
+fn a_note_draws_its_anchor_and_text_on_separate_lines() {
+    let mut app = notes_app(vec![note(1, "src/a.rs", 12, 20, "prefer a named constant")]);
+    let buf = draw(&mut app);
+    let body: Vec<String> = (1..H - 1).map(|y| row_text(&buf, y)).collect();
+
+    let anchor = body.iter().position(|l| l.contains("lines 12-20")).unwrap();
+    assert!(
+        body[anchor + 1].contains("prefer a named constant"),
+        "text should be on its own line: {:?}",
+        body[anchor + 1]
+    );
+}
+
+#[test]
+fn a_single_line_and_whole_file_note_read_naturally() {
+    let mut app = notes_app(vec![
+        note(1, "a.rs", 7, 7, "one line"),
+        note(2, "b.rs", 0, 0, "the whole thing"),
+    ]);
+    let buf = draw(&mut app);
+    let joined: String = (1..H - 1).map(|y| row_text(&buf, y)).collect();
+    assert!(joined.contains("line 7"), "{joined}");
+    assert!(!joined.contains("lines 7-7"), "{joined}");
+    assert!(joined.contains("whole file"), "{joined}");
+}
+
+#[test]
+fn the_headings_are_skipped_when_moving_and_clicking() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = notes_app(vec![
+        note(1, "src/a.rs", 1, 1, "one"),
+        note(2, "src/b.rs", 2, 2, "two"),
+    ]);
+    draw(&mut app);
+
+    // The cursor lands on the first *note*, not the heading above it.
+    assert_eq!(app.selected_note().map(|n| n.id), Some(1));
+    app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    assert_eq!(
+        app.selected_note().map(|n| n.id),
+        Some(2),
+        "skips the heading"
+    );
+
+    // A click hit-tests through the two-line note rows: body line 0 is the
+    // first heading, 1-2 the first note, 3 the second heading, 4-5 the second.
+    assert_eq!(app.row_at(1), app.row_at(2), "both lines select one note");
+    app.on_mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        3, // +1 for the header band
+    );
+    assert_eq!(app.selected_note().map(|n| n.id), Some(1));
+    app.on_mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        6,
+    );
+    assert_eq!(app.selected_note().map(|n| n.id), Some(2));
+}
+
+#[test]
+fn a_long_note_is_elided_rather_than_overflowing() {
+    let mut app = notes_app(vec![note(1, "a.rs", 1, 1, &"very long note ".repeat(20))]);
+    let buf = draw(&mut app);
+    for y in 1..H - 1 {
+        assert!(row_text(&buf, y).chars().count() as u16 <= W);
+    }
+    let joined: String = (1..H - 1).map(|y| row_text(&buf, y)).collect();
+    assert!(joined.contains('…'), "expected an elision marker");
+}
+
+#[test]
+fn a_multi_line_note_collapses_to_one_line_in_the_panel() {
+    let mut app = notes_app(vec![note(1, "a.rs", 1, 1, "first\nsecond")]);
+    let buf = draw(&mut app);
+    let joined: String = (1..H - 1).map(|y| row_text(&buf, y)).collect();
+    assert!(joined.contains("first ⏎ second"), "{joined}");
+}

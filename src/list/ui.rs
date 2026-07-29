@@ -13,6 +13,7 @@ use super::App;
 use super::app::{ListRow, Modal, Mode};
 use crate::git::{ChangeKind, CommitInfo, FileEntry, Scope, StageState};
 use crate::keymap::Action;
+use crate::textarea::elide_tail;
 
 /// Actions shown in the help overlay, in a sensible reading order.
 const HELP_ACTIONS: &[(Action, &str)] = &[
@@ -210,6 +211,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
                 Some(c) => commit_row(c, area.width),
                 None => ListItem::new(""),
             },
+            ListRow::NoteFile { name, count } => note_file_row(name, *count, area.width),
             ListRow::Note(idx) => match app.notes.get(*idx) {
                 Some(n) => note_row(n, area.width),
                 None => ListItem::new(""),
@@ -283,21 +285,45 @@ fn entry_row(entry: &FileEntry, width: u16, grouped: bool, depth: usize) -> List
     ListItem::new(Line::from(spans))
 }
 
-/// One note row: `▎ file:12-20 · text`.
+/// A file heading in the notes view: `▾ SRC/LIST/APP.RS  2`, matching the
+/// section headers in the files view.
+fn note_file_row(name: &str, count: usize, width: u16) -> ListItem<'static> {
+    let name = elide_tail(&name.to_uppercase(), (width as usize).saturating_sub(7));
+    ListItem::new(Line::from(vec![
+        Span::styled(
+            format!(" ▾ {name}"),
+            Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  {count}"), dim()),
+    ]))
+}
+
+/// One note, drawn as two lines so the text gets a line of its own:
+///
+/// ```text
+///   ▎ lines 12-20
+///     the note text, elided if it runs long
+/// ```
 fn note_row(note: &crate::ipc::NoteMeta, width: u16) -> ListItem<'static> {
     let anchor = if note.end == 0 {
-        format!(" ▎ {}", note.file.display())
+        "whole file".to_string()
+    } else if note.start == note.end {
+        format!("line {}", note.start)
     } else {
-        format!(" ▎ {}:{}-{}", note.file.display(), note.start, note.end)
+        format!("lines {}-{}", note.start, note.end)
     };
     let text = crate::ipc::one_line(&note.text);
-    let avail = (width as usize).saturating_sub(anchor.width() + 3);
-    let text = elide_tail(&text, avail);
-    ListItem::new(Line::from(vec![
-        Span::styled(anchor, Style::new().fg(Color::Yellow)),
-        Span::styled(" · ".to_string(), dim()),
-        Span::raw(text),
-    ]))
+    let text = elide_tail(&text, (width as usize).saturating_sub(6));
+    ListItem::new(vec![
+        Line::from(Span::styled(
+            format!("   ▎ {anchor}"),
+            Style::new().fg(Color::Yellow),
+        )),
+        Line::from(vec![
+            Span::styled("   ▎ ".to_string(), Style::new().fg(Color::Yellow)),
+            Span::raw(text),
+        ]),
+    ])
 }
 
 /// One commit row: `<short> <subject>  <date>`.
@@ -392,28 +418,6 @@ fn elide_head(s: &str, max: usize) -> String {
     kept.reverse();
     let tail: String = kept.into_iter().collect();
     format!("…{tail}")
-}
-
-/// Right-truncate to `max` display columns, suffixing `…` when cut.
-fn elide_tail(s: &str, max: usize) -> String {
-    if s.width() <= max {
-        return s.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let budget = max - 1;
-    let mut acc = 0;
-    let mut kept = String::new();
-    for ch in s.chars() {
-        let cw = ch.width().unwrap_or(0);
-        if acc + cw > budget {
-            break;
-        }
-        acc += cw;
-        kept.push(ch);
-    }
-    format!("{kept}…")
 }
 
 // ---- footer ---------------------------------------------------------------

@@ -5,6 +5,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Review notes look like review comments now (shape borrowed from
+  [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr)):
+  - In the diff, a note is a boxed card spliced under the line it comments
+    on — `╭─ note · lines 12-20 ─╮` with the text wrapped inside — instead of
+    a single truncated row. Multi-line notes keep their lines inside one box,
+    and the cards re-box themselves when the pane is resized.
+  - A commented line's number is accented in the gutter, so an annotated
+    line stays recognizable after its card scrolls out of view.
+  - The notes panel groups notes under a heading per file and gives each
+    note two lines — its anchor (`lines 12-20`, `line 7`, `whole file`) and
+    its text — rather than one crowded row.
+
 ### Fixed
 
 - The diff pane now shows where you are. The cursor line had a tint so

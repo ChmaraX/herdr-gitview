@@ -42,7 +42,9 @@ https://github.com/user-attachments/assets/1cfdf22a-fc5a-40e2-af6c-546156d05c3b
   there).
 - **Review notes to any agent** - select diff lines, annotate, and send the
   batch into the input of any agent pane you pick in the workspace. It types;
-  you decide when to press enter. The note editor is a wrapping text area:
+  you decide when to press enter. Notes show as boxed cards under the lines
+  they comment on, with the commented line accented in the gutter, and the
+  notes panel groups them per file. The note editor is a wrapping text area:
   `shift+enter` (or `ctrl+j`) for a new line, arrows/`home`/`end` to move
   around, `ctrl+w` to drop a word.
   <img width="1539" height="778" alt="image" src="https://github.com/user-attachments/assets/23ee0639-4a6e-42c5-a003-6e71ab619c43" />

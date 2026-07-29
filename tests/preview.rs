@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use unicode_width::UnicodeWidthStr;
 
 use herdr_gitview::config::Config;
 use herdr_gitview::git::{ChangeKind, Repo, Scope};
@@ -287,4 +288,152 @@ fn the_header_reports_the_cursor_line_not_the_scroll_offset() {
     let header = row(&draw(&mut a), 0);
     assert!(header.contains("ln 6"), "header: {header:?}");
     assert_eq!(a.cursor_file_line(), Some(6));
+}
+
+// ---- note cards in the diff ------------------------------------------------
+
+fn note(id: u64, start: u32, end: u32, text: &str) -> herdr_gitview::preview::app::Note {
+    herdr_gitview::preview::app::Note {
+        id,
+        file: PathBuf::from("f.txt"),
+        start,
+        end,
+        text: text.to_string(),
+        snippet: String::new(),
+        cached: false,
+    }
+}
+
+/// A diff with `n` inserted lines plus the given notes, rendered once.
+fn app_with_notes(notes: Vec<herdr_gitview::preview::app::Note>) -> PreviewApp {
+    let mut a = app();
+    let r = req("f.txt");
+    a.begin_show(r.clone());
+    a.apply_diff(&r, Ok(fake_diff(10)));
+    a.notes = notes;
+    a.apply_diff(&r, Ok(fake_diff(10))); // re-sync the doc with the notes
+    draw(&mut a);
+    a
+}
+
+#[test]
+fn a_note_renders_as_a_boxed_card_under_its_line() {
+    let mut a = app_with_notes(vec![note(1, 3, 3, "use a constant")]);
+    let buf = draw(&mut a);
+    let body: Vec<String> = (1..H - 1).map(|y| row(&buf, y)).collect();
+
+    let top = body
+        .iter()
+        .position(|l| l.contains('╭'))
+        .expect("no card top");
+    assert!(
+        body[top].contains("note · line 3"),
+        "title: {:?}",
+        body[top]
+    );
+    assert!(
+        body[top + 1].contains("use a constant"),
+        "body: {:?}",
+        body[top + 1]
+    );
+    assert!(
+        body[top + 2].contains('╰'),
+        "no card bottom: {:?}",
+        body[top + 2]
+    );
+    // The card sits *under* the line it comments on.
+    assert!(
+        body[top - 1].contains("line 2"),
+        "anchor: {:?}",
+        body[top - 1]
+    );
+}
+
+#[test]
+fn a_multi_line_note_keeps_its_lines_inside_one_card() {
+    let mut a = app_with_notes(vec![note(1, 2, 2, "first thought\nsecond thought")]);
+    let buf = draw(&mut a);
+    let body: Vec<String> = (1..H - 1).map(|y| row(&buf, y)).collect();
+
+    let top = body.iter().position(|l| l.contains('╭')).expect("no card");
+    assert!(body[top + 1].contains("first thought"));
+    assert!(body[top + 2].contains("second thought"));
+    assert!(body[top + 3].contains('╰'), "one box around both lines");
+    // ...and exactly one box.
+    assert_eq!(body.iter().filter(|l| l.contains('╭')).count(), 1);
+}
+
+#[test]
+fn an_empty_note_still_draws_a_box() {
+    let mut a = app_with_notes(vec![note(1, 2, 2, "")]);
+    let buf = draw(&mut a);
+    let body: Vec<String> = (1..H - 1).map(|y| row(&buf, y)).collect();
+    let top = body.iter().position(|l| l.contains('╭')).expect("no card");
+    assert!(body[top + 1].contains('│'));
+    assert!(body[top + 2].contains('╰'));
+}
+
+#[test]
+fn the_commented_line_gets_an_accented_gutter() {
+    let mut a = app_with_notes(vec![note(1, 4, 4, "look here")]);
+    let buf = draw(&mut a);
+    // Find the row for new-line 4 and check its line-number cell is accented.
+    let y = (1..H - 1)
+        .find(|y| row(&buf, *y).contains("line 3")) // "line 3" is new-file line 4
+        .expect("anchor row not visible");
+    let accented = (0..8).any(|x| buf[(x, y)].style().fg == Some(ratatui::style::Color::Yellow));
+    assert!(accented, "gutter of the commented line is not accented");
+    // An uncommented row is not accented.
+    let other = (1..H - 1)
+        .find(|y| row(&buf, *y).contains("line 6"))
+        .expect("other row");
+    assert!(!(0..8).any(|x| buf[(x, other)].style().fg == Some(ratatui::style::Color::Yellow)));
+}
+
+#[test]
+fn multi_line_cards_do_not_break_the_line_number_mapping() {
+    // Every card line must be excluded from the doc→source mapping, or the
+    // header and note anchors drift once a card is more than one line tall.
+    let mut a = app_with_notes(vec![
+        note(1, 2, 2, "one\ntwo\nthree"),
+        note(2, 5, 5, "another\nmulti-line note"),
+    ]);
+    draw(&mut a);
+
+    // Walk the whole doc: every line is either a card line (no source line)
+    // or maps to a source line, and the source lines only ever increase.
+    let mut last = 0;
+    for i in 0..a.doc.lines.len() {
+        a.cursor_line = i;
+        if let Some(no) = a.cursor_file_line() {
+            assert!(no >= last, "line numbers went backwards at doc line {i}");
+            last = no;
+        }
+    }
+    assert_eq!(last, 10, "should reach the last line of the file");
+}
+
+#[test]
+fn cards_are_re_boxed_when_the_pane_width_changes() {
+    let mut a = app_with_notes(vec![note(1, 2, 2, "a note that is long enough to wrap")]);
+    let wide = draw(&mut a);
+    let wide_top = (1..H - 1)
+        .map(|y| row(&wide, y))
+        .find(|l| l.contains('╭'))
+        .expect("no card");
+
+    // Redraw into a narrower terminal.
+    let mut term = Terminal::new(TestBackend::new(34, H)).unwrap();
+    term.draw(|f| ui::render(f, &mut a)).unwrap();
+    let narrow = term.backend().buffer().clone();
+    let narrow_top = (1..H - 1)
+        .map(|y| (0..34).map(|x| narrow[(x, y)].symbol()).collect::<String>())
+        .find(|l| l.contains('╭'))
+        .expect("no card when narrow");
+
+    assert!(narrow_top.trim_end().width() < wide_top.trim_end().width());
+    assert!(
+        narrow_top.contains('╮'),
+        "the box must still close: {narrow_top:?}"
+    );
 }

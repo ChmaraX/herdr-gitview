@@ -18,10 +18,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::popup::write_answer;
-use crate::textarea::TextArea;
+use crate::textarea::{TextArea, elide_tail};
 
 /// Popup size for the note input, shared by every caller so the wrapping
 /// width is predictable. Tall enough for a few sentences; longer notes
@@ -194,27 +194,6 @@ fn header_line(
         Span::raw(" ".repeat(pad)),
         Span::styled(meta, Style::new().add_modifier(Modifier::DIM)),
     ])
-}
-
-/// Right-truncate to `max` display columns, suffixing `…` when cut.
-fn elide_tail(s: &str, max: usize) -> String {
-    if s.width() <= max {
-        return s.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let mut acc = 0;
-    let mut kept = String::new();
-    for ch in s.chars() {
-        let cw = ch.width().unwrap_or(0);
-        if acc + cw > max - 1 {
-            break;
-        }
-        acc += cw;
-        kept.push(ch);
-    }
-    format!("{kept}…")
 }
 
 /// Newlines can't ride in a herdr `--env` value, so they travel as `\n`.

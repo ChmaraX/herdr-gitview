@@ -18,6 +18,10 @@ use crate::keymap::{Action, Keymap};
 /// a 100k-line diff can't stall the render loop.
 const MAX_LINES: usize = 20_000;
 
+/// Floor for the note-card width, so a card still has a shape before the
+/// first draw has reported the real pane width.
+const MIN_CARD_WIDTH: u16 = 24;
+
 /// The fields of a `ToPreview::Show`, kept together so we can compare the
 /// request that produced a diff against the one currently selected (stale
 /// results from the worker are dropped when they differ).
@@ -86,6 +90,8 @@ pub struct PreviewApp {
     pub scroll: u16,
     /// Last body height, remembered so Page math is viewport-aware.
     pub viewport_h: u16,
+    /// Body width of the last draw; note cards are boxed to it.
+    pub viewport_w: u16,
 
     /// Branch-scope base ref, resolved once for the header.
     pub base: Option<String>,
@@ -113,6 +119,9 @@ pub struct PreviewApp {
     shown_file: Option<PathBuf>,
     /// Rendered indices of injected note-card lines (excluded from ranges).
     card_lines: Vec<usize>,
+    /// The first doc line of each note's card, in the same rank order the
+    /// cards were injected (used to scroll a note into view).
+    card_starts: Vec<usize>,
     /// Note id to scroll to once its file's diff arrives (notes view hover).
     pending_focus: Option<u64>,
     /// Bumped on every note mutation; the run loop broadcasts on change.
@@ -142,6 +151,7 @@ impl PreviewApp {
             truncated: 0,
             scroll: 0,
             viewport_h: 0,
+            viewport_w: 0,
             base: None,
             cursor_line: 0,
             select_anchor: None,
@@ -153,6 +163,7 @@ impl PreviewApp {
             saved_tint: Vec::new(),
             shown_file: None,
             card_lines: Vec::new(),
+            card_starts: Vec::new(),
             pending_focus: None,
             notes_rev: 0,
             next_note_id: 1,
@@ -264,53 +275,59 @@ impl PreviewApp {
         };
         let mut doc = built.text.clone();
 
-        // Note cards: `▎ 12-20 · note text`, inserted bottom-up so earlier
-        // insertions don't shift later anchors.
+        // Note cards: a boxed block spliced in under the anchor line, so a
+        // note reads as a comment on the code rather than another diff row.
+        // Each card is 1+ lines, so the index bookkeeping below tracks every
+        // line it occupies (`card_lines`) plus where each card starts
+        // (`card_starts`, indexed by note rank for `scroll_to_note`).
         self.card_lines.clear();
+        self.card_starts.clear();
         if let Some(req) = &self.current {
-            let card_style = Style::new().fg(Color::Yellow);
-            let mut anchored: Vec<(usize, String)> = self
+            let width = self.viewport_w.max(MIN_CARD_WIDTH) as usize;
+            let mut cards: Vec<(usize, Vec<Line<'static>>)> = self
                 .notes
                 .iter()
                 .filter(|n| n.file == req.file)
                 .map(|n| {
-                    let line = if n.end == 0 {
+                    let anchor = if n.end == 0 {
                         0
                     } else {
                         built.line_for_new(n.end).map(|l| l + 1).unwrap_or(0)
                     };
-                    let text = crate::ipc::one_line(&n.text);
                     let label = if n.end == 0 {
-                        format!("          ▎ note · {text}")
+                        "note · whole file".to_string()
+                    } else if n.start == n.end {
+                        format!("note · line {}", n.start)
                     } else {
-                        format!("          ▎ {}-{} · {text}", n.start, n.end)
+                        format!("note · lines {}-{}", n.start, n.end)
                     };
-                    (line, label)
+                    (anchor, note_card(&label, &n.text, width, self.cfg.theme))
                 })
                 .collect();
-            anchored.sort_by_key(|(line, _)| std::cmp::Reverse(*line));
-            for (line, label) in anchored {
-                let at = line.min(doc.lines.len());
-                doc.lines
-                    .insert(at, Line::from(Span::styled(label, card_style)));
+            // Accent the gutter of every commented line *before* anything is
+            // spliced in, while the anchors still index the unshifted doc, so
+            // a line with a note is recognizable once its card scrolls away.
+            for (anchor, _) in &cards {
+                if *anchor > 0 {
+                    accent_gutter(&mut doc.lines, anchor - 1, built);
+                }
             }
-            // Recompute card indices top-down for range math.
-            let mut cards: Vec<(usize, String)> = self
-                .notes
-                .iter()
-                .filter(|n| n.file == req.file)
-                .map(|n| {
-                    let line = if n.end == 0 {
-                        0
-                    } else {
-                        built.line_for_new(n.end).map(|l| l + 1).unwrap_or(0)
-                    };
-                    (line, String::new())
-                })
-                .collect();
-            cards.sort_by_key(|(l, _)| *l);
-            for (shift, (line, _)) in cards.into_iter().enumerate() {
-                self.card_lines.push(line + shift);
+            // Ascending by anchor (stable, so notes on one line keep their
+            // order), then spliced in from the bottom up so an insertion
+            // never shifts an anchor that hasn't been used yet.
+            cards.sort_by_key(|(anchor, _)| *anchor);
+            for (anchor, lines) in cards.iter().rev() {
+                let at = (*anchor).min(doc.lines.len());
+                doc.lines.splice(at..at, lines.iter().cloned());
+            }
+            // Then top-down for the index math: each card sits after every
+            // card already spliced in above it.
+            let mut shift = 0usize;
+            for (anchor, lines) in &cards {
+                let start = anchor + shift;
+                self.card_starts.push(start);
+                self.card_lines.extend(start..start + lines.len());
+                shift += lines.len();
             }
         }
 
@@ -380,8 +397,16 @@ impl PreviewApp {
 
     // ---- scrolling --------------------------------------------------------
 
-    pub fn set_viewport(&mut self, h: u16) {
+    /// Record the body size of the current draw. A width change re-boxes the
+    /// note cards, so they always match the pane they are drawn in.
+    pub fn set_viewport(&mut self, w: u16, h: u16) {
         self.viewport_h = h;
+        if self.viewport_w != w {
+            self.viewport_w = w;
+            if matches!(self.state, State::Diff) {
+                self.rebuild();
+            }
+        }
         self.clamp_scroll();
     }
 
@@ -748,7 +773,7 @@ impl PreviewApp {
             .collect();
         same.sort_by_key(|(a, _)| *a);
         if let Some(rank) = same.iter().position(|(_, i)| *i == idx)
-            && let Some(&line) = self.card_lines.get(rank)
+            && let Some(&line) = self.card_starts.get(rank)
         {
             self.scroll = (line.saturating_sub(3)) as u16;
             self.clamp_scroll();
@@ -769,4 +794,96 @@ impl PreviewApp {
             _ => None,
         }
     }
+}
+
+/// Recolor the line-number cell of a commented row so it reads as annotated
+/// even when its card is off-screen. The number is the first span on a
+/// context row and the second on a `+`/`-` row (whose first span is the
+/// change bar), which the row's old/new numbers identify.
+fn accent_gutter(lines: &mut [Line<'static>], idx: usize, built: &crate::preview::render::DiffDoc) {
+    let Some((old, new)) = built.numbers_of_line(idx) else {
+        return; // a fold row has no line number to accent
+    };
+    let span_idx = match (old, new) {
+        (Some(_), Some(_)) => 0, // context: " 1234 "
+        _ => 1,                  // insertion/deletion: "▌" then "1234 "
+    };
+    if let Some(span) = lines.get_mut(idx).and_then(|l| l.spans.get_mut(span_idx)) {
+        span.style = span.style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    }
+}
+
+/// One review note as a boxed block of display lines, spliced into the diff
+/// under the line it comments on:
+///
+/// ```text
+///   ╭─ note · lines 12-20 ────────────╮
+///   │ the note text, wrapped to fit   │
+///   ╰─────────────────────────────────╯
+/// ```
+///
+/// Indented so it reads as a comment *on* the code rather than another diff
+/// row, and boxed so a multi-line note stays visually one note.
+fn note_card(
+    label: &str,
+    text: &str,
+    width: usize,
+    theme: crate::config::Theme,
+) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthStr;
+
+    const INDENT: usize = 4;
+    let box_w = width.saturating_sub(INDENT).max(MIN_CARD_WIDTH as usize);
+    let text_w = box_w.saturating_sub(4).max(1); // inside "│ " … " │"
+    let border = Style::new().fg(if theme.is_light() {
+        Color::Rgb(0x9a, 0xa0, 0xa6)
+    } else {
+        Color::Rgb(0x6c, 0x70, 0x86)
+    });
+    let title = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let body = Style::new().fg(if theme.is_light() {
+        Color::Rgb(0x4c, 0x4f, 0x69)
+    } else {
+        Color::Rgb(0xcd, 0xd6, 0xf4)
+    });
+    let pad = || Span::raw(" ".repeat(INDENT));
+
+    let label = format!(" {label} ");
+    let label = crate::textarea::elide_tail(&label, box_w.saturating_sub(3));
+    let fill = box_w.saturating_sub(3 + label.width());
+    let mut lines = vec![Line::from(vec![
+        pad(),
+        Span::styled("╭─", border),
+        Span::styled(label, title),
+        Span::styled(format!("{}╮", "─".repeat(fill)), border),
+    ])];
+
+    // An empty note still gets one body row, so the box never collapses.
+    let mut rows = 0;
+    for logical in text.split('\n') {
+        for piece in crate::textarea::wrap_plain(logical, text_w) {
+            let gap = " ".repeat(text_w.saturating_sub(piece.width()));
+            lines.push(Line::from(vec![
+                pad(),
+                Span::styled("│ ", border),
+                Span::styled(piece, body),
+                Span::styled(format!("{gap} │"), border),
+            ]));
+            rows += 1;
+        }
+    }
+    if rows == 0 {
+        lines.push(Line::from(vec![
+            pad(),
+            Span::styled("│ ", border),
+            Span::raw(" ".repeat(text_w)),
+            Span::styled(" │", border),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        pad(),
+        Span::styled(format!("╰{}╯", "─".repeat(box_w.saturating_sub(2))), border),
+    ]));
+    lines
 }

@@ -207,6 +207,39 @@ impl TextArea {
     }
 }
 
+/// Right-truncate `s` to `max` display columns, marking a cut with a
+/// trailing `…`. Shared by every pane that has to fit text into a fixed
+/// width.
+pub fn elide_tail(s: &str, max: usize) -> String {
+    if s.width() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut kept = String::new();
+    let mut acc = 0;
+    for ch in s.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if acc + cw > max - 1 {
+            break;
+        }
+        acc += cw;
+        kept.push(ch);
+    }
+    format!("{kept}…")
+}
+
+/// Word-wrap one logical line to `width` columns, hard-breaking anything
+/// that cannot fit. Always yields at least one (possibly empty) row.
+pub fn wrap_plain(text: &str, width: usize) -> Vec<String> {
+    let area = TextArea::new(text.to_string());
+    area.layout(width)
+        .into_iter()
+        .map(|r| area.text()[r].trim_end().to_string())
+        .collect()
+}
+
 /// Wrap one logical line (`range`) into `rows`, breaking before a word that
 /// doesn't fit and hard-breaking words longer than the whole width. Emits at
 /// least one row, so empty lines survive.
@@ -273,6 +306,25 @@ mod tests {
     }
 
     // ---- layout -----------------------------------------------------------
+
+    #[test]
+    fn elide_tail_marks_a_cut_and_fits_the_width() {
+        assert_eq!(elide_tail("short", 10), "short");
+        assert_eq!(elide_tail("truncate me", 6), "trunc…");
+        assert_eq!(elide_tail("x", 0), "");
+        for max in 1..12 {
+            assert!(elide_tail("a longer string here", max).width() <= max);
+        }
+    }
+
+    #[test]
+    fn wrap_plain_splits_and_trims() {
+        assert_eq!(
+            wrap_plain("the quick brown fox", 10),
+            vec!["the quick", "brown fox"]
+        );
+        assert_eq!(wrap_plain("", 10), vec![""]);
+    }
 
     #[test]
     fn empty_text_is_one_empty_row() {

@@ -59,12 +59,27 @@ pub enum ListRow {
         depth: usize,
     },
     Commit(usize),
+    /// A file heading in the notes view (not selectable).
+    NoteFile {
+        name: String,
+        count: usize,
+    },
     Note(usize),
 }
 
 impl ListRow {
     pub fn selectable(&self) -> bool {
-        !matches!(self, ListRow::Header { .. })
+        !matches!(self, ListRow::Header { .. } | ListRow::NoteFile { .. })
+    }
+
+    /// How many terminal rows this entry draws as. Notes are two lines (an
+    /// anchor line plus their text), everything else is one — the list's
+    /// scroll offset and click hit-testing both need this.
+    pub fn height(&self) -> usize {
+        match self {
+            ListRow::Note(_) => 2,
+            _ => 1,
+        }
     }
 }
 
@@ -272,12 +287,39 @@ impl App {
     pub fn rebuild_rows(&mut self) {
         self.rows = match self.mode {
             Mode::Log => (0..self.commits.len()).map(ListRow::Commit).collect(),
-            Mode::Notes => (0..self.notes.len()).map(ListRow::Note).collect(),
+            Mode::Notes => self.note_rows(),
             Mode::CommitFiles => self.flat_tree_rows(),
             Mode::Files if self.scope == Scope::Branch => self.flat_tree_rows(),
             Mode::Files => self.grouped_rows(),
         };
         self.snap_cursor();
+    }
+
+    /// Notes grouped under a header per file, in first-seen order, so a
+    /// review of several files reads as a review rather than a flat list.
+    fn note_rows(&self) -> Vec<ListRow> {
+        let mut rows = Vec::new();
+        let mut seen: Vec<&std::path::Path> = Vec::new();
+        for note in &self.notes {
+            if !seen.contains(&note.file.as_path()) {
+                seen.push(note.file.as_path());
+            }
+        }
+        for file in seen {
+            let idxs: Vec<usize> = self
+                .notes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| n.file == file)
+                .map(|(i, _)| i)
+                .collect();
+            rows.push(ListRow::NoteFile {
+                name: file.display().to_string(),
+                count: idxs.len(),
+            });
+            rows.extend(idxs.into_iter().map(ListRow::Note));
+        }
+        rows
     }
 
     /// One tree spanning every entry, unsectioned (Branch scope, CommitFiles).
@@ -517,7 +559,9 @@ impl App {
             MouseEventKind::ScrollDown => self.move_cursor(1),
             MouseEventKind::ScrollUp => self.move_cursor(-1),
             MouseEventKind::Down(MouseButton::Left) if y >= 1 => {
-                let idx = self.list_offset + (y - 1) as usize;
+                let Some(idx) = self.row_at(y - 1) else {
+                    return false;
+                };
                 if self.rows.get(idx).map(ListRow::selectable).unwrap_or(false) {
                     self.cursor = idx;
                     // A single click on a directory row toggles its collapse
@@ -540,6 +584,20 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    /// The row index drawn at body line `offset_y` (0 = the first visible
+    /// line). Walks the visible rows' heights, since a note draws as two
+    /// lines — a click on either of them selects that note.
+    pub fn row_at(&self, offset_y: u16) -> Option<usize> {
+        let mut y = 0usize;
+        for idx in self.list_offset..self.rows.len() {
+            y += self.rows[idx].height();
+            if (offset_y as usize) < y {
+                return Some(idx);
+            }
+        }
+        None
     }
 
     // ---- history view -----------------------------------------------------

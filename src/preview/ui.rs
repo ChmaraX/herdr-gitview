@@ -22,7 +22,7 @@ pub fn render(frame: &mut Frame, app: &mut PreviewApp) {
     ])
     .split(area);
 
-    app.set_viewport(chunks[1].height);
+    app.set_viewport(chunks[1].width, chunks[1].height);
 
     render_header(frame, chunks[0], app);
     render_body(frame, chunks[1], app);
