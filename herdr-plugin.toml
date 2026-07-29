@@ -24,12 +24,6 @@ placement = "overlay"
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" ask"]
 
 [[panes]]
-id = "annotate"
-title = "gitview: note"
-placement = "overlay"
-command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/herdr/run.sh\" annotate"]
-
-[[panes]]
 id = "pick-agent"
 title = "gitview: send to agent"
 placement = "overlay"

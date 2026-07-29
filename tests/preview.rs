@@ -587,3 +587,174 @@ fn a_selection_spanning_a_card_leaves_the_card_untinted() {
     }
     assert!(saw_card, "the card should be inside the selected range");
 }
+
+// ---- the inline composer ---------------------------------------------------
+
+fn key(a: &mut PreviewApp, code: KeyCode, mods: KeyModifiers) {
+    a.on_key(KeyEvent::new(code, mods));
+}
+
+fn type_text(a: &mut PreviewApp, text: &str) {
+    for ch in text.chars() {
+        key(a, KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+}
+
+fn body_lines(buf: &Buffer) -> Vec<String> {
+    (1..H - 1).map(|y| row(buf, y)).collect()
+}
+
+/// An app showing a diff, with the cursor moved down `n` lines.
+fn app_at(n: usize) -> PreviewApp {
+    let mut a = app_with_notes(vec![]);
+    for _ in 0..n {
+        press(&mut a, 'j');
+    }
+    a
+}
+
+#[test]
+fn annotate_opens_the_composer_inline_under_the_line() {
+    let mut a = app_at(2);
+    press(&mut a, 'a');
+    assert!(a.composer.is_some(), "no composer");
+    let buf = draw(&mut a);
+    let body = body_lines(&buf);
+    let top = body.iter().position(|l| l.contains('╭')).expect("no box");
+    assert!(
+        body[top].contains("new note · line 3"),
+        "title: {:?}",
+        body[top]
+    );
+    // ...directly under the line being commented on.
+    assert!(
+        body[top - 1].contains("line 2"),
+        "anchor: {:?}",
+        body[top - 1]
+    );
+}
+
+#[test]
+fn typing_in_the_composer_grows_the_box_and_saves_on_enter() {
+    let mut a = app_at(1);
+    press(&mut a, 'a');
+    type_text(&mut a, "first");
+    key(&mut a, KeyCode::Char('j'), KeyModifiers::CONTROL); // newline
+    type_text(&mut a, "second");
+
+    let body = body_lines(&draw(&mut a));
+    assert!(body.iter().any(|l| l.contains("first")));
+    assert!(body.iter().any(|l| l.contains("second")));
+
+    key(&mut a, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(a.composer.is_none(), "composer should close");
+    assert_eq!(a.notes.len(), 1);
+    assert_eq!(a.notes[0].text, "first\nsecond");
+    // The saved note's card stands where the composer was.
+    let body = body_lines(&draw(&mut a));
+    assert!(body.iter().any(|l| l.contains("note · line")));
+}
+
+#[test]
+fn every_key_reaches_the_composer_instead_of_the_keymap() {
+    let mut a = app_at(1);
+    press(&mut a, 'a');
+    // j/k/q/v/d would all be actions outside the composer.
+    type_text(&mut a, "jkqvd note");
+    assert_eq!(
+        a.composer.as_ref().map(|c| c.input.text().to_string()),
+        Some("jkqvd note".to_string())
+    );
+    assert!(!a.should_quit, "q must not quit while composing");
+}
+
+#[test]
+fn esc_cancels_without_leaving_a_note() {
+    let mut a = app_at(1);
+    press(&mut a, 'a');
+    type_text(&mut a, "never mind");
+    key(&mut a, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(a.composer.is_none());
+    assert!(a.notes.is_empty());
+    assert!(a.pending_note.is_none());
+    let body = body_lines(&draw(&mut a));
+    assert!(!body.iter().any(|l| l.contains('╭')), "box left behind");
+}
+
+#[test]
+fn saving_an_empty_composer_is_a_cancel() {
+    let mut a = app_at(1);
+    press(&mut a, 'a');
+    key(&mut a, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(a.notes.is_empty(), "an empty note is not worth sending");
+    assert!(a.composer.is_none());
+}
+
+#[test]
+fn the_composer_edits_an_existing_note_in_place() {
+    let mut a = app_with_notes(vec![note(1, 3, 3, "original")]);
+    assert!(a.begin_edit_note(1), "edit should open");
+    assert_eq!(
+        a.composer.as_ref().map(|c| c.input.text().to_string()),
+        Some("original".to_string()),
+        "prefilled with the note"
+    );
+    // The note's own card is hidden while its composer stands in for it.
+    let body = body_lines(&draw(&mut a));
+    assert_eq!(body.iter().filter(|l| l.contains('╭')).count(), 1);
+    assert!(body.iter().any(|l| l.contains("edit note · line 3")));
+
+    key(&mut a, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    type_text(&mut a, "rewritten");
+    key(&mut a, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(a.notes.len(), 1, "edited, not duplicated");
+    assert_eq!(a.notes[0].text, "rewritten");
+}
+
+#[test]
+fn editing_a_note_from_another_file_is_declined() {
+    let mut a = app_with_notes(vec![note(1, 3, 3, "elsewhere")]);
+    a.notes[0].file = PathBuf::from("other.rs");
+    assert!(!a.begin_edit_note(1), "should decline, not compose blindly");
+    assert!(a.composer.is_none());
+    assert!(!a.begin_edit_note(999), "unknown id");
+}
+
+#[test]
+fn a_whole_file_note_composes_at_the_top() {
+    let mut a = app_with_notes(vec![]);
+    assert!(a.begin_file_note(PathBuf::from("f.txt"), false));
+    let body = body_lines(&draw(&mut a));
+    assert!(
+        body[0].contains('╭'),
+        "box should lead the diff: {:?}",
+        body[0]
+    );
+    assert!(body[0].contains("new note · whole file"));
+
+    type_text(&mut a, "about the file");
+    key(&mut a, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(a.notes[0].start, 0);
+    assert_eq!(a.notes[0].end, 0);
+    assert!(
+        !a.begin_file_note(PathBuf::from("nope.rs"), false),
+        "wrong file"
+    );
+}
+
+#[test]
+fn the_cursor_cannot_walk_into_the_composer_either() {
+    let mut a = app_at(2);
+    press(&mut a, 'a');
+    type_text(&mut a, "a\nb\nc");
+    key(&mut a, KeyCode::Esc, KeyModifiers::NONE);
+    // After cancelling, walking the doc must still never touch a card.
+    a.notes = vec![note(1, 3, 3, "x\ny")];
+    let r = req("f.txt");
+    a.apply_diff(&r, Ok(fake_diff(10)));
+    draw(&mut a);
+    for _ in 0..a.doc.lines.len() {
+        press(&mut a, 'j');
+        assert!(!on_card(&a));
+    }
+}

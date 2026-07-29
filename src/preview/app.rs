@@ -52,9 +52,17 @@ pub struct Note {
     pub cached: bool,
 }
 
+/// The inline note composer: a text area spliced into the diff under the
+/// line(s) being commented on, so writing a note happens where the note will
+/// live instead of in a detached popup.
+pub struct Composer {
+    pub input: crate::textarea::TextArea,
+    /// The note being rewritten, or `None` when this is a new one.
+    pub editing: Option<u64>,
+}
+
 /// A popup the run loop should open on our behalf.
 pub enum PopupReq {
-    Annotate,
     PickAgent,
 }
 
@@ -105,6 +113,8 @@ pub struct PreviewApp {
     pub notes: Vec<Note>,
     /// Set when `a` was pressed: what the annotate popup will describe.
     pub pending_note: Option<Note>,
+    /// The open inline composer, if any. While set it owns every keystroke.
+    pub composer: Option<Composer>,
     /// Popup for the run loop to open.
     pub popup_request: Option<PopupReq>,
     /// `n` pressed here: ask the list pane to open the notes view.
@@ -122,6 +132,8 @@ pub struct PreviewApp {
     /// The first doc line of each note's card, in the same rank order the
     /// cards were injected (used to scroll a note into view).
     card_starts: Vec<usize>,
+    /// Where the open composer box sits in the doc: `(first line, height)`.
+    composer_span: Option<(usize, usize)>,
     /// Note id to scroll to once its file's diff arrives (notes view hover).
     pending_focus: Option<u64>,
     /// Bumped on every note mutation; the run loop broadcasts on change.
@@ -157,6 +169,7 @@ impl PreviewApp {
             select_anchor: None,
             notes: Vec::new(),
             pending_note: None,
+            composer: None,
             popup_request: None,
             notes_view_request: false,
             edit_request: false,
@@ -164,6 +177,7 @@ impl PreviewApp {
             shown_file: None,
             card_lines: Vec::new(),
             card_starts: Vec::new(),
+            composer_span: None,
             pending_focus: None,
             notes_rev: 0,
             next_note_id: 1,
@@ -282,12 +296,16 @@ impl PreviewApp {
         // (`card_starts`, indexed by note rank for `scroll_to_note`).
         self.card_lines.clear();
         self.card_starts.clear();
+        self.composer_span = None;
         if let Some(req) = &self.current {
             let width = self.viewport_w.max(MIN_CARD_WIDTH) as usize;
-            let mut cards: Vec<(usize, Vec<Line<'static>>)> = self
+            // While a note is being rewritten its own card is hidden — the
+            // composer box standing in its place *is* that note.
+            let editing = self.composer.as_ref().and_then(|c| c.editing);
+            let mut cards: Vec<(usize, Vec<Line<'static>>, bool)> = self
                 .notes
                 .iter()
-                .filter(|n| n.file == req.file)
+                .filter(|n| n.file == req.file && Some(n.id) != editing)
                 .map(|n| {
                     let anchor = if n.end == 0 {
                         0
@@ -301,13 +319,43 @@ impl PreviewApp {
                     } else {
                         format!("note · lines {}-{}", n.start, n.end)
                     };
-                    (anchor, note_card(&label, &n.text, width, self.cfg.theme))
+                    (
+                        anchor,
+                        note_card(&label, &n.text, width, self.cfg.theme),
+                        false,
+                    )
                 })
                 .collect();
+            // The composer goes in last, so among cards anchored to the same
+            // line the box you are typing in sits closest to the code.
+            let composing = self.composer.as_ref().map(|c| {
+                let note = self.pending_note.as_ref();
+                let anchor = match note.map(|n| n.end) {
+                    Some(0) | None => 0,
+                    Some(end) => built.line_for_new(end).map(|l| l + 1).unwrap_or(0),
+                };
+                let label = match (c.editing.is_some(), note.map(|n| (n.start, n.end))) {
+                    (true, Some((s, e))) if e > 0 && s == e => format!("edit note · line {s}"),
+                    (true, Some((s, e))) if e > 0 => format!("edit note · lines {s}-{e}"),
+                    (true, _) => "edit note · whole file".to_string(),
+                    (false, Some((s, e))) if e > 0 && s == e => format!("new note · line {s}"),
+                    (false, Some((s, e))) if e > 0 => format!("new note · lines {s}-{e}"),
+                    (false, _) => "new note · whole file".to_string(),
+                };
+                (
+                    anchor,
+                    composer_card(&label, &c.input, width, self.cfg.theme),
+                    true,
+                )
+            });
+            if let Some(card) = composing {
+                cards.push(card);
+            }
+
             // Accent the gutter of every commented line *before* anything is
             // spliced in, while the anchors still index the unshifted doc, so
             // a line with a note is recognizable once its card scrolls away.
-            for (anchor, _) in &cards {
+            for (anchor, _, _) in &cards {
                 if *anchor > 0 {
                     accent_gutter(&mut doc.lines, anchor - 1, built);
                 }
@@ -315,17 +363,21 @@ impl PreviewApp {
             // Ascending by anchor (stable, so notes on one line keep their
             // order), then spliced in from the bottom up so an insertion
             // never shifts an anchor that hasn't been used yet.
-            cards.sort_by_key(|(anchor, _)| *anchor);
-            for (anchor, lines) in cards.iter().rev() {
+            cards.sort_by_key(|(anchor, _, _)| *anchor);
+            for (anchor, lines, _) in cards.iter().rev() {
                 let at = (*anchor).min(doc.lines.len());
                 doc.lines.splice(at..at, lines.iter().cloned());
             }
             // Then top-down for the index math: each card sits after every
             // card already spliced in above it.
             let mut shift = 0usize;
-            for (anchor, lines) in &cards {
+            for (anchor, lines, is_composer) in &cards {
                 let start = anchor + shift;
-                self.card_starts.push(start);
+                if *is_composer {
+                    self.composer_span = Some((start, lines.len()));
+                } else {
+                    self.card_starts.push(start);
+                }
                 self.card_lines.extend(start..start + lines.len());
                 shift += lines.len();
             }
@@ -488,6 +540,12 @@ impl PreviewApp {
     // ---- direct keys (preview pane focused) ------------------------------
 
     pub fn on_key(&mut self, ev: crossterm::event::KeyEvent) {
+        // The composer owns every keystroke while it is open, so a note can
+        // contain any character the keymap would otherwise claim.
+        if self.composer.is_some() {
+            self.compose_key(ev);
+            return;
+        }
         let Some(action) = self.keys.action(&ev) else {
             return;
         };
@@ -721,7 +779,158 @@ impl PreviewApp {
             snippet,
             cached: req.cached,
         });
-        self.popup_request = Some(PopupReq::Annotate);
+        self.composer = Some(Composer {
+            input: crate::textarea::TextArea::new(String::new()),
+            editing: None,
+        });
+        self.rebuild();
+        self.scroll_to_composer();
+    }
+
+    /// Keys while the inline composer is open. Mirrors any decent text
+    /// input: enter saves, esc cancels, and the newline needs a modifier —
+    /// `ctrl+j` alongside `shift+enter` because only terminals speaking the
+    /// kitty keyboard protocol can report the latter.
+    fn compose_key(&mut self, ev: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+        if ev.kind != KeyEventKind::Press && ev.kind != KeyEventKind::Repeat {
+            return;
+        }
+        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = ev.modifiers.contains(KeyModifiers::ALT);
+        let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
+        let width = self.composer_width();
+        let Some(composer) = self.composer.as_mut() else {
+            return;
+        };
+        match ev.code {
+            KeyCode::Enter if shift || alt || ctrl => composer.input.insert_newline(),
+            KeyCode::Char('j') if ctrl => composer.input.insert_newline(),
+            KeyCode::Enter => {
+                self.commit_composer();
+                return;
+            }
+            KeyCode::Esc => {
+                self.cancel_composer();
+                return;
+            }
+
+            KeyCode::Char('u') if ctrl => composer.input.clear(),
+            KeyCode::Char('w') if ctrl => composer.input.delete_word(),
+            KeyCode::Backspace if ctrl || alt => composer.input.delete_word(),
+            KeyCode::Backspace => composer.input.backspace(),
+            KeyCode::Delete => composer.input.delete(),
+
+            KeyCode::Left => composer.input.move_left(),
+            KeyCode::Right => composer.input.move_right(),
+            KeyCode::Up => composer.input.move_up(width),
+            KeyCode::Down => composer.input.move_down(width),
+            KeyCode::Home => composer.input.move_home(width),
+            KeyCode::End => composer.input.move_end(width),
+            KeyCode::Char('a') if ctrl => composer.input.move_home(width),
+            KeyCode::Char('e') if ctrl => composer.input.move_end(width),
+
+            KeyCode::Char(c) if !ctrl && !alt => composer.input.insert(c),
+            _ => return,
+        }
+        self.rebuild();
+        self.scroll_to_composer();
+    }
+
+    /// Text width inside the composer box (the card's own inner width).
+    fn composer_width(&self) -> usize {
+        card_text_width(self.viewport_w.max(MIN_CARD_WIDTH) as usize)
+    }
+
+    /// Enter in the composer: save a new note or the edit of an existing one.
+    /// An empty note is a cancel — there is nothing to send an agent.
+    fn commit_composer(&mut self) {
+        let Some(composer) = self.composer.take() else {
+            return;
+        };
+        let text = composer.input.text().trim_end().to_string();
+        if text.is_empty() {
+            self.pending_note = None;
+            self.select_anchor = None;
+            self.rebuild();
+            return;
+        }
+        match composer.editing {
+            Some(id) => {
+                self.pending_note = None;
+                self.edit_note(id, text);
+            }
+            None => self.finish_annotate(text),
+        }
+    }
+
+    fn cancel_composer(&mut self) {
+        self.composer = None;
+        self.pending_note = None;
+        self.select_anchor = None;
+        self.rebuild();
+    }
+
+    /// Open the composer on an existing note (asked for by the notes view).
+    /// Returns false when the note isn't in the shown file, so the caller can
+    /// fall back rather than silently doing nothing.
+    pub fn begin_edit_note(&mut self, id: u64) -> bool {
+        let Some(note) = self.notes.iter().find(|n| n.id == id).cloned() else {
+            return false;
+        };
+        if self.current.as_ref().map(|r| &r.file) != Some(&note.file) {
+            return false;
+        }
+        self.select_anchor = None;
+        self.composer = Some(Composer {
+            input: crate::textarea::TextArea::new(note.text.clone()),
+            editing: Some(id),
+        });
+        self.pending_note = Some(note);
+        self.rebuild();
+        self.scroll_to_composer();
+        true
+    }
+
+    /// Open the composer for a whole-file note (asked for by the file list).
+    pub fn begin_file_note(&mut self, file: PathBuf, cached: bool) -> bool {
+        if self.current.as_ref().map(|r| &r.file) != Some(&file) {
+            return false;
+        }
+        self.select_anchor = None;
+        self.pending_note = Some(Note {
+            id: 0,
+            file,
+            start: 0,
+            end: 0,
+            text: String::new(),
+            snippet: String::new(),
+            cached,
+        });
+        self.composer = Some(Composer {
+            input: crate::textarea::TextArea::new(String::new()),
+            editing: None,
+        });
+        self.rebuild();
+        self.scroll_to_composer();
+        true
+    }
+
+    /// Scroll so the whole composer box is on screen, preferring to keep its
+    /// top visible when it is taller than the viewport.
+    fn scroll_to_composer(&mut self) {
+        let Some((start, len)) = self.composer_span else {
+            return;
+        };
+        let vh = self.viewport_h.max(1) as usize;
+        let end = start + len;
+        if end > self.scroll as usize + vh {
+            self.scroll = (end - vh) as u16;
+        }
+        if (self.scroll as usize) > start {
+            self.scroll = start as u16;
+        }
+        self.clamp_scroll();
     }
 
     /// The annotate popup returned text: commit the pending note.
@@ -872,12 +1081,80 @@ fn note_card(
     width: usize,
     theme: crate::config::Theme,
 ) -> Vec<Line<'static>> {
+    let rows: Vec<Vec<Span<'static>>> = text
+        .split('\n')
+        .flat_map(|logical| crate::textarea::wrap_plain(logical, card_text_width(width)))
+        .map(|piece| vec![Span::raw(piece)])
+        .collect();
+    card_box(label, rows, width, theme, false)
+}
+
+/// The text width inside a card box at pane `width`: the indent, the two
+/// borders, and the space either side of the text.
+fn card_text_width(width: usize) -> usize {
+    card_box_width(width).saturating_sub(4).max(1)
+}
+
+fn card_box_width(width: usize) -> usize {
+    width
+        .saturating_sub(CARD_INDENT)
+        .max(MIN_CARD_WIDTH as usize)
+}
+
+/// Indent of every card from the left edge, so a card reads as a comment
+/// *on* the code rather than another diff row.
+const CARD_INDENT: usize = 4;
+
+/// The open composer as a card, with the caret drawn in place and an accented
+/// border so it is obviously the thing taking your keystrokes.
+fn composer_card(
+    label: &str,
+    input: &crate::textarea::TextArea,
+    width: usize,
+    theme: crate::config::Theme,
+) -> Vec<Line<'static>> {
+    let text_w = card_text_width(width);
+    let caret = Style::new().add_modifier(Modifier::REVERSED);
+    let rows = input.layout(text_w);
+    let caret_row = input.caret_row(&rows);
+    let body: Vec<Vec<Span<'static>>> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let text = &input.text()[r.clone()];
+            if i != caret_row {
+                return vec![Span::raw(text.to_string())];
+            }
+            let at = input.caret() - r.start;
+            let (before, rest) = text.split_at(at);
+            let mut chars = rest.chars();
+            let under = chars.next();
+            vec![
+                Span::raw(before.to_string()),
+                Span::styled(under.map(String::from).unwrap_or_else(|| " ".into()), caret),
+                Span::raw(chars.collect::<String>()),
+            ]
+        })
+        .collect();
+    card_box(label, body, width, theme, true)
+}
+
+/// Draw a titled box around pre-wrapped rows of spans.
+fn card_box(
+    label: &str,
+    rows: Vec<Vec<Span<'static>>>,
+    width: usize,
+    theme: crate::config::Theme,
+    accent: bool,
+) -> Vec<Line<'static>> {
     use unicode_width::UnicodeWidthStr;
 
-    const INDENT: usize = 4;
-    let box_w = width.saturating_sub(INDENT).max(MIN_CARD_WIDTH as usize);
-    let text_w = box_w.saturating_sub(4).max(1); // inside "│ " … " │"
-    let border = Style::new().fg(if theme.is_light() {
+    const INDENT: usize = CARD_INDENT;
+    let box_w = card_box_width(width);
+    let text_w = card_text_width(width);
+    let border = Style::new().fg(if accent {
+        Color::Yellow
+    } else if theme.is_light() {
         Color::Rgb(0x9a, 0xa0, 0xa6)
     } else {
         Color::Rgb(0x6c, 0x70, 0x86)
@@ -901,26 +1178,24 @@ fn note_card(
     ])];
 
     // An empty note still gets one body row, so the box never collapses.
-    let mut rows = 0;
-    for logical in text.split('\n') {
-        for piece in crate::textarea::wrap_plain(logical, text_w) {
-            let gap = " ".repeat(text_w.saturating_sub(piece.width()));
-            lines.push(Line::from(vec![
-                pad(),
-                Span::styled("│ ", border),
-                Span::styled(piece, body),
-                Span::styled(format!("{gap} │"), border),
-            ]));
-            rows += 1;
-        }
-    }
-    if rows == 0 {
-        lines.push(Line::from(vec![
-            pad(),
-            Span::styled("│ ", border),
-            Span::raw(" ".repeat(text_w)),
-            Span::styled(" │", border),
-        ]));
+    let rows = if rows.is_empty() {
+        vec![vec![Span::raw(String::new())]]
+    } else {
+        rows
+    };
+    for spans in rows {
+        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        let gap = " ".repeat(text_w.saturating_sub(used));
+        let mut line = vec![pad(), Span::styled("│ ", border)];
+        line.extend(spans.into_iter().map(|s| {
+            if s.style == Style::default() {
+                Span::styled(s.content, body)
+            } else {
+                s
+            }
+        }));
+        line.push(Span::styled(format!("{gap} │"), border));
+        lines.push(Line::from(line));
     }
 
     lines.push(Line::from(vec![

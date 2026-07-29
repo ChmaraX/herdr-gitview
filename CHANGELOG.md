@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Notes are written **inline in the diff**, not in a popup pane. `a` opens a
+  composer box under the lines you selected, prefilled when editing; you type
+  where the note will live and watch the box grow. `enter` saves, `esc`
+  cancels, `shift+enter` (or `ctrl+j`) adds a newline, and the caret keys are
+  the ones you'd expect. An empty note is a cancel.
+  - Whole-file notes and note edits started in the file list now hand off to
+    the same composer (and the focus with them), so there is one place notes
+    are written instead of two.
+  - The `annotate` popup entrypoint is gone; `ask` and `pick-agent` remain.
 - Review notes look like review comments now (shape borrowed from
   [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr)):
   - In the diff, a note is a boxed card spliced under the line it comments

@@ -42,11 +42,11 @@ https://github.com/user-attachments/assets/1cfdf22a-fc5a-40e2-af6c-546156d05c3b
   there).
 - **Review notes to any agent** - select diff lines, annotate, and send the
   batch into the input of any agent pane you pick in the workspace. It types;
-  you decide when to press enter. Notes show as boxed cards under the lines
-  they comment on, with the commented line accented in the gutter, and the
-  notes panel groups them per file. The note editor is a wrapping text area:
-  `shift+enter` (or `ctrl+j`) for a new line, arrows/`home`/`end` to move
-  around, `ctrl+w` to drop a word.
+  you decide when to press enter. You write a note inline in the diff, in a
+  box under the lines it comments on, and it stays there as a card once
+  saved. The composer is a wrapping text area: `shift+enter` (or `ctrl+j`)
+  for a new line, arrows/`home`/`end` to move around, `ctrl+w` to drop a
+  word, `esc` to cancel.
   <img width="1539" height="778" alt="image" src="https://github.com/user-attachments/assets/23ee0639-4a6e-42c5-a003-6e71ab619c43" />
   <img width="1544" height="777" alt="image" src="https://github.com/user-attachments/assets/9b615b5b-3202-4ad4-8967-3bab03050e6c" />
 
@@ -120,8 +120,9 @@ Editing, commits, history diffs, and notes need the second pane, i.e. herdr.
    branch"; `l` then opens the log already filtered to your branch's commits
    (`w` toggles that filter in the log view too).
 6. **Review for your agent.** Focus the diff pane, `v` + `j`/`k` (or drag) to
-   select lines, `a` to annotate. Notes pile up as cards under the code.
-   `p` → pick an agent → the batch lands in its input.
+   select lines, `a` to annotate - a box opens right under the selection,
+   type and `enter`. Notes stay as cards under the code. `p` → pick an agent
+   → the batch lands in its input.
 
 The footer in each pane shows only the keys that currently work, so you learn
 it by using it.

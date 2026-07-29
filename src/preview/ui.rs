@@ -136,6 +136,19 @@ fn centered(frame: &mut Frame, area: Rect, msg: &str, style: Style) {
 // ---- footer ---------------------------------------------------------------
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &PreviewApp) {
+    // The composer owns the keyboard, so it owns the footer too — nothing
+    // else advertised there works while you are typing a note.
+    if app.composer.is_some() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " enter save · shift+enter / ctrl+j newline · esc cancel",
+                Style::new().fg(Color::Yellow),
+            )))
+            .style(Style::new().bg(bar_bg(app.cfg.theme))),
+            area,
+        );
+        return;
+    }
     if let Some(msg) = app.active_flash() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(

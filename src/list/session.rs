@@ -51,8 +51,6 @@ pub struct Shared {
 /// Which popup interaction an answer belongs to.
 enum ListPopup {
     Confirm,
-    AnnotateFile(PathBuf, bool),
-    EditNote(u64),
 }
 
 pub struct Session {
@@ -360,47 +358,24 @@ impl Session {
         // Popups (whole-file annotate, note edit, confirm dialogs) run
         // through one manager with liveness tracking: a popup pane dying
         // without an answer cancels the interaction instead of wedging it.
+        // Notes are always written in the diff pane's inline composer, so
+        // both requests travel over the link and take the focus with them.
         if let Some((file, cached)) = self.app.annotate_request.take() {
-            let envs = [(
-                "GITVIEW_ASK_TEXT".to_string(),
-                format!("note for {}", file.display()),
-            )];
-            if !self.popups.open(
-                &self.env,
-                "annotate",
-                &envs,
-                crate::annotate::NOTE_POPUP_SIZE,
-                ListPopup::AnnotateFile(file.clone(), cached),
-            ) {
-                if self.popups.is_open() {
-                    self.app.annotate_request = Some((file, cached)); // retry when free
-                } else {
-                    self.app
-                        .set_status("couldn't open the note popup (see debug log)");
-                }
+            if self.conn.is_some() {
+                self.send(&ToPreview::ComposeNote { file, cached });
+                self.focus_preview();
+            } else {
+                self.app
+                    .set_status("preview not connected — press r to reconnect");
             }
         }
-        if let Some((id, current)) = self.app.edit_note_request.take() {
-            let envs = [
-                ("GITVIEW_ASK_TEXT".to_string(), "edit note".to_string()),
-                (
-                    "GITVIEW_PREFILL".to_string(),
-                    crate::annotate::encode_prefill(&current),
-                ),
-            ];
-            if !self.popups.open(
-                &self.env,
-                "annotate",
-                &envs,
-                crate::annotate::NOTE_POPUP_SIZE,
-                ListPopup::EditNote(id),
-            ) {
-                if self.popups.is_open() {
-                    self.app.edit_note_request = Some((id, current));
-                } else {
-                    self.app
-                        .set_status("couldn't open the edit popup (see debug log)");
-                }
+        if let Some((id, _)) = self.app.edit_note_request.take() {
+            if self.conn.is_some() {
+                self.send(&ToPreview::ComposeEditNote { id });
+                self.focus_preview();
+            } else {
+                self.app
+                    .set_status("preview not connected — press r to reconnect");
             }
         }
         // Confirm modals become native floating popup panes when herdr
@@ -455,17 +430,7 @@ impl Session {
                     self.mark_dirty();
                 }
             }
-            Some((ListPopup::AnnotateFile(file, cached), Answer::Text(text))) => {
-                if !text.is_empty() {
-                    self.send(&ToPreview::AddNote { file, text, cached });
-                }
-            }
-            Some((ListPopup::EditNote(id), Answer::Text(text))) => {
-                if !text.is_empty() {
-                    self.send(&ToPreview::EditNote { id, text });
-                }
-            }
-            Some((_, Answer::Dead)) | None => {}
+            None => {}
         }
     }
 

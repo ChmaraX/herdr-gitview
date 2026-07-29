@@ -59,24 +59,23 @@ pub enum ToPreview {
     },
     /// Nothing is selected any more (list emptied) — drop the shown diff.
     Clear,
-    /// A whole-file review note added from the list pane.
-    AddNote {
+    /// The list asked for a whole-file note: the preview opens its inline
+    /// composer, so notes are always written in the same place.
+    ComposeNote {
         file: PathBuf,
-        text: String,
         /// Whether the file was in the staged section when annotated, so the
         /// notes view later re-shows the same (staged vs. worktree) diff.
         cached: bool,
+    },
+    /// The list's notes view asked to rewrite a note: same composer, prefilled.
+    ComposeEditNote {
+        id: u64,
     },
     /// The list asked to send the batched notes (preview owns the store).
     SendNotes,
     /// The list's notes view hovers a note: show its file + scroll to it.
     FocusNote {
         id: u64,
-    },
-    /// Replace a note's text (edited via the list's notes view).
-    EditNote {
-        id: u64,
-        text: String,
     },
     DeleteNote {
         id: u64,

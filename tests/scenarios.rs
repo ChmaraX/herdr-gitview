@@ -180,6 +180,40 @@ impl World {
     }
 
     /// Answer file path for a popup entrypoint (mirrors `Popups::open`).
+    /// Type into the diff pane's inline note composer and save with enter.
+    /// Mirrors what the user does once the composer has taken the focus.
+    fn compose(&mut self, text: &str) {
+        // Opening the composer is a round trip: the list sends over the link
+        // and the diff pane acts on it, so wait for it rather than assuming
+        // one pump delivered it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.preview.app.composer.is_none() && Instant::now() < deadline {
+            self.pump();
+        }
+        assert!(
+            self.preview.app.composer.is_some(),
+            "no composer opened in the diff pane (flash: {:?})",
+            self.preview.app.active_flash(),
+        );
+        for ch in text.chars() {
+            self.preview.on_event(
+                preview::Event::Key(KeyEvent::new(
+                    crossterm::event::KeyCode::Char(ch),
+                    KeyModifiers::NONE,
+                )),
+                &mut self.editor,
+            );
+        }
+        self.preview.on_event(
+            preview::Event::Key(KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                KeyModifiers::NONE,
+            )),
+            &mut self.editor,
+        );
+        self.pump();
+    }
+
     fn answer_popup(&mut self, entrypoint: &str, answer: &str) {
         let path = self
             .socket_base
@@ -270,9 +304,10 @@ fn note_flow_annotate_edit_delete_syncs_both_panes() {
     write(&repo.dir, "base.txt", "one\ntwo\nchanged\n");
     let mut w = World::new(repo);
 
-    // Whole-file note from the list: a → popup → answer.
+    // Whole-file note from the list: `a` hands off to the diff pane's
+    // inline composer, which is where every note is written.
     w.press("a");
-    w.answer_popup("annotate", "please refactor this");
+    w.compose("please refactor this");
     assert_eq!(w.preview.app.notes.len(), 1);
     assert_eq!(w.list.app.notes.len(), 1, "snapshot synced to the list");
     assert!(
@@ -280,7 +315,7 @@ fn note_flow_annotate_edit_delete_syncs_both_panes() {
         "note card rendered"
     );
 
-    // Notes view, edit the note through the prefilled popup.
+    // Notes view, edit the note: the composer reopens prefilled.
     w.press("n");
     assert_eq!(w.list.app.mode, Mode::Notes);
     w.list.on_event(list::Event::Key(KeyEvent::new(
@@ -288,7 +323,24 @@ fn note_flow_annotate_edit_delete_syncs_both_panes() {
         KeyModifiers::NONE,
     )));
     w.pump();
-    w.answer_popup("annotate", "actually delete it");
+    assert_eq!(
+        w.preview
+            .app
+            .composer
+            .as_ref()
+            .map(|c| c.input.text().to_string()),
+        Some("please refactor this".to_string()),
+        "the composer opens prefilled with the note being edited"
+    );
+    // Clear it and type the replacement.
+    w.preview.on_event(
+        preview::Event::Key(KeyEvent::new(
+            crossterm::event::KeyCode::Char('u'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )),
+        &mut w.editor,
+    );
+    w.compose("actually delete it");
     assert_eq!(w.list.app.notes[0].text, "actually delete it");
 
     // Delete it; the empty notes view returns to files automatically.
@@ -319,7 +371,7 @@ fn staged_note_notes_view_previews_the_staged_diff() {
 
     // Whole-file note from the list, on the now-staged file.
     w.press("a");
-    w.answer_popup("annotate", "please refactor this");
+    w.compose("please refactor this");
     assert_eq!(w.preview.app.notes.len(), 1);
     assert!(w.preview.app.notes[0].cached, "note remembers staged side");
 

@@ -27,7 +27,6 @@ pub trait EditorHost {
 
 /// Which popup interaction an answer belongs to.
 enum PreviewPopup {
-    Annotate,
     PickAgent,
 }
 
@@ -167,9 +166,17 @@ impl Session {
             ToPreview::Scroll { delta } => self.app.scroll_by(delta),
             ToPreview::Page { down, full } => self.app.page(down, full),
             ToPreview::Clear => self.app.clear(),
-            ToPreview::AddNote { file, text, cached } => self.app.add_file_note(file, text, cached),
+            ToPreview::ComposeNote { file, cached } => {
+                if !self.app.begin_file_note(file, cached) {
+                    self.app.flash("open that file's diff first");
+                }
+            }
+            ToPreview::ComposeEditNote { id } => {
+                if !self.app.begin_edit_note(id) {
+                    self.app.flash("open that note's file first");
+                }
+            }
             ToPreview::FocusNote { id } => self.app.focus_note(id),
-            ToPreview::EditNote { id, text } => self.app.edit_note(id, text),
             ToPreview::DeleteNote { id } => self.app.delete_note(id),
             ToPreview::SendNotes => {
                 if self.app.notes.is_empty() {
@@ -233,35 +240,6 @@ impl Session {
         // A request while another popup is open is put back for later.
         if let Some(req) = self.app.popup_request.take() {
             match req {
-                app::PopupReq::Annotate if self.popups.is_open() => {
-                    self.app.popup_request = Some(app::PopupReq::Annotate);
-                }
-                app::PopupReq::Annotate => {
-                    let title = self
-                        .app
-                        .pending_note
-                        .as_ref()
-                        .map(|n| {
-                            if n.end == 0 {
-                                format!("note for {}", n.file.display())
-                            } else {
-                                format!("note for {}:{}-{}", n.file.display(), n.start, n.end)
-                            }
-                        })
-                        .unwrap_or_default();
-                    let envs = [("GITVIEW_ASK_TEXT".to_string(), title)];
-                    if !self.popups.open(
-                        &self.env,
-                        "annotate",
-                        &envs,
-                        crate::annotate::NOTE_POPUP_SIZE,
-                        PreviewPopup::Annotate,
-                    ) {
-                        self.app.pending_note = None;
-                        self.app
-                            .flash("couldn't open the note popup (see debug log)");
-                    }
-                }
                 app::PopupReq::PickAgent if self.popups.is_open() => {
                     self.app.popup_request = Some(app::PopupReq::PickAgent);
                 }
@@ -298,16 +276,6 @@ impl Session {
     fn poll_popups(&mut self) {
         // Popup outcomes (a dead popup pane just cancels the interaction).
         match self.popups.poll() {
-            Some((PreviewPopup::Annotate, Answer::Text(text))) => {
-                if text.is_empty() {
-                    self.app.pending_note = None; // cancelled
-                } else {
-                    self.app.finish_annotate(text);
-                }
-            }
-            Some((PreviewPopup::Annotate, Answer::Dead)) => {
-                self.app.pending_note = None;
-            }
             Some((PreviewPopup::PickAgent, Answer::Text(answer))) => {
                 if answer != "cancel"
                     && let Some((pane, mode)) = answer.split_once('\t')
