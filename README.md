@@ -40,6 +40,9 @@ https://github.com/user-attachments/assets/1cfdf22a-fc5a-40e2-af6c-546156d05c3b
   files and per-commit diffs. `w` filters it to just the commits your branch
   added on top of its base (and opening the log from branch scope starts
   there).
+- **Knows what your branch was cut from** - branch scope diffs against the
+  branch you actually branched off, so a branch stacked on another feature
+  branch shows only its own work instead of both.
 - **Review notes to any agent** - select diff lines, annotate, and send the
   batch into the input of any agent pane you pick in the workspace. It types;
   you decide when to press enter. You write a note inline in the diff, in a
@@ -127,6 +130,28 @@ Editing, commits, history diffs, and notes need the second pane, i.e. herdr.
 The footer in each pane shows only the keys that currently work, so you learn
 it by using it.
 
+## Branch scope
+
+`w` switches the file list from the working tree to "everything this branch
+changed". The base it compares against is **the branch this one was created
+from**, not a fixed trunk: a branch cut from `develop` diffs against
+`develop`, and a branch stacked on another feature branch diffs against that
+branch. The header names it, e.g. `nv-2-ui  vs nv-1-api`.
+
+It works by ancestry, not by naming: every other branch is ranked by how
+recently your branch diverged from it, and the nearest one wins. Ties between
+siblings cut from the same commit go to the trunk. On a trunk itself there is
+nothing to be cut from, so the usual `origin/HEAD` → `origin/main` →
+`origin/master` → `main` → `master` chain applies.
+
+One case it can get wrong: a branch created *from yours* also has a recent
+divergence point. Branches containing all of your commits are ignored, which
+covers the usual shape, but if the guess is ever wrong, pin it:
+
+```toml
+base = "origin/main"
+```
+
 ## Configuration
 
 `$HERDR_PLUGIN_CONFIG_DIR/config.toml`, usually
@@ -138,7 +163,7 @@ defaults, commented.
 | --- | --- | --- |
 | `theme` | `"dark"` | `"dark"` or `"light"` - syntax theme + all UI tints |
 | `editor` | `["nvim"]` | Editor argv; the file (and `+<line>`) is appended |
-| `base` | `""` | Branch-scope base ref; `""` auto-detects `origin/HEAD` → `origin/main` → `origin/master` → `main` → `master` |
+| `base` | `""` | Branch-scope base ref; `""` detects the branch this one was cut from (see [Branch scope](#branch-scope)) |
 | `list_side` | `"right"` | `"right"` or `"left"` |
 | `default_scope` | `"worktree"` | `"worktree"` or `"branch"` - which scope the view opens in |
 | `context_lines` | `3` | Unchanged lines kept around each change before folding (0–20) |

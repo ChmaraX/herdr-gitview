@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Branch scope diffs against **the branch you actually branched off**, not
+  always `main`/`master`. A branch cut from `develop` compares against
+  `develop`; a branch stacked on another feature branch compares against that
+  branch and shows only its own commits. Detection is by ancestry — every
+  other branch is ranked by how recently this one diverged from it — so it
+  does not depend on branch naming. Ties between siblings go to the trunk, a
+  branch created *from* this one is ignored, and a trunk itself still uses the
+  `origin/HEAD` → `origin/main` → … chain. `base` in the config still wins.
+
 - Note and comment boxes are narrower: they leave air at the right edge and
   stop growing at 60 columns, so a note reads as prose instead of stretching
   across a wide pane.

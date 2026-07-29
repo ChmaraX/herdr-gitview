@@ -110,9 +110,174 @@ impl Repo {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    /// Base branch for branch scope: origin/HEAD → origin/main →
-    /// origin/master → main → master. Last resort: "HEAD".
+    /// Ancestor branches considered as the fork parent. Each costs one
+    /// `rev-list`, and the most recently updated ancestor is almost always
+    /// the one; a handful is enough to be sure.
+    const ANCESTOR_CANDIDATES: usize = 4;
+
+    /// Trunk names tried when no ancestor branch explains the fork — the
+    /// usual case, because the trunk moves on after a branch is cut from it.
+    const TRUNKS: &'static [&'static str] = &[
+        "origin/main",
+        "origin/master",
+        "origin/next",
+        "origin/develop",
+        "main",
+        "master",
+        "next",
+        "develop",
+    ];
+
+    /// The branch this one was most likely created from.
+    ///
+    /// Ranks candidates by *ancestry*: how many commits separate HEAD from
+    /// the point where it diverged from that candidate. Fewest wins, because
+    /// that is the branch HEAD left most recently — which is the branch it
+    /// was cut from. A branch stacked on another feature branch therefore
+    /// diffs against that branch, not against the trunk.
+    ///
+    /// Known limitation: a branch created *from this one* also has a recent
+    /// divergence point. Candidates containing all of HEAD are skipped, which
+    /// covers the common shape; set `base` in the config to pin it otherwise.
+    pub fn detect_fork_base(&self) -> Option<String> {
+        let head = self.head_sha()?;
+        let branch = self.head_branch();
+        // A trunk is not cut *from* anything: every branch ever merged into
+        // it is an ancestor, and picking the most recent of those would make
+        // "branch scope" mean "the last few commits on main".
+        if branch.as_deref().map(is_trunk_name).unwrap_or(false) {
+            return None;
+        }
+        let existing = self.ref_names();
+        let mut scored: Vec<(u32, u8, usize, String)> = Vec::new();
+
+        // Branches whose tip is an ancestor of HEAD: the tip *is* the
+        // divergence point, so this is the strongest evidence of a fork and
+        // it costs one call to enumerate.
+        for name in self.ancestor_refs(branch.as_deref()) {
+            let distance = self.commits_between(&name, "HEAD");
+            if distance > 0 {
+                scored.push((distance, conventional_rank(&name), name.len(), name));
+            }
+        }
+
+        // The trunks, which usually are *not* ancestors: they moved on after
+        // this branch was cut, so they need a real merge-base.
+        for name in self.trunk_refs(branch.as_deref(), &existing) {
+            match self.merge_base(&name) {
+                // A trunk containing every commit of HEAD has nothing to diff.
+                Ok(mb) if mb != head && !mb.is_empty() => {
+                    let distance = self.commits_between(&mb, "HEAD");
+                    if distance > 0 {
+                        scored.push((distance, conventional_rank(&name), name.len(), name));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Fewest commits since the divergence; ties (siblings cut from one
+        // commit) go to the conventional trunk, then to a stable name order.
+        scored.sort();
+        scored.into_iter().next().map(|(_, _, _, name)| name)
+    }
+
+    /// Branch refs whose tip is an ancestor of HEAD, most recently updated
+    /// first, minus this branch's own refs.
+    fn ancestor_refs(&self, branch: Option<&str>) -> Vec<String> {
+        let raw = self
+            .git(&[
+                "for-each-ref",
+                "--merged",
+                "HEAD",
+                "--sort=-committerdate",
+                "--format=%(refname:short)",
+                "refs/heads",
+                "refs/remotes",
+            ])
+            .unwrap_or_default();
+        let remotes = self.remotes();
+        String::from_utf8_lossy(&raw)
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && !name.ends_with("/HEAD"))
+            .filter(|name| !is_own_branch(name, branch, &remotes))
+            .take(Self::ANCESTOR_CANDIDATES)
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Every branch ref name, so trunk candidates can be filtered without a
+    /// process per guess.
+    fn ref_names(&self) -> std::collections::HashSet<String> {
+        String::from_utf8_lossy(
+            &self
+                .git(&[
+                    "for-each-ref",
+                    "--format=%(refname:short)",
+                    "refs/heads",
+                    "refs/remotes",
+                ])
+                .unwrap_or_default(),
+        )
+        .lines()
+        .map(str::to_string)
+        .collect()
+    }
+
+    /// The trunk candidates that exist here, `origin/HEAD` first.
+    fn trunk_refs(
+        &self,
+        branch: Option<&str>,
+        existing: &std::collections::HashSet<String>,
+    ) -> Vec<String> {
+        let mut names = Vec::new();
+        if let Ok(out) = self.git_lenient(&["symbolic-ref", "refs/remotes/origin/HEAD"])
+            && out.status.success()
+            && let Some(rest) = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .strip_prefix("refs/remotes/")
+        {
+            names.push(rest.to_string());
+        }
+        names.extend(Self::TRUNKS.iter().map(|s| s.to_string()));
+        let remotes = self.remotes();
+        let mut seen = std::collections::HashSet::new();
+        names
+            .into_iter()
+            .filter(|name| existing.contains(name))
+            .filter(|name| !is_own_branch(name, branch, &remotes))
+            .filter(|name| seen.insert(name.clone()))
+            .collect()
+    }
+
+    fn remotes(&self) -> Vec<String> {
+        String::from_utf8_lossy(&self.git(&["remote"]).unwrap_or_default())
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Commits in `from..to`, capped: the walk stops once a candidate is
+    /// clearly too far away to be the parent, which keeps the search from
+    /// paying for the whole history of a large repo. `u32::MAX` when git
+    /// can't say, so an unanswerable candidate sorts last rather than first.
+    fn commits_between(&self, from: &str, to: &str) -> u32 {
+        const FAR_ENOUGH: &str = "--max-count=500";
+        let range = format!("{from}..{to}");
+        self.git(&["rev-list", "--count", FAR_ENOUGH, &range])
+            .ok()
+            .and_then(|out| String::from_utf8_lossy(&out).trim().parse().ok())
+            .unwrap_or(u32::MAX)
+    }
+
+    /// Base branch for branch scope: the branch this one forked from, else
+    /// origin/HEAD → origin/main → origin/master → main → master. Last
+    /// resort: "HEAD".
     pub fn detect_base(&self) -> String {
+        if let Some(fork) = self.detect_fork_base() {
+            return fork;
+        }
         if let Ok(out) = self.git_lenient(&["symbolic-ref", "refs/remotes/origin/HEAD"])
             && out.status.success()
         {
@@ -617,6 +782,33 @@ fn parse_numstat(raw: &[u8]) -> Vec<(PathBuf, Option<(u32, u32)>)> {
         out.push((PathBuf::from(path), stat));
     }
     out
+}
+
+/// How "trunk-like" a branch name is, for breaking ties between candidates
+/// that were all cut from the same commit. Lower is more conventional.
+fn conventional_rank(name: &str) -> u8 {
+    let short = name.rsplit_once('/').map(|(_, b)| b).unwrap_or(name);
+    match short {
+        "main" => 0,
+        "master" => 1,
+        "next" => 2,
+        "develop" | "development" => 3,
+        _ => 4,
+    }
+}
+
+/// Is this a trunk name rather than a feature branch?
+fn is_trunk_name(branch: &str) -> bool {
+    conventional_rank(branch) < 4
+}
+
+/// Is `name` this branch's own ref? `origin/feature/x` is the same branch as
+/// `feature/x`, and diffing a branch against itself shows nothing.
+fn is_own_branch(name: &str, branch: Option<&str>, remotes: &[String]) -> bool {
+    match branch {
+        Some(b) => name == b || remotes.iter().any(|r| name == format!("{r}/{b}")),
+        None => false,
+    }
 }
 
 /// Sum stats per path; binary (None) is contagious.

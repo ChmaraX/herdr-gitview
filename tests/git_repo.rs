@@ -436,3 +436,254 @@ fn stage_many_with_no_paths_is_a_no_op() {
     t.repo.unstage_many(&[]).unwrap();
     assert_eq!(status_len(&t), 0);
 }
+
+// ---- fork-point base detection ---------------------------------------------
+
+/// `main` → `develop` → `feature`: the base must be `develop`, the branch
+/// `feature` was actually cut from, not `main`.
+#[test]
+fn base_is_the_branch_this_one_was_cut_from() {
+    let t = fixture("base-fork-chain");
+    git(&t.dir, &["checkout", "-q", "-b", "develop"]);
+    write(&t.dir, "d.txt", "d\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "develop work"]);
+
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "f.txt", "f\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "feature work"]);
+
+    assert_eq!(t.repo.detect_base(), "develop");
+    // ...and the diff is scoped to the feature's own work.
+    let (_, mb) = t.repo.resolve_base("").unwrap();
+    let paths: Vec<String> = t
+        .repo
+        .branch_changes(&mb)
+        .unwrap()
+        .iter()
+        .map(|e| e.path.display().to_string())
+        .collect();
+    assert_eq!(paths, vec!["f.txt"], "should not include develop's work");
+}
+
+/// The parent moving on after the branch was cut must not change the answer.
+#[test]
+fn base_survives_the_parent_advancing() {
+    let t = fixture("base-parent-advanced");
+    git(&t.dir, &["checkout", "-q", "-b", "develop"]);
+    write(&t.dir, "d.txt", "d\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "develop work"]);
+
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "f.txt", "f\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "feature work"]);
+
+    // develop gains a commit after feature branched off it.
+    git(&t.dir, &["checkout", "-q", "develop"]);
+    write(&t.dir, "d2.txt", "d2\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "more develop"]);
+    git(&t.dir, &["checkout", "-q", "feature"]);
+
+    assert_eq!(t.repo.detect_base(), "develop");
+}
+
+/// Branched straight off the trunk: still the trunk.
+#[test]
+fn base_of_a_branch_cut_from_main_is_main() {
+    let t = fixture("base-from-main");
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "f.txt", "f\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "feature work"]);
+    assert_eq!(t.repo.detect_base(), "main");
+}
+
+/// Two branches cut from the same commit are tied on recency; the trunk wins
+/// rather than a sibling feature branch.
+#[test]
+fn a_sibling_branch_does_not_beat_the_trunk_on_a_tie() {
+    let t = fixture("base-sibling-tie");
+    git(&t.dir, &["checkout", "-q", "-b", "sibling"]);
+    write(&t.dir, "s.txt", "s\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "sibling work"]);
+
+    git(&t.dir, &["checkout", "-q", "main"]);
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "f.txt", "f\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "feature work"]);
+
+    assert_eq!(t.repo.detect_base(), "main");
+}
+
+/// A branch cut *from* this one contains all of HEAD, so it is not a parent.
+#[test]
+fn a_branch_cut_from_this_one_is_not_its_base() {
+    let t = fixture("base-child-branch");
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "f.txt", "f\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "feature work"]);
+    // A branch created from feature, left exactly where feature is.
+    git(&t.dir, &["branch", "child"]);
+
+    assert_eq!(t.repo.detect_base(), "main");
+}
+
+/// The branch's own remote-tracking ref is not a parent either — otherwise
+/// unpushed commits would be the only thing branch scope ever showed.
+#[test]
+fn the_branchs_own_remote_ref_is_not_its_base() {
+    let t = fixture("base-own-remote");
+    // A bare "remote" with main plus the feature branch pushed to it.
+    let remote = t.dir.parent().unwrap().join("base-own-remote-origin.git");
+    let _ = std::fs::remove_dir_all(&remote);
+    git(&t.dir, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+    git(
+        &t.dir,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&t.dir, &["push", "-q", "origin", "main"]);
+
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "f.txt", "f\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "pushed work"]);
+    git(&t.dir, &["push", "-q", "-u", "origin", "feature"]);
+    // ...plus a local commit that is not pushed.
+    write(&t.dir, "g.txt", "g\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "local work"]);
+
+    let base = t.repo.detect_base();
+    assert!(
+        base == "main" || base == "origin/main",
+        "picked its own remote ref: {base}"
+    );
+    let (_, mb) = t.repo.resolve_base("").unwrap();
+    let paths: Vec<String> = t
+        .repo
+        .branch_changes(&mb)
+        .unwrap()
+        .iter()
+        .map(|e| e.path.display().to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["f.txt", "g.txt"],
+        "both commits are this branch's"
+    );
+    let _ = std::fs::remove_dir_all(&remote);
+}
+
+/// A configured base still wins over the guess.
+#[test]
+fn a_configured_base_overrides_detection() {
+    let t = fixture("base-configured");
+    git(&t.dir, &["checkout", "-q", "-b", "develop"]);
+    write(&t.dir, "d.txt", "d\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "develop work"]);
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "f.txt", "f\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "feature work"]);
+
+    let (base, _) = t.repo.resolve_base("main").unwrap();
+    assert_eq!(base, "main");
+}
+
+/// On the trunk itself there is no parent to find; detection must not pick a
+/// child branch and must fall back cleanly.
+#[test]
+fn detection_falls_back_on_the_trunk_itself() {
+    let t = fixture("base-on-trunk");
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "f.txt", "f\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "feature work"]);
+    git(&t.dir, &["checkout", "-q", "main"]);
+
+    // `feature` contains all of main, so it is skipped; nothing else exists.
+    assert_eq!(t.repo.detect_base(), "main");
+}
+
+/// On a trunk, every branch ever merged into it is an ancestor. Picking the
+/// most recent of those would make branch scope mean "the last few commits on
+/// main", so a trunk must fall back to the conventional base instead.
+#[test]
+fn on_a_trunk_a_merged_branch_is_not_the_base() {
+    let t = fixture("base-trunk-with-merges");
+    git(&t.dir, &["checkout", "-q", "-b", "shipped"]);
+    write(&t.dir, "s.txt", "s\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "shipped work"]);
+    git(&t.dir, &["checkout", "-q", "main"]);
+    git(
+        &t.dir,
+        &["merge", "-q", "--no-ff", "-m", "merge shipped", "shipped"],
+    );
+
+    assert_ne!(
+        t.repo.detect_base(),
+        "shipped",
+        "a merged branch is not what main is diffed against"
+    );
+    assert_eq!(t.repo.detect_base(), "main");
+}
+
+/// The parent does not have to be conventionally named: a branch stacked on
+/// another feature branch diffs against that feature branch.
+#[test]
+fn a_stacked_branch_diffs_against_the_branch_below_it() {
+    let t = fixture("base-stacked");
+    git(&t.dir, &["checkout", "-q", "-b", "nv-1-first-part"]);
+    write(&t.dir, "one.txt", "1\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "first part"]);
+
+    git(&t.dir, &["checkout", "-q", "-b", "nv-2-second-part"]);
+    write(&t.dir, "two.txt", "2\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "second part"]);
+
+    assert_eq!(t.repo.detect_base(), "nv-1-first-part");
+    let (_, mb) = t.repo.resolve_base("").unwrap();
+    let paths: Vec<String> = t
+        .repo
+        .branch_changes(&mb)
+        .unwrap()
+        .iter()
+        .map(|e| e.path.display().to_string())
+        .collect();
+    assert_eq!(paths, vec!["two.txt"], "only this branch's own work");
+    // The log filter follows the same base.
+    let subjects: Vec<String> = t
+        .repo
+        .log_branch_commits(&mb, 10)
+        .unwrap()
+        .iter()
+        .map(|c| c.subject.clone())
+        .collect();
+    assert_eq!(subjects, vec!["second part"]);
+}
+
+/// A detached HEAD has no branch to reason about; detection must not panic
+/// and the fallback still applies.
+#[test]
+fn detached_head_falls_back_without_panicking() {
+    let t = fixture("base-detached");
+    write(&t.dir, "x.txt", "x\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "second"]);
+    let sha = t.repo.log_commits(1).unwrap()[0].sha.clone();
+    git(&t.dir, &["checkout", "-q", &sha]);
+    assert!(t.repo.head_branch().is_none());
+    let base = t.repo.detect_base();
+    assert!(!base.is_empty());
+}
