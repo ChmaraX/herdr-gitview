@@ -160,6 +160,26 @@ fn bar_bg(theme: crate::config::Theme) -> Color {
 
 fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.rows.is_empty() {
+        // An empty list because git failed is not an empty list because the
+        // tree is clean; say which.
+        if let Some(err) = &app.load_error {
+            let mid = Rect {
+                x: area.x,
+                y: area.y + area.height / 2,
+                width: area.width,
+                height: 2,
+            };
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(err.clone(), Style::new().fg(Color::Red))),
+                    Line::from(Span::styled("r retries".to_string(), dim())),
+                ])
+                .alignment(Alignment::Center)
+                .wrap(ratatui::widgets::Wrap { trim: true }),
+                mid,
+            );
+            return;
+        }
         let msg = match (app.mode, app.scope) {
             (Mode::Log, _) => "no commits".to_string(),
             (Mode::CommitFiles, _) => "empty commit".to_string(),

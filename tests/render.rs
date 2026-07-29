@@ -313,3 +313,21 @@ fn a_multi_line_note_collapses_to_one_line_in_the_panel() {
     let joined: String = (1..H - 1).map(|y| row_text(&buf, y)).collect();
     assert!(joined.contains("first ⏎ second"), "{joined}");
 }
+
+#[test]
+fn a_repo_git_cannot_report_on_says_so_instead_of_clean() {
+    let mut app = app_with(vec![]);
+    // Empty because git is clean.
+    let buf = draw(&mut app);
+    let body: String = (1..H - 1).map(|y| row_text(&buf, y)).collect();
+    assert!(body.contains("working tree clean"), "{body}");
+
+    // Empty because git failed: that must not read as clean, and it must not
+    // expire the way the footer message does.
+    app.load_error = Some("git status failed: bad things".to_string());
+    let buf = draw(&mut app);
+    let body: String = (1..H - 1).map(|y| row_text(&buf, y)).collect();
+    assert!(body.contains("bad things"), "{body}");
+    assert!(!body.contains("working tree clean"), "{body}");
+    assert!(body.contains("retries"), "no way out offered: {body}");
+}

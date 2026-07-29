@@ -324,13 +324,40 @@ impl Repo {
 
     // ---- worktree status --------------------------------------------------
 
-    pub fn worktree_status(&self, show_untracked: bool) -> Result<Vec<FileEntry>> {
+    /// `git status --porcelain=v2`, with a fallback for repositories git
+    /// refuses to report on at all.
+    ///
+    /// A path recorded as a submodule but present as a symlink (which is how
+    /// some worktree setups link back to their main checkout) makes status
+    /// exit 128 with *no output* — "expected submodule path 'x' not to be a
+    /// symbolic link". Retrying with `--ignore-submodules=dirty` gets a full
+    /// answer, still listing the submodule path itself as changed; only its
+    /// internal dirtiness is hidden. Without this the whole pane had nothing
+    /// to show and died.
+    fn status_raw(&self, show_untracked: bool) -> Result<Vec<u8>> {
         let untracked = if show_untracked {
             "--untracked-files=all"
         } else {
             "--untracked-files=no"
         };
-        let raw = self.git(&["status", "--porcelain=v2", "-z", untracked])?;
+        let args = ["status", "--porcelain=v2", "-z", untracked];
+        let out = self.git_lenient(&args)?;
+        if out.status.success() {
+            return Ok(out.stdout);
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let retry = self.git_lenient(&[&args[..], &["--ignore-submodules=dirty"][..]].concat())?;
+        if retry.status.success() {
+            crate::logx::log(format!(
+                "git status failed ({stderr}); retried ignoring submodule contents"
+            ));
+            return Ok(retry.stdout);
+        }
+        bail!("git status failed: {}", first_line(&stderr));
+    }
+
+    pub fn worktree_status(&self, show_untracked: bool) -> Result<Vec<FileEntry>> {
+        let raw = self.status_raw(show_untracked)?;
         let mut entries = parse_porcelain_v2(&raw)?;
 
         // Merge line stats from numstat (unstaged + staged, summed per path).
@@ -578,14 +605,9 @@ impl Repo {
     /// list should refresh. FNV-1a over the raw status bytes. Honors the
     /// untracked setting so hidden untracked churn can't cause refreshes.
     pub fn fingerprint(&self, show_untracked: bool) -> u64 {
-        let untracked = if show_untracked {
-            "--untracked-files=all"
-        } else {
-            "--untracked-files=no"
-        };
-        let raw = self
-            .git(&["status", "--porcelain=v2", "-z", untracked])
-            .unwrap_or_default();
+        // Same fallback as `worktree_status`, or auto-refresh would go blind
+        // in exactly the repositories that need the fallback.
+        let raw = self.status_raw(show_untracked).unwrap_or_default();
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in &raw {
             hash ^= u64::from(*byte);
@@ -596,6 +618,12 @@ impl Repo {
 }
 
 // ---- parsers (pure functions, unit-testable) ------------------------------
+
+/// First line of a multi-line git error — git puts the news on top and the
+/// advice underneath, and a footer only has room for the news.
+pub fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or(s).trim().to_string()
+}
 
 /// Parse `git status --porcelain=v2 -z` output. Records are NUL-terminated;
 /// rename records (`2 …`) carry one extra NUL-separated field: the orig path.

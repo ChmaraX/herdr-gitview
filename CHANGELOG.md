@@ -48,6 +48,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The view came up empty in some worktrees.** A path recorded as a
+  submodule but present on disk as a symlink — how some worktree setups link
+  back to their main checkout — makes `git status` exit with *no output*
+  ("expected submodule path 'x' not to be a symbolic link"). That killed the
+  file list outright, leaving the diff pane on "waiting for file list"
+  forever. Status now retries ignoring submodule contents, which gets a full
+  answer and still lists the submodule path itself as changed.
+- A file list that cannot be loaded no longer takes the pane down with it:
+  it starts empty, says why, and offers `r` to retry — rather than exiting
+  and stranding the diff pane. The explanation persists instead of expiring
+  into a false "working tree clean".
 - **Folder actions could touch a file from another section.** "merge
   conflicts" and "changes" are both unstaged, so a folder row could not tell
   them apart — pressing `s` on `src/` under *merge conflicts* staged a

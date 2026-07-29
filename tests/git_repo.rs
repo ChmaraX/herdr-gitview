@@ -687,3 +687,88 @@ fn detached_head_falls_back_without_panicking() {
     let base = t.repo.detect_base();
     assert!(!base.is_empty());
 }
+
+// ---- repositories git refuses to report on ---------------------------------
+
+/// A path recorded as a submodule but present on disk as a symlink — how some
+/// worktree setups link back to their main checkout. `git status` exits 128
+/// with *no output* ("expected submodule path 'x' not to be a symbolic
+/// link"), which used to take the whole file list down with it.
+fn submodule_symlink_repo(name: &str) -> TempRepo {
+    let t = fixture(name);
+    let sha = t.repo.head_sha().unwrap();
+    git(
+        &t.dir,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{sha},.source"),
+        ],
+    );
+    std::os::unix::fs::symlink("/tmp/nowhere-in-particular", t.dir.join(".source")).unwrap();
+    t
+}
+
+#[test]
+fn status_survives_a_submodule_path_that_is_a_symlink() {
+    let t = submodule_symlink_repo("status-submodule-symlink");
+    write(&t.dir, "base.txt", "one\ntwo\nchanged\n");
+    write(&t.dir, "fresh.txt", "new\n");
+
+    // Plain status really does fail here — the fallback is load-bearing.
+    let plain = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&t.dir)
+        .args(["status", "--porcelain=v2", "-z"])
+        .output()
+        .unwrap();
+    assert!(!plain.status.success(), "fixture no longer reproduces");
+
+    let entries = t.repo.worktree_status(true).unwrap();
+    let paths: Vec<String> = entries
+        .iter()
+        .map(|e| e.path.display().to_string())
+        .collect();
+    assert!(paths.contains(&"base.txt".to_string()), "got {paths:?}");
+    assert!(paths.contains(&"fresh.txt".to_string()), "got {paths:?}");
+    // The submodule path itself is still reported as changed; only its
+    // internal dirtiness is hidden.
+    assert!(paths.contains(&".source".to_string()), "got {paths:?}");
+}
+
+#[test]
+fn auto_refresh_still_sees_changes_when_status_needs_the_fallback() {
+    let t = submodule_symlink_repo("status-fallback-fingerprint");
+    let before = t.repo.fingerprint(true);
+    write(&t.dir, "base.txt", "one\ntwo\nchanged\n");
+    let after = t.repo.fingerprint(true);
+    assert_ne!(
+        before, after,
+        "fingerprint went blind, so polling would too"
+    );
+}
+
+#[test]
+fn the_file_list_starts_even_when_git_status_cannot_run() {
+    // No fallback can save a directory that is not a repository at all; the
+    // pane must still come up and say so, rather than exiting and leaving the
+    // diff pane waiting for a file list that never arrives.
+    let dir = std::env::temp_dir().join(format!("gitview-not-a-repo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let repo = Repo { root: dir.clone() };
+    let app = herdr_gitview::list::App::new(
+        repo,
+        herdr_gitview::config::Config::default(),
+        herdr_gitview::keymap::Keymap::build(&std::collections::HashMap::new()).unwrap(),
+    )
+    .expect("the pane must start anyway");
+    assert!(app.entries.is_empty());
+    assert!(
+        app.active_status().unwrap_or_default().contains("status"),
+        "no explanation shown: {:?}",
+        app.active_status()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

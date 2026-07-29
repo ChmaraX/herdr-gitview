@@ -13,7 +13,7 @@ use crossterm::event::KeyEvent;
 pub use super::rows::{ListRow, Section};
 pub use super::stage::Ops;
 use crate::config::Config;
-use crate::git::{CommitInfo, FileEntry, Repo, Scope};
+use crate::git::{CommitInfo, FileEntry, Repo, Scope, first_line};
 use crate::keymap::{Action, Keymap};
 
 /// How long a transient footer message stays visible on screen.
@@ -97,6 +97,10 @@ pub struct App {
 
     /// Transient footer message + when it was set.
     pub status_msg: Option<(String, Instant)>,
+    /// Why the file list is empty, when it is empty because git could not
+    /// answer. Unlike the footer message this does not expire — otherwise the
+    /// pane settles into claiming "working tree clean", which is a lie.
+    pub load_error: Option<String>,
     pub should_quit: bool,
     pub modal: Option<Modal>,
     /// Header text while the preview PTY is busy (editor or commit): actions
@@ -138,8 +142,18 @@ impl App {
     /// a branch default resolves the merge base and loads branch changes up
     /// front (falling back to worktree if no base exists).
     pub fn new(repo: Repo, cfg: Config, keys: Keymap) -> Result<App> {
-        let entries = repo.worktree_status(cfg.show_untracked)?;
+        // A repository git cannot report on must not take the pane down with
+        // it: start empty and say why, or the other pane just sits there
+        // waiting for a file list that is never coming.
+        let (entries, failure) = match repo.worktree_status(cfg.show_untracked) {
+            Ok(entries) => (entries, None),
+            Err(err) => (Vec::new(), Some(first_line(&err.to_string()))),
+        };
         let mut app = App::from_entries(repo, cfg, keys, entries);
+        if let Some(msg) = failure {
+            app.set_status(msg.clone());
+            app.load_error = Some(msg);
+        }
         if app.scope == Scope::Branch {
             match app.repo.resolve_base(&app.cfg.base) {
                 Ok((base, mb)) => {
@@ -181,6 +195,7 @@ impl App {
             merge_base: None,
             branch,
             status_msg: None,
+            load_error: None,
             should_quit: false,
             modal: None,
             busy: None,
@@ -641,8 +656,13 @@ impl App {
                 self.entries = entries;
                 self.rebuild_rows();
                 self.restore_cursor(keep);
+                self.load_error = None; // git is answering again
             }
-            Err(err) => self.set_status(format!("refresh failed: {err}")),
+            Err(err) => {
+                let msg = first_line(&err.to_string());
+                self.set_status(msg.clone());
+                self.load_error = Some(msg);
+            }
         }
     }
 
@@ -786,11 +806,6 @@ impl App {
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = Some((msg.into(), Instant::now()));
     }
-}
-
-/// First line of an error (git errors embed stderr; the top line is the news).
-pub(super) fn first_line(s: &str) -> String {
-    s.lines().next().unwrap_or(s).trim().to_string()
 }
 
 /// What the cursor pointed at before a refresh, in a rebuild-stable form.

@@ -7,8 +7,9 @@
 //! file from "changes".
 
 use super::App;
-use super::app::{Modal, Mode, PendingAction, first_line};
+use super::app::{Modal, Mode, PendingAction};
 use super::rows::{ListRow, Section};
+use crate::git::first_line;
 use crate::git::{ChangeKind, FileEntry, Scope, StageState};
 
 /// What a mutating action (stage / unstage / discard) operates on: the entries

@@ -14,6 +14,7 @@ use crossterm::event::{KeyEvent, MouseEvent};
 use super::app::{self, PreviewApp, ShowReq};
 use super::{highlight, render};
 use crate::config::Config;
+use crate::git::first_line;
 use crate::git::{Repo, Scope};
 use crate::hostenv::HostEnv;
 use crate::ipc::{Conn, ToList, ToPreview};
@@ -515,11 +516,6 @@ fn fetch_contents(
             Ok((old, new))
         }
     }
-}
-
-/// First line of an error message (git failures embed stderr).
-fn first_line(s: &str) -> String {
-    s.lines().next().unwrap_or(s).trim().to_string()
 }
 
 /// Keep a note's line breaks but indent everything after the first line, so
