@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The diff pane now shows where you are. The cursor line had a tint so
+  faint it was invisible in practice, and scrolling (the wheel, or
+  `ctrl+d`/`ctrl+u` forwarded from the list) moved the viewport *without*
+  the cursor — so focusing the diff pane often showed no cursor at all and
+  the first `j` jumped somewhere unrelated. The cursor line is now a real
+  cursorline, scrolling carries the cursor with it (unless a selection is
+  live, which it would silently extend), and the header reports the cursor's
+  file line as `ln 42` instead of the viewport's scroll offset.
 - Note input no longer hides what you type. It is a real text area now:
   the text soft-wraps to the popup width and the view follows the caret,
   so a long note scrolls instead of being drawn past the bottom edge

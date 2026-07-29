@@ -56,8 +56,14 @@ fn render_header(frame: &mut Frame, area: Rect, app: &PreviewApp) {
         None => " gitview: diff".to_string(),
     };
 
+    // Where the *cursor* is, not where the viewport starts: "which line am
+    // I on" is the question this answers. `ln` is the file's own numbering
+    // (absent on folds and note cards, which belong to no source line).
     let right = match app.state {
-        State::Diff => format!("{}/{} ", app.scroll as usize + 1, app.doc.lines.len()),
+        State::Diff => match app.cursor_file_line() {
+            Some(no) => format!("ln {no}  {}/{} ", app.cursor_line + 1, app.doc.lines.len()),
+            None => format!("{}/{} ", app.cursor_line + 1, app.doc.lines.len()),
+        },
         _ => String::new(),
     };
 

@@ -414,6 +414,38 @@ impl PreviewApp {
                 next.clamp(0, i64::from(max)) as u16
             }
         };
+        self.keep_cursor_visible();
+    }
+
+    /// Drag the cursor along with the viewport so it is never off-screen:
+    /// scrolling (wheel, or ctrl+d/u forwarded from the list) used to leave
+    /// it behind, so focusing the diff pane showed no cursor at all and the
+    /// first `j` jumped somewhere unrelated.
+    ///
+    /// A live selection is left alone — moving the cursor there would silently
+    /// extend the selection.
+    fn keep_cursor_visible(&mut self) {
+        if self.select_anchor.is_some() {
+            return;
+        }
+        let last = self.content_lines().saturating_sub(1);
+        let top = self.scroll as usize;
+        let bottom = (top + self.viewport_h.max(1) as usize - 1).min(last);
+        let clamped = self.cursor_line.clamp(top.min(bottom), bottom);
+        if clamped != self.cursor_line {
+            self.cursor_line = clamped;
+            self.restyle();
+        }
+    }
+
+    /// The file line number under the cursor for the header: the new-file
+    /// number, or the old one on a deleted line. `None` on a fold or a note
+    /// card, which belong to no source line.
+    pub fn cursor_file_line(&self) -> Option<u32> {
+        let built = self.built.as_ref()?;
+        let line = self.doc_to_built(self.cursor_line)?;
+        let (old, new) = built.numbers_of_line(line)?;
+        new.or(old)
     }
 
     /// Page relative to the viewport height (`full` = whole page, else half).
@@ -529,10 +561,12 @@ impl PreviewApp {
         if !matches!(self.state, State::Diff) {
             return;
         }
+        // The cursor line has to read as "you are here" against the diff's
+        // own red/green tints, so it is a real cursorline, not a whisper.
         let cursor_bg = if !self.cfg.theme.is_light() {
-            Color::Rgb(0x2a, 0x2b, 0x38)
+            Color::Rgb(0x39, 0x3b, 0x4f)
         } else {
-            Color::Rgb(0xee, 0xf0, 0xf5)
+            Color::Rgb(0xdf, 0xe4, 0xee)
         };
         let select_bg = if !self.cfg.theme.is_light() {
             Color::Rgb(0x45, 0x47, 0x5a)
@@ -718,6 +752,7 @@ impl PreviewApp {
         {
             self.scroll = (line.saturating_sub(3)) as u16;
             self.clamp_scroll();
+            self.keep_cursor_visible();
         }
     }
 

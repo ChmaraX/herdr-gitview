@@ -179,3 +179,112 @@ fn truncation_notice_when_capped() {
     let body: String = (0..H).map(|y| row(&buf, y)).collect();
     assert!(body.contains("diff truncated"), "body: {body:?}");
 }
+
+// ---- "where am I": the cursor line ----------------------------------------
+
+/// The background color of the first cell of body row `y`.
+fn bg_at(buf: &Buffer, y: u16) -> ratatui::style::Color {
+    buf[(0, y)]
+        .style()
+        .bg
+        .unwrap_or(ratatui::style::Color::Reset)
+}
+
+/// The body row the cursor is tinted on, found by the odd-one-out background.
+fn cursor_row(buf: &Buffer) -> Option<u16> {
+    let rows: Vec<(u16, ratatui::style::Color)> = (1..H - 1).map(|y| (y, bg_at(buf, y))).collect();
+    // The cursor tint is whichever background appears exactly once.
+    rows.iter()
+        .find(|(_, c)| rows.iter().filter(|(_, o)| o == c).count() == 1)
+        .map(|(y, _)| *y)
+}
+
+#[test]
+fn the_cursor_line_is_visibly_tinted() {
+    let mut a = app();
+    let r = req("x.rs");
+    a.begin_show(r.clone());
+    a.apply_diff(&r, Ok(fake_diff(30)));
+    let buf = draw(&mut a);
+
+    assert_eq!(cursor_row(&buf), Some(1), "cursor starts on the first line");
+    // and it is a real tint, not the default background
+    assert_ne!(bg_at(&buf, 1), ratatui::style::Color::Reset);
+    assert_ne!(bg_at(&buf, 1), bg_at(&buf, 2), "cursor row must stand out");
+}
+
+#[test]
+fn the_cursor_stays_on_screen_when_the_diff_is_scrolled() {
+    let mut a = app();
+    let r = req("x.rs");
+    a.begin_show(r.clone());
+    a.apply_diff(&r, Ok(fake_diff(60)));
+    draw(&mut a); // learn the viewport height
+
+    // Scrolling from the list pane (ctrl+d / wheel) used to leave the cursor
+    // behind, so the diff pane showed no cursor at all.
+    a.scroll_by(20);
+    assert!(
+        a.cursor_line >= a.scroll as usize,
+        "cursor above the viewport"
+    );
+    assert!(
+        a.cursor_line < a.scroll as usize + a.viewport_h as usize,
+        "cursor below the viewport"
+    );
+    let buf = draw(&mut a);
+    assert!(
+        cursor_row(&buf).is_some(),
+        "no cursor visible after scrolling"
+    );
+
+    // ...including a jump to the very bottom, and back to the top.
+    a.scroll_by(i32::MAX);
+    assert!(a.cursor_line >= a.scroll as usize);
+    assert!(draw(&mut a).area.height > 0 && cursor_row(&draw(&mut a)).is_some());
+
+    a.scroll_by(i32::MIN);
+    assert!(a.cursor_line < a.viewport_h as usize);
+    assert!(cursor_row(&draw(&mut a)).is_some());
+}
+
+#[test]
+fn scrolling_does_not_drag_the_cursor_through_a_live_selection() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut a = app();
+    let r = req("x.rs");
+    a.begin_show(r.clone());
+    a.apply_diff(&r, Ok(fake_diff(60)));
+    draw(&mut a);
+
+    a.on_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE)); // start selecting
+    let anchored = a.cursor_line;
+    a.scroll_by(30);
+    assert_eq!(
+        a.cursor_line, anchored,
+        "scrolling must not silently extend the selection"
+    );
+}
+
+#[test]
+fn the_header_reports_the_cursor_line_not_the_scroll_offset() {
+    let mut a = app();
+    let r = req("x.rs");
+    a.begin_show(r.clone());
+    a.apply_diff(&r, Ok(fake_diff(40)));
+    draw(&mut a);
+
+    let header = row(&draw(&mut a), 0);
+    assert!(header.contains("ln 1"), "header: {header:?}");
+
+    // Move the cursor down a few lines; the header follows it.
+    for _ in 0..5 {
+        a.on_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('j'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+    let header = row(&draw(&mut a), 0);
+    assert!(header.contains("ln 6"), "header: {header:?}");
+    assert_eq!(a.cursor_file_line(), Some(6));
+}
