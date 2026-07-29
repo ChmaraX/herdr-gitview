@@ -355,28 +355,30 @@ impl Session {
     }
 
     fn open_requested_popups(&mut self) {
-        // Popups (whole-file annotate, note edit, confirm dialogs) run
-        // through one manager with liveness tracking: a popup pane dying
-        // without an answer cancels the interaction instead of wedging it.
-        // Notes are always written in the diff pane's inline composer, so
-        // both requests travel over the link and take the focus with them.
-        if let Some((file, cached)) = self.app.annotate_request.take() {
-            if self.conn.is_some() {
-                self.send(&ToPreview::ComposeNote { file, cached });
-                self.focus_preview();
-            } else {
-                self.app
-                    .set_status("preview not connected — press r to reconnect");
+        // Popups (confirm dialogs) run through one manager with liveness
+        // tracking: a popup pane dying without an answer cancels the
+        // interaction instead of wedging it. Notes are written in the diff
+        // pane's inline composer, so those requests travel over the link and
+        // take the focus with them.
+        if self.app.annotate_request.take().is_some() {
+            // The composer needs the diff pane to be showing this file. Carry
+            // the Show along instead of relying on the debounced one having
+            // been flushed first — pressing `j` then `a` inside the debounce
+            // window used to fail with "open that file's diff first".
+            match current_show(&self.app) {
+                Some(show) => {
+                    self.hand_off(ToPreview::ComposeNote {
+                        show: Box::new(show),
+                    });
+                    self.show_dirty = false; // the composer's Show is the current one
+                }
+                None => self.app.set_status("select a file to annotate"),
             }
         }
-        if let Some((id, _)) = self.app.edit_note_request.take() {
-            if self.conn.is_some() {
-                self.send(&ToPreview::ComposeEditNote { id });
-                self.focus_preview();
-            } else {
-                self.app
-                    .set_status("preview not connected — press r to reconnect");
-            }
+        if let Some(id) = self.app.edit_note_request.take() {
+            // The preview owns the note, so it can re-show the right file
+            // itself; nothing here needs to know which file that is.
+            self.hand_off(ToPreview::ComposeEditNote { id });
         }
         // Confirm modals become native floating popup panes when herdr
         // supports them; the in-pane overlay is the fallback.
@@ -443,7 +445,7 @@ impl Session {
             app::Mode::Log => self.app.open_commit(),
             app::Mode::Notes => {
                 if let Some(note) = self.app.selected_note() {
-                    self.app.edit_note_request = Some((note.id, note.text.clone()));
+                    self.app.edit_note_request = Some(note.id);
                 }
             }
             app::Mode::Files | app::Mode::CommitFiles => {
@@ -587,6 +589,18 @@ impl Session {
         });
     }
 
+    /// Send a composer request to the diff pane and give it the focus, which
+    /// is where the keystrokes need to land.
+    fn hand_off(&mut self, msg: ToPreview) {
+        if self.conn.is_none() {
+            self.app
+                .set_status("preview not connected — press r to reconnect");
+            return;
+        }
+        self.send(&msg);
+        self.focus_preview();
+    }
+
     fn focus_preview(&self) {
         if let Some(preview) = &self.env.preview_pane {
             crate::herdr_cli::focus_pane(&self.env.herdr_bin, preview);
@@ -637,7 +651,7 @@ pub fn spawn_connector(tx: &Sender<Event>, socket: Option<PathBuf>, budget: Dura
 /// The Show message for the current selection, or `None` when nothing
 /// diffable is selected (headers, commit rows, empty list).
 fn current_show(app: &App) -> Option<ToPreview> {
-    let (e, staged) = app.selected_entry()?;
+    let (e, section) = app.selected_entry()?;
     let commit = match app.mode {
         app::Mode::CommitFiles => Some(app.commit.as_ref()?.sha.clone()),
         _ => None,
@@ -646,7 +660,9 @@ fn current_show(app: &App) -> Option<ToPreview> {
         file: e.path.clone(),
         orig_path: e.orig_path.clone(),
         scope: app.scope,
-        cached: staged && app.scope == Scope::Worktree,
+        // Only the staged section shows the --cached diff; Flat (branch
+        // scope / commit files) never does.
+        cached: section.cached(),
         kind: e.kind,
         commit,
     })
@@ -663,12 +679,12 @@ fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
             Some(format!("note-{}", note.id)),
         ));
     }
-    let (e, staged) = app.selected_entry()?;
+    let (e, section) = app.selected_entry()?;
     let commit = match app.mode {
         app::Mode::CommitFiles => app.commit.as_ref().map(|c| c.sha.clone()),
         _ => None,
     };
-    Some((e.path.clone(), app.scope, staged, commit))
+    Some((e.path.clone(), app.scope, section.cached(), commit))
 }
 
 /// The Show for a hovered note: its file's live worktree diff.

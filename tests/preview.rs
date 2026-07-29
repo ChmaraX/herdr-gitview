@@ -712,18 +712,27 @@ fn the_composer_edits_an_existing_note_in_place() {
 }
 
 #[test]
-fn editing_a_note_from_another_file_is_declined() {
+fn editing_a_note_in_another_file_asks_for_that_file_first() {
     let mut a = app_with_notes(vec![note(1, 3, 3, "elsewhere")]);
     a.notes[0].file = PathBuf::from("other.rs");
-    assert!(!a.begin_edit_note(1), "should decline, not compose blindly");
-    assert!(a.composer.is_none());
-    assert!(!a.begin_edit_note(999), "unknown id");
+    // The preview knows which file the note belongs to, so it can ask for it
+    // itself rather than refusing and making the list guess.
+    assert!(
+        matches!(a.show_for_note(1), Some(herdr_gitview::ipc::ToPreview::Show { file, .. }) if file == std::path::Path::new("other.rs"))
+    );
+    // An unknown id has nothing to show and nothing to edit.
+    assert!(a.show_for_note(999).is_none());
+    assert!(!a.begin_edit_note(999));
+    // The shown file needs no re-Show.
+    let mut a = app_with_notes(vec![note(1, 3, 3, "here")]);
+    assert!(a.show_for_note(1).is_none());
+    assert!(a.begin_edit_note(1));
 }
 
 #[test]
 fn a_whole_file_note_composes_at_the_top() {
     let mut a = app_with_notes(vec![]);
-    assert!(a.begin_file_note(PathBuf::from("f.txt"), false));
+    a.begin_file_note();
     let body = body_lines(&draw(&mut a));
     assert!(
         body[0].contains('╭'),
@@ -736,10 +745,6 @@ fn a_whole_file_note_composes_at_the_top() {
     key(&mut a, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(a.notes[0].start, 0);
     assert_eq!(a.notes[0].end, 0);
-    assert!(
-        !a.begin_file_note(PathBuf::from("nope.rs"), false),
-        "wrong file"
-    );
 }
 
 #[test]
@@ -846,4 +851,108 @@ fn cards_stay_readable_on_a_wide_pane_and_clear_the_right_edge() {
             "width {width}: card touches the right edge"
         );
     }
+}
+
+// ---- regressions found by review -------------------------------------------
+
+#[test]
+fn focus_note_finds_the_right_card_while_another_is_being_edited() {
+    // `card_starts` used to be rank-indexed over the notes *minus* the one
+    // being edited, while `scroll_to_note` computed the rank over *all* of
+    // them — so hovering a note in the notes view scrolled to a different one.
+    let mut a = app_with_notes(vec![
+        note(1, 2, 2, "note one"),
+        note(2, 20, 20, "note two"),
+        note(3, 40, 40, "note three"),
+    ]);
+    let r = req("f.txt");
+    a.apply_diff(&r, Ok(fake_diff(60)));
+    draw(&mut a);
+
+    assert!(a.begin_edit_note(1), "open the composer on note 1");
+    a.focus_note(2);
+    let buf = draw(&mut a);
+    let card = (1..H - 1)
+        .map(|y| row(&buf, y))
+        .find(|l| l.contains("note ·"))
+        .unwrap_or_default();
+    assert!(
+        card.contains("line 20"),
+        "scrolled to the wrong note: {card:?}"
+    );
+}
+
+#[test]
+fn the_composer_survives_a_diff_larger_than_the_render_cap() {
+    // Cards used to be spliced in and *then* the doc truncated, so past the
+    // cap the composer was deleted from the doc while still owning the
+    // keyboard: you typed blind into a box that wasn't drawn.
+    let mut a = app();
+    let r = req("f.txt");
+    a.begin_show(r.clone());
+    a.apply_diff(&r, Ok(fake_diff(20_050)));
+    draw(&mut a);
+
+    a.on_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    press(&mut a, 'a');
+    type_text(&mut a, "still visible");
+    let body = body_lines(&draw(&mut a));
+    assert!(
+        body.iter().any(|l| l.contains("still visible")),
+        "composer not on screen: {body:?}"
+    );
+    assert!(body.iter().any(|l| l.contains('╭')));
+}
+
+#[test]
+fn the_truncation_notice_is_chrome_not_a_source_line() {
+    let mut a = app();
+    let r = req("f.txt");
+    a.begin_show(r.clone());
+    a.apply_diff(&r, Ok(fake_diff(20_050)));
+    draw(&mut a);
+
+    a.on_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    let text: String = a.doc.lines[a.cursor_line]
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(
+        !text.contains("truncated"),
+        "the cursor rested on the notice and reported {:?}",
+        a.cursor_file_line()
+    );
+    assert!(a.cursor_file_line().is_some());
+}
+
+#[test]
+fn a_note_whose_line_is_gone_says_so_instead_of_posing_as_a_file_note() {
+    // `line_for_new(...).unwrap_or(0)` conflated "whole file" with "not
+    // found", so a note left behind by a shrinking diff silently became a
+    // whole-file note pinned at the top.
+    let mut a = app_with_notes(vec![note(1, 900, 999, "orphaned")]);
+    let r = req("f.txt");
+    a.apply_diff(&r, Ok(fake_diff(10)));
+    let body = body_lines(&draw(&mut a));
+    let top = body.iter().position(|l| l.contains('╭')).expect("no card");
+    assert!(
+        body[top].contains("anchor lost"),
+        "orphaned note not flagged: {:?}",
+        body[top]
+    );
+    assert!(
+        body[top].contains("900-999"),
+        "should still name its lines: {:?}",
+        body[top]
+    );
+
+    // A real whole-file note is not flagged.
+    let mut a = app_with_notes(vec![note(1, 0, 0, "about the file")]);
+    let r = req("f.txt");
+    a.apply_diff(&r, Ok(fake_diff(10)));
+    let body = body_lines(&draw(&mut a));
+    let top = body.iter().position(|l| l.contains('╭')).unwrap();
+    assert!(body[top].contains("whole file"));
+    assert!(!body[top].contains("anchor lost"));
 }

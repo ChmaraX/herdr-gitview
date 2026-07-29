@@ -14,12 +14,12 @@ use std::collections::HashMap;
 
 use crossterm::event::KeyEvent;
 
-use common::{TempRepo, fixture, git, write};
+use common::{TempRepo, fixture, git, git_lenient, write};
 use herdr_gitview::config::Config;
 use herdr_gitview::git::{Repo, Scope, StageState};
 use herdr_gitview::keymap::{Keymap, parse_key};
 use herdr_gitview::list::App;
-use herdr_gitview::list::app::{ListRow, Mode};
+use herdr_gitview::list::app::{ListRow, Mode, Section};
 
 fn app_for(repo: &TempRepo) -> App {
     let cfg = Config::default();
@@ -33,16 +33,16 @@ fn press(app: &mut App, spec: &str) {
     app.on_key(KeyEvent::new(code, mods));
 }
 
-/// Move the cursor onto the directory row whose full path is `path`, in the
-/// section `staged`. Panics when that row isn't on screen.
-fn select_dir(app: &mut App, path: &str, staged: bool) {
+/// Move the cursor onto the directory row whose full path is `path`, in
+/// `section`. Panics when that row isn't on screen.
+fn select_dir(app: &mut App, path: &str, section: Section) {
     let idx = app
         .rows
         .iter()
         .position(|row| {
-            matches!(row, ListRow::Dir { path: p, staged: s, .. } if p == path && *s == staged)
+            matches!(row, ListRow::Dir { path: p, section: s, .. } if p == path && *s == section)
         })
-        .unwrap_or_else(|| panic!("no dir row {path:?} (staged={staged}) in {:?}", app.rows));
+        .unwrap_or_else(|| panic!("no dir row {path:?} in {section:?} in {:?}", app.rows));
     app.cursor = idx;
 }
 
@@ -70,7 +70,7 @@ fn stage_on_a_folder_row_stages_everything_under_it() {
     let t = folder_repo("folder-stage");
     let mut app = app_for(&t);
 
-    select_dir(&mut app, "src/", false);
+    select_dir(&mut app, "src/", Section::Changes);
     press(&mut app, "s");
 
     assert_eq!(stage_of(&app, "src/a.rs"), StageState::Staged);
@@ -84,7 +84,7 @@ fn stage_on_a_nested_folder_row_stops_at_that_subtree() {
     let t = folder_repo("folder-stage-nested");
     let mut app = app_for(&t);
 
-    select_dir(&mut app, "src/deep/", false);
+    select_dir(&mut app, "src/deep/", Section::Changes);
     press(&mut app, "s");
 
     assert_eq!(stage_of(&app, "src/deep/b.rs"), StageState::Staged);
@@ -98,7 +98,7 @@ fn stage_on_the_staged_section_folder_row_unstages_it() {
     let mut app = app_for(&t);
 
     // `s` is section-aware: on the staged side of the tree it unstages.
-    select_dir(&mut app, "src/", true);
+    select_dir(&mut app, "src/", Section::Staged);
     press(&mut app, "s");
 
     assert_eq!(stage_of(&app, "src/a.rs"), StageState::Untracked);
@@ -113,7 +113,7 @@ fn unstage_on_a_folder_row_only_touches_the_staged_side() {
     git(&t.dir, &["add", "src/staged.rs"]);
     let mut app = app_for(&t);
 
-    select_dir(&mut app, "src/", true);
+    select_dir(&mut app, "src/", Section::Staged);
     press(&mut app, "u");
 
     assert_eq!(stage_of(&app, "src/staged.rs"), StageState::Untracked);
@@ -125,7 +125,7 @@ fn discard_on_a_folder_row_confirms_then_removes_the_subtree() {
     let t = folder_repo("folder-discard");
     let mut app = app_for(&t);
 
-    select_dir(&mut app, "src/", false);
+    select_dir(&mut app, "src/", Section::Changes);
     press(&mut app, "x");
     assert!(app.modal.is_some(), "discard must ask first");
 
@@ -141,7 +141,7 @@ fn discard_on_a_folder_row_can_be_cancelled() {
     let t = folder_repo("folder-discard-cancel");
     let mut app = app_for(&t);
 
-    select_dir(&mut app, "src/", false);
+    select_dir(&mut app, "src/", Section::Changes);
     press(&mut app, "x");
     press(&mut app, "n"); // decline
 
@@ -163,7 +163,8 @@ fn folder_actions_are_refused_in_branch_scope() {
 
     press(&mut app, "w"); // -> branch scope
     assert_eq!(app.scope, Scope::Branch);
-    select_dir(&mut app, "src/", false);
+    // Branch scope is one unsectioned tree.
+    select_dir(&mut app, "src/", Section::Flat);
     press(&mut app, "s");
 
     assert!(
@@ -171,6 +172,75 @@ fn folder_actions_are_refused_in_branch_scope() {
         "got: {:?}",
         app.active_status()
     );
+}
+
+/// Regression: "merge conflicts" and "changes" are both unstaged sections, so
+/// a `Dir { staged: bool }` row could not tell them apart — two identical
+/// `("src/", false)` rows. Acting on the conflicts one reached into changes
+/// and staged (or offered to discard) a file the user could not even see
+/// under that row.
+#[test]
+fn a_folder_row_never_reaches_into_another_section() {
+    let t = fixture("folder-section-isolation");
+    write(&t.dir, "src/a.rs", "base\n");
+    write(&t.dir, "src/b.rs", "base\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "base"]);
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "src/a.rs", "feature\n");
+    git(&t.dir, &["commit", "-q", "-am", "f"]);
+    git(&t.dir, &["checkout", "-q", "main"]);
+    write(&t.dir, "src/a.rs", "main\n");
+    git(&t.dir, &["commit", "-q", "-am", "m"]);
+    git_lenient(&t.dir, &["merge", "feature"]); // leaves src/a.rs conflicted
+    write(&t.dir, "src/b.rs", "modified\n"); // ...and src/b.rs merely modified
+
+    let mut app = app_for(&t);
+    // Both sections render a `src/` folder row; they must be distinguishable.
+    let sections: Vec<Section> = app
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            ListRow::Dir { path, section, .. } if path == "src/" => Some(*section),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sections, vec![Section::Conflicts, Section::Changes]);
+
+    // `s` on the conflicts folder is refused, and touches nothing.
+    select_dir(&mut app, "src/", Section::Conflicts);
+    press(&mut app, "s");
+    assert!(
+        app.active_status().unwrap().contains("conflict"),
+        "got: {:?}",
+        app.active_status()
+    );
+    assert_eq!(stage_of(&app, "src/b.rs"), StageState::Unstaged);
+
+    // `x` on it is refused too, rather than offering to discard src/b.rs.
+    press(&mut app, "x");
+    assert!(app.modal.is_none(), "must not open a discard confirm");
+    assert_eq!(stage_of(&app, "src/b.rs"), StageState::Unstaged);
+
+    // The changes folder still works, and only on its own section.
+    select_dir(&mut app, "src/", Section::Changes);
+    press(&mut app, "s");
+    assert_eq!(stage_of(&app, "src/b.rs"), StageState::Staged);
+}
+
+/// A folder path is prefix-matched, so a sibling sharing its prefix must not
+/// be swept in: `src/` and `src-old/` are different folders.
+#[test]
+fn a_folder_row_does_not_match_a_prefix_sibling() {
+    let t = fixture("folder-prefix-sibling");
+    write(&t.dir, "src/a.rs", "a\n");
+    write(&t.dir, "src-old/b.rs", "b\n");
+    let mut app = app_for(&t);
+
+    select_dir(&mut app, "src/", Section::Changes);
+    press(&mut app, "s");
+    assert_eq!(stage_of(&app, "src/a.rs"), StageState::Staged);
+    assert_eq!(stage_of(&app, "src-old/b.rs"), StageState::Untracked);
 }
 
 // ---- branch-scoped log -----------------------------------------------------

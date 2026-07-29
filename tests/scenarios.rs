@@ -266,7 +266,15 @@ fn staging_moves_the_file_and_previews_the_staged_diff() {
             .app
             .rows
             .iter()
-            .filter(|r| matches!(r, list::app::ListRow::Entry { staged: true, .. }))
+            .filter(|r| {
+                matches!(
+                    r,
+                    list::app::ListRow::Entry {
+                        section: list::app::Section::Staged,
+                        ..
+                    }
+                )
+            })
             .count()
     };
     assert_eq!(staged_rows(&w), 0);
@@ -349,6 +357,40 @@ fn note_flow_annotate_edit_delete_syncs_both_panes() {
     assert_eq!(w.list.app.mode, Mode::Files);
 }
 
+/// Regression: `ComposeNote` used to carry only a path and require the diff
+/// pane to already be showing it, but the list's `Show` is debounced and was
+/// flushed *after* the compose dispatch in the same tick. Moving the cursor
+/// and annotating inside that window failed with "open that file's diff
+/// first" — and stole the focus on the way.
+#[test]
+fn annotating_immediately_after_moving_still_opens_the_composer() {
+    let repo = fixture("annotate-after-move");
+    write(&repo.dir, "base.txt", "one\ntwo\nchanged\n");
+    write(&repo.dir, "second.txt", "brand new\n");
+    let mut w = World::new(repo);
+    // A realistic debounce, not the zero the other scenarios use.
+    w.list.show_debounce = Duration::from_millis(40);
+    w.pump();
+
+    // Move to the other file and annotate without waiting for the Show.
+    w.list.on_event(list::Event::Key(KeyEvent::new(
+        crossterm::event::KeyCode::Char('j'),
+        KeyModifiers::NONE,
+    )));
+    w.list.on_event(list::Event::Key(KeyEvent::new(
+        crossterm::event::KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    w.compose("a note on the file I just moved to");
+
+    assert_eq!(w.preview.app.notes.len(), 1);
+    assert_eq!(
+        w.preview.app.notes[0].file,
+        PathBuf::from("second.txt"),
+        "the note landed on the wrong file"
+    );
+}
+
 #[test]
 fn staged_note_notes_view_previews_the_staged_diff() {
     // Regression: a whole-file note added on a *staged* file used to force
@@ -365,7 +407,15 @@ fn staged_note_notes_view_previews_the_staged_diff() {
         .app
         .rows
         .iter()
-        .filter(|r| matches!(r, list::app::ListRow::Entry { staged: true, .. }))
+        .filter(|r| {
+            matches!(
+                r,
+                list::app::ListRow::Entry {
+                    section: list::app::Section::Staged,
+                    ..
+                }
+            )
+        })
         .count();
     assert_eq!(staged_rows, 1);
 

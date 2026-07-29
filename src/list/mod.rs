@@ -3,7 +3,9 @@
 //! threads and the terminal around a `Session`.
 
 pub mod app;
+pub mod rows;
 pub mod session;
+pub mod stage;
 mod tree;
 pub mod ui;
 
@@ -63,9 +65,11 @@ pub fn run() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    crate::term::enable_mouse();
+    let _term = crate::term::TermGuard::enter(crate::term::Modes {
+        mouse: true,
+        ..Default::default()
+    });
     let result = event_loop(&mut terminal, &mut session, &rx);
-    crate::term::disable_mouse();
     ratatui::restore();
 
     if session.app.should_quit && in_herdr {

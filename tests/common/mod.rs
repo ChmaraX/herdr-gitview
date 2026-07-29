@@ -35,6 +35,20 @@ pub fn git(dir: &Path, args: &[&str]) {
     );
 }
 
+/// Like [`git`], but tolerates a non-zero exit — a conflicting merge reports
+/// failure after correctly leaving the conflict markers in place.
+pub fn git_lenient(dir: &Path, args: &[&str]) {
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output();
+}
+
 pub fn write(dir: &Path, rel: &str, content: &str) {
     let path = dir.join(rel);
     if let Some(parent) = path.parent() {

@@ -31,7 +31,10 @@ pub fn run_pick_agent() -> Result<()> {
     let mut cursor = 0usize;
 
     let mut terminal = ratatui::init();
-    crate::term::enable_mouse();
+    let _term = crate::term::TermGuard::enter(crate::term::Modes {
+        mouse: true,
+        ..Default::default()
+    });
     let answer = loop {
         terminal.draw(|frame| {
             let area = frame.area();
@@ -121,7 +124,6 @@ pub fn run_pick_agent() -> Result<()> {
             _ => {}
         }
     };
-    crate::term::disable_mouse();
     ratatui::restore();
     write_answer(&answer)
 }

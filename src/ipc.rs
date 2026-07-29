@@ -59,13 +59,12 @@ pub enum ToPreview {
     },
     /// Nothing is selected any more (list emptied) — drop the shown diff.
     Clear,
-    /// The list asked for a whole-file note: the preview opens its inline
-    /// composer, so notes are always written in the same place.
+    /// The list asked for a whole-file note: the preview shows this diff and
+    /// opens its inline composer on it, so notes are always written in the
+    /// same place. The `Show` rides along rather than being assumed already
+    /// delivered — the list's own Show is debounced.
     ComposeNote {
-        file: PathBuf,
-        /// Whether the file was in the staged section when annotated, so the
-        /// notes view later re-shows the same (staged vs. worktree) diff.
-        cached: bool,
+        show: Box<ToPreview>,
     },
     /// The list's notes view asked to rewrite a note: same composer, prefilled.
     ComposeEditNote {

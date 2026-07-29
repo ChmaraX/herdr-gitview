@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 
+pub use super::rows::{ListRow, Section};
+pub use super::stage::Ops;
 use crate::config::Config;
-use crate::git::{ChangeKind, CommitInfo, FileEntry, Repo, Scope, StageState};
+use crate::git::{CommitInfo, FileEntry, Repo, Scope};
 use crate::keymap::{Action, Keymap};
 
 /// How long a transient footer message stays visible on screen.
@@ -33,54 +35,11 @@ pub enum Mode {
     Notes,
 }
 
-/// One visual row of the list. Sections group entries VSCode-style: a file
-/// with both staged and unstaged changes appears in *both* sections, and the
-/// section decides which diff the preview shows (`staged` → `--cached`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ListRow {
-    Header {
-        title: &'static str,
-        count: usize,
-    },
-    /// A directory row in the file tree — selectable; Enter or a click
-    /// collapses/expands the subtree below it. `path` (full path from the
-    /// tree root, trailing slash) plus `staged` (which section, in the
-    /// grouped worktree view) is its stable collapse identity.
-    Dir {
-        depth: usize,
-        name: String,
-        path: String,
-        staged: bool,
-        collapsed: bool,
-    },
-    Entry {
-        idx: usize,
-        staged: bool,
-        depth: usize,
-    },
-    Commit(usize),
-    /// A file heading in the notes view (not selectable).
-    NoteFile {
-        name: String,
-        count: usize,
-    },
-    Note(usize),
-}
-
-impl ListRow {
-    pub fn selectable(&self) -> bool {
-        !matches!(self, ListRow::Header { .. } | ListRow::NoteFile { .. })
-    }
-
-    /// How many terminal rows this entry draws as. Notes are two lines (an
-    /// anchor line plus their text), everything else is one — the list's
-    /// scroll offset and click hit-testing both need this.
-    pub fn height(&self) -> usize {
-        match self {
-            ListRow::Note(_) => 2,
-            _ => 1,
-        }
-    }
+/// What to do once the editor has been closed (delivered via EditDone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorThen {
+    QuitView,
+    Commit,
 }
 
 /// A centered overlay that captures all keys while open.
@@ -102,43 +61,6 @@ pub enum Modal {
 /// the action actually runs, so a refresh between ask and answer is harmless.
 pub enum PendingAction {
     Discard { paths: Vec<std::path::PathBuf> },
-}
-
-/// What a mutating action (stage / unstage / discard) operates on: the file
-/// under the cursor, or every file under the selected directory row that
-/// belongs to that row's section.
-enum Target {
-    File {
-        idx: usize,
-        staged: bool,
-    },
-    Dir {
-        path: String,
-        staged: bool,
-        idxs: Vec<usize>,
-    },
-}
-
-impl Target {
-    fn staged(&self) -> bool {
-        match self {
-            Target::File { staged, .. } | Target::Dir { staged, .. } => *staged,
-        }
-    }
-
-    fn indices(&self) -> Vec<usize> {
-        match self {
-            Target::File { idx, .. } => vec![*idx],
-            Target::Dir { idxs, .. } => idxs.clone(),
-        }
-    }
-}
-
-/// What to do once the editor has been closed (delivered via EditDone).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditorThen {
-    QuitView,
-    Commit,
 }
 
 pub struct App {
@@ -191,9 +113,9 @@ pub struct App {
     pub editor_close_request: Option<EditorThen>,
     /// Last left-click (row, time) for double-click detection.
     last_click: Option<(usize, Instant)>,
-    /// Collapsed tree directories, keyed by (staged section, full path).
-    /// Survives refreshes/rebuilds; stale keys are harmless.
-    collapsed: std::collections::HashSet<(bool, String)>,
+    /// Collapsed tree directories, keyed by (section, full path). Survives
+    /// refreshes/rebuilds; stale keys are harmless.
+    pub(super) collapsed: std::collections::HashSet<(Section, String)>,
     /// True while the current modal is being shown as a native herdr popup
     /// pane instead of the in-pane overlay (the answer arrives via file).
     pub modal_external: bool,
@@ -205,7 +127,7 @@ pub struct App {
     pub annotate_request: Option<(std::path::PathBuf, bool)>,
     pub send_notes_request: bool,
     /// Edit/delete requests for the run loop (they need popups / the conn).
-    pub edit_note_request: Option<(u64, String)>,
+    pub edit_note_request: Option<u64>,
     pub delete_note_request: Option<u64>,
     /// The nvim remote socket (injected by the session; None standalone).
     pub nvim_server: Option<std::path::PathBuf>,
@@ -282,135 +204,19 @@ impl App {
 
     // ---- row derivation ---------------------------------------------------
 
-    /// Rebuild `rows` from the current mode's backing vector, keeping the
-    /// cursor on a selectable row.
-    pub fn rebuild_rows(&mut self) {
-        self.rows = match self.mode {
-            Mode::Log => (0..self.commits.len()).map(ListRow::Commit).collect(),
-            Mode::Notes => self.note_rows(),
-            Mode::CommitFiles => self.flat_tree_rows(),
-            Mode::Files if self.scope == Scope::Branch => self.flat_tree_rows(),
-            Mode::Files => self.grouped_rows(),
-        };
-        self.snap_cursor();
-    }
-
-    /// Notes grouped under a header per file, in first-seen order, so a
-    /// review of several files reads as a review rather than a flat list.
-    fn note_rows(&self) -> Vec<ListRow> {
-        let mut rows = Vec::new();
-        let mut seen: Vec<&std::path::Path> = Vec::new();
-        for note in &self.notes {
-            if !seen.contains(&note.file.as_path()) {
-                seen.push(note.file.as_path());
-            }
-        }
-        for file in seen {
-            let idxs: Vec<usize> = self
-                .notes
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| n.file == file)
-                .map(|(i, _)| i)
-                .collect();
-            rows.push(ListRow::NoteFile {
-                name: file.display().to_string(),
-                count: idxs.len(),
-            });
-            rows.extend(idxs.into_iter().map(ListRow::Note));
-        }
-        rows
-    }
-
-    /// One tree spanning every entry, unsectioned (Branch scope, CommitFiles).
-    fn flat_tree_rows(&self) -> Vec<ListRow> {
-        let pairs: Vec<(usize, &std::path::Path)> = self
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (i, e.path.as_path()))
-            .collect();
-        tree_rows(&pairs, false, &self.collapsed_for(false))
-    }
-
-    /// The collapsed paths for one section, in the shape `tree::build_tree`
-    /// wants.
-    fn collapsed_for(&self, staged: bool) -> std::collections::HashSet<String> {
-        self.collapsed
-            .iter()
-            .filter(|(s, _)| *s == staged)
-            .map(|(_, p)| p.clone())
-            .collect()
-    }
-
-    /// Worktree sections: conflicts, staged, changes. A partially staged file
-    /// appears under both "staged" and "changes".
-    fn grouped_rows(&self) -> Vec<ListRow> {
-        let mut rows = Vec::new();
-        let section =
-            |title, rows: &mut Vec<ListRow>, filter: &dyn Fn(&FileEntry) -> bool, staged| {
-                let idxs: Vec<usize> = self
-                    .entries
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| filter(e))
-                    .map(|(i, _)| i)
-                    .collect();
-                if !idxs.is_empty() {
-                    rows.push(ListRow::Header {
-                        title,
-                        count: idxs.len(),
-                    });
-                    let pairs: Vec<(usize, &std::path::Path)> = idxs
-                        .iter()
-                        .map(|&idx| (idx, self.entries[idx].path.as_path()))
-                        .collect();
-                    rows.extend(tree_rows(&pairs, staged, &self.collapsed_for(staged)));
-                }
-            };
-        section(
-            "merge conflicts",
-            &mut rows,
-            &|e| e.kind == ChangeKind::Conflicted,
-            false,
-        );
-        section(
-            "staged changes",
-            &mut rows,
-            &|e| {
-                e.kind != ChangeKind::Conflicted
-                    && matches!(e.stage, StageState::Staged | StageState::Partial)
-            },
-            true,
-        );
-        section(
-            "changes",
-            &mut rows,
-            &|e| {
-                e.kind != ChangeKind::Conflicted
-                    && matches!(
-                        e.stage,
-                        StageState::Unstaged | StageState::Partial | StageState::Untracked
-                    )
-            },
-            false,
-        );
-        rows
-    }
-
-    /// The selected entry and whether it sits in the staged section.
-    pub fn selected_entry(&self) -> Option<(&FileEntry, bool)> {
+    /// The selected entry and which section it sits in.
+    pub fn selected_entry(&self) -> Option<(&FileEntry, Section)> {
         match self.rows.get(self.cursor)? {
-            ListRow::Entry { idx, staged, .. } => Some((self.entries.get(*idx)?, *staged)),
+            ListRow::Entry { idx, section, .. } => Some((self.entries.get(*idx)?, *section)),
             _ => None,
         }
     }
 
-    /// The selected directory row's (path, staged) identity, if the cursor
+    /// The selected directory row's (path, section) identity, if the cursor
     /// sits on one.
-    pub fn selected_dir(&self) -> Option<(&str, bool)> {
+    pub fn selected_dir(&self) -> Option<(&str, Section)> {
         match self.rows.get(self.cursor)? {
-            ListRow::Dir { path, staged, .. } => Some((path.as_str(), *staged)),
+            ListRow::Dir { path, section, .. } => Some((path.as_str(), *section)),
             _ => None,
         }
     }
@@ -418,17 +224,17 @@ impl App {
     /// Collapse/expand the directory under the cursor. Returns true when the
     /// cursor was on a directory row (the toggle happened).
     pub fn toggle_selected_dir(&mut self) -> bool {
-        let Some((path, staged)) = self.selected_dir().map(|(p, s)| (p.to_string(), s)) else {
+        let Some((path, section)) = self.selected_dir().map(|(p, s)| (p.to_string(), s)) else {
             return false;
         };
-        let key = (staged, path.clone());
+        let key = (section, path.clone());
         if !self.collapsed.remove(&key) {
             self.collapsed.insert(key);
         }
         self.rebuild_rows();
         // Keep the cursor on the toggled directory.
         if let Some(i) = self.rows.iter().position(|row| {
-            matches!(row, ListRow::Dir { path: p, staged: s, .. } if *p == path && *s == staged)
+            matches!(row, ListRow::Dir { path: p, section: s, .. } if *p == path && *s == section)
         }) {
             self.cursor = i;
         }
@@ -502,8 +308,8 @@ impl App {
                     self.set_status("notes work on staged/unstaged changes only");
                 } else {
                     match self.selected_entry() {
-                        Some((entry, staged)) => {
-                            self.annotate_request = Some((entry.path.clone(), staged))
+                        Some((entry, section)) => {
+                            self.annotate_request = Some((entry.path.clone(), section.cached()))
                         }
                         None => self.set_status("select a file to annotate"),
                     }
@@ -803,172 +609,6 @@ impl App {
 
     // ---- stage / discard (worktree scope) ---------------------------------
 
-    /// `s`: section-aware — in "staged changes" it unstages, in "changes" it
-    /// stages. The file then moves to the other section (VSCode-style).
-    /// On a directory row it applies to every file under it in that section.
-    fn stage_toggle(&mut self) {
-        let Some(target) = self.mutation_target() else {
-            return;
-        };
-        let paths = self.target_paths(&target);
-        let count = paths.len();
-        let result = if target.staged() {
-            self.repo.unstage_many(&paths)
-        } else {
-            self.repo.stage_many(&paths)
-        };
-        if let Err(err) = result {
-            self.set_status(first_line(&err.to_string()));
-            return;
-        }
-        if let Target::Dir { path, .. } = &target {
-            let verb = if target.staged() {
-                "unstaged"
-            } else {
-                "staged"
-            };
-            let msg = format!("{verb} {count} file(s) under {path}");
-            self.set_status(msg);
-        }
-        self.force_refresh();
-        self.needs_reshow = true;
-        let all_staged =
-            !self.entries.is_empty() && self.entries.iter().all(|e| e.stage == StageState::Staged);
-        if all_staged {
-            self.set_status("all changes staged — c to commit");
-        }
-    }
-
-    /// `u`: explicitly unstage the selected file (or folder), whichever
-    /// section it's in.
-    fn unstage_selected(&mut self) {
-        let Some(target) = self.mutation_target() else {
-            return;
-        };
-        let paths: Vec<std::path::PathBuf> = target
-            .indices()
-            .into_iter()
-            .filter_map(|i| self.entries.get(i))
-            .filter(|e| matches!(e.stage, StageState::Staged | StageState::Partial))
-            .map(|e| e.path.clone())
-            .collect();
-        if paths.is_empty() {
-            self.set_status(match target {
-                Target::File { .. } => "nothing staged for this file",
-                Target::Dir { .. } => "nothing staged in this folder",
-            });
-            return;
-        }
-        if let Err(err) = self.repo.unstage_many(&paths) {
-            self.set_status(first_line(&err.to_string()));
-            return;
-        }
-        self.force_refresh();
-        self.needs_reshow = true;
-    }
-
-    /// `x`: ask before throwing changes away (refused for conflicts).
-    /// On a directory row it discards every file under it in that section.
-    fn open_discard_confirm(&mut self) {
-        let Some(target) = self.mutation_target() else {
-            return;
-        };
-        let paths = self.target_paths(&target);
-        if paths.is_empty() {
-            return;
-        }
-        let text = match &target {
-            Target::File { .. } => format!(
-                "Discard changes to {}? This cannot be undone. (y/n)",
-                paths[0].display()
-            ),
-            Target::Dir { path, .. } => format!(
-                "Discard changes to {} file(s) under {path}? This cannot be undone. (y/n)",
-                paths.len()
-            ),
-        };
-        self.modal = Some(Modal::Confirm {
-            text,
-            pending: PendingAction::Discard { paths },
-        });
-    }
-
-    /// Resolve what the cursor points at into a mutation target, applying the
-    /// shared guards (working-tree scope only, no conflicts). Sets a status
-    /// message and returns None when the action can't run.
-    fn mutation_target(&mut self) -> Option<Target> {
-        if self.mode != Mode::Files {
-            self.set_status("read-only in history view");
-            return None;
-        }
-        if self.scope != Scope::Worktree {
-            self.set_status("works in working-tree scope (w)");
-            return None;
-        }
-        match self.rows.get(self.cursor).cloned()? {
-            ListRow::Entry { idx, staged, .. } => match self.entries.get(idx) {
-                Some(e) if e.kind == ChangeKind::Conflicted => {
-                    self.set_status("resolve the conflict in the editor first");
-                    None
-                }
-                Some(_) => Some(Target::File { idx, staged }),
-                None => None,
-            },
-            ListRow::Dir { path, staged, .. } => {
-                let idxs = self.entries_in_dir(&path, staged);
-                if idxs.is_empty() {
-                    self.set_status("nothing to do in this folder");
-                    return None;
-                }
-                Some(Target::Dir { path, staged, idxs })
-            }
-            _ => None,
-        }
-    }
-
-    /// Entry indices under a directory row, restricted to that row's section
-    /// so `s` on "staged changes / src/" only touches the staged side.
-    /// Conflicted entries are never included — they need the editor first.
-    fn entries_in_dir(&self, dir: &str, staged: bool) -> Vec<usize> {
-        self.entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.path.to_string_lossy().starts_with(dir))
-            .filter(|(_, e)| e.kind != ChangeKind::Conflicted && in_section(e, staged))
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    fn target_paths(&self, target: &Target) -> Vec<std::path::PathBuf> {
-        target
-            .indices()
-            .into_iter()
-            .filter_map(|i| self.entries.get(i))
-            .map(|e| e.path.clone())
-            .collect()
-    }
-
-    /// Discard by path (the confirm modal stores paths, not indices, so a
-    /// refresh between question and answer can't discard the wrong file).
-    /// Stops at the first failure and reports it.
-    fn discard_paths(&mut self, paths: &[std::path::PathBuf]) {
-        let mut failure = None;
-        for path in paths {
-            let Some(entry) = self.entries.iter().find(|e| e.path == *path).cloned() else {
-                continue; // already gone (staged+discarded elsewhere)
-            };
-            if let Err(err) = self.repo.discard(&entry) {
-                failure = Some(first_line(&err.to_string()));
-                break;
-            }
-        }
-        if let Some(msg) = failure {
-            self.set_status(msg);
-        }
-        self.force_refresh();
-        self.needs_reshow = true;
-    }
-
     // ---- refresh ----------------------------------------------------------
 
     /// Replace the entry vector (from an auto-refresh or a forced reload),
@@ -1021,36 +661,36 @@ impl App {
         match self.rows.get(self.cursor)? {
             ListRow::Entry { .. } => self
                 .selected_entry()
-                .map(|(e, staged)| CursorId::Entry(e.path.clone(), staged)),
-            ListRow::Dir { path, staged, .. } => Some(CursorId::Dir(path.clone(), *staged)),
+                .map(|(e, section)| CursorId::Entry(e.path.clone(), section)),
+            ListRow::Dir { path, section, .. } => Some(CursorId::Dir(path.clone(), *section)),
             _ => None,
         }
     }
 
     fn restore_cursor(&mut self, keep: Option<CursorId>) {
         match keep {
-            Some(CursorId::Entry(path, staged)) => {
+            Some(CursorId::Entry(path, section)) => {
                 // Same path + same section first; then same path anywhere.
-                let find = |want_staged: Option<bool>| {
+                let find = |want: Option<Section>| {
                     self.rows.iter().position(|row| match row {
-                        ListRow::Entry { idx, staged: s, .. } => {
+                        ListRow::Entry { idx, section: s, .. } => {
                             self.entries
                                 .get(*idx)
                                 .map(|e| e.path == path)
                                 .unwrap_or(false)
-                                && want_staged.map(|w| *s == w).unwrap_or(true)
+                                && want.map(|w| *s == w).unwrap_or(true)
                         }
                         _ => false,
                     })
                 };
-                if let Some(i) = find(Some(staged)).or_else(|| find(None)) {
+                if let Some(i) = find(Some(section)).or_else(|| find(None)) {
                     self.cursor = i;
                     return;
                 }
             }
-            Some(CursorId::Dir(path, staged)) => {
+            Some(CursorId::Dir(path, section)) => {
                 if let Some(i) = self.rows.iter().position(|row| {
-                    matches!(row, ListRow::Dir { path: p, staged: s, .. } if *p == path && *s == staged)
+                    matches!(row, ListRow::Dir { path: p, section: s, .. } if *p == path && *s == section)
                 }) {
                     self.cursor = i;
                     return;
@@ -1090,7 +730,7 @@ impl App {
     }
 
     /// Clamp the cursor into range and off header rows.
-    fn snap_cursor(&mut self) {
+    pub(super) fn snap_cursor(&mut self) {
         if self.rows.is_empty() {
             self.cursor = 0;
             return;
@@ -1148,54 +788,13 @@ impl App {
     }
 }
 
-/// Does this entry belong to the grouped worktree view's staged section
-/// (`staged = true`) or its unstaged "changes" section? A partially staged
-/// file is in both, exactly like [`App::grouped_rows`] renders it.
-fn in_section(e: &FileEntry, staged: bool) -> bool {
-    if staged {
-        matches!(e.stage, StageState::Staged | StageState::Partial)
-    } else {
-        matches!(
-            e.stage,
-            StageState::Unstaged | StageState::Partial | StageState::Untracked
-        )
-    }
-}
-
 /// First line of an error (git errors embed stderr; the top line is the news).
-fn first_line(s: &str) -> String {
+pub(super) fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or(s).trim().to_string()
 }
 
 /// What the cursor pointed at before a refresh, in a rebuild-stable form.
 enum CursorId {
-    Entry(std::path::PathBuf, bool),
-    Dir(String, bool),
-}
-
-/// Build tree rows (dirs + files) for one section's `(idx, path)` pairs,
-/// converting the pure `tree::TreeRow`s into `ListRow`s.
-fn tree_rows(
-    pairs: &[(usize, &std::path::Path)],
-    staged: bool,
-    collapsed: &std::collections::HashSet<String>,
-) -> Vec<ListRow> {
-    super::tree::build_tree(pairs, collapsed)
-        .into_iter()
-        .map(|row| match row {
-            super::tree::TreeRow::Dir {
-                depth,
-                name,
-                path,
-                collapsed,
-            } => ListRow::Dir {
-                depth,
-                name,
-                path,
-                staged,
-                collapsed,
-            },
-            super::tree::TreeRow::File { depth, idx } => ListRow::Entry { idx, staged, depth },
-        })
-        .collect()
+    Entry(std::path::PathBuf, Section),
+    Dir(String, Section),
 }

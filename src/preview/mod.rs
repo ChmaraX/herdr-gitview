@@ -3,6 +3,8 @@
 //! terminal, and the real PTY editor host around a `Session`.
 
 pub mod app;
+pub mod card;
+pub mod compose;
 pub mod editor;
 pub mod highlight;
 pub mod render;
@@ -66,13 +68,15 @@ pub fn run() -> Result<()> {
     let mut session = Session::new(app, env, tx);
 
     let mut terminal = ratatui::init();
-    crate::term::enable_mouse();
-    // The note composer wants shift+enter to mean "newline", which only a
-    // terminal speaking the kitty keyboard protocol can report distinctly.
-    crate::term::enable_key_disambiguation();
-    let result = event_loop(&mut terminal, &mut session, &rx, &input_paused);
-    crate::term::disable_key_disambiguation();
-    crate::term::disable_mouse();
+    // `key_disambiguation` is what lets the note composer see shift+enter as
+    // a newline rather than a save. The guard leaves both modes on every exit
+    // path, panic included.
+    let term = crate::term::TermGuard::enter(crate::term::Modes {
+        mouse: true,
+        key_disambiguation: true,
+    });
+    let result = event_loop(&mut terminal, &mut session, &rx, &input_paused, &term);
+    drop(term);
     ratatui::restore();
 
     if session.app.close_view && in_herdr {
@@ -86,6 +90,7 @@ fn event_loop(
     session: &mut Session,
     rx: &mpsc::Receiver<Event>,
     input_paused: &Arc<AtomicBool>,
+    term: &crate::term::TermGuard,
 ) -> Result<()> {
     loop {
         session.tick();
@@ -94,6 +99,7 @@ fn event_loop(
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => {
                 let mut host = TerminalHost {
+                    term,
                     terminal,
                     input_paused,
                 };
@@ -115,16 +121,16 @@ fn event_loop(
 struct TerminalHost<'a> {
     terminal: &'a mut ratatui::DefaultTerminal,
     input_paused: &'a Arc<AtomicBool>,
+    term: &'a crate::term::TermGuard,
 }
 
 impl EditorHost for TerminalHost<'_> {
     fn run(&mut self, cwd: &Path, argv: &[String], envs: &[(String, String)]) -> Result<bool> {
         self.input_paused.store(true, Ordering::SeqCst);
-        crate::term::disable_mouse(); // the child owns mouse reporting
-        crate::term::disable_key_disambiguation();
+        // The child owns the terminal's modes until this guard drops.
+        let suspended = self.term.suspend();
         let result = editor::run_on_pty(self.terminal, cwd, argv, envs);
-        crate::term::enable_mouse();
-        crate::term::enable_key_disambiguation();
+        drop(suspended);
         self.input_paused.store(false, Ordering::SeqCst);
         result
     }

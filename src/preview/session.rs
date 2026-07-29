@@ -166,14 +166,20 @@ impl Session {
             ToPreview::Scroll { delta } => self.app.scroll_by(delta),
             ToPreview::Page { down, full } => self.app.page(down, full),
             ToPreview::Clear => self.app.clear(),
-            ToPreview::ComposeNote { file, cached } => {
-                if !self.app.begin_file_note(file, cached) {
-                    self.app.flash("open that file's diff first");
-                }
+            // A compose request carries the Show it needs, so it never
+            // depends on a debounced one having landed first.
+            ToPreview::ComposeNote { show } => {
+                self.on_ipc(*show);
+                self.app.begin_file_note();
             }
             ToPreview::ComposeEditNote { id } => {
+                // The preview owns the note, so it can re-show the file the
+                // note belongs to itself.
+                if let Some(show) = self.app.show_for_note(id) {
+                    self.on_ipc(show);
+                }
                 if !self.app.begin_edit_note(id) {
-                    self.app.flash("open that note's file first");
+                    self.app.flash("that note is gone");
                 }
             }
             ToPreview::FocusNote { id } => self.app.focus_note(id),

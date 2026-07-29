@@ -39,6 +39,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Folder actions could touch a file from another section.** "merge
+  conflicts" and "changes" are both unstaged, so a folder row could not tell
+  them apart — pressing `s` on `src/` under *merge conflicts* staged a
+  modified file from *changes* that wasn't even visible under that row, and
+  `x` offered to discard it. Rows now carry their section, so a folder action
+  is confined to the section you selected and a conflicted folder is refused.
+- Hovering a note in the notes view scrolled to the wrong note while another
+  was being edited.
+- On a diff past the 20 000-line render cap the note composer was truncated
+  away while still taking keystrokes — you typed into a box that wasn't
+  drawn. Cards are spliced into an already-capped document now.
+- The `… diff truncated` notice was a legal cursor target reporting a source
+  line number it had nothing to do with.
+- A note whose line no longer exists in the diff silently became a whole-file
+  note pinned at the top; it now keeps its range and is marked `anchor lost`.
+- Annotating immediately after moving the cursor failed with "open that
+  file's diff first" (and stole the focus): the compose request raced the
+  list's debounced diff update. It now carries that update with it.
+- A panic no longer leaves the terminal in kitty-keyboard mode with broken
+  arrow keys; terminal modes are owned by a guard that runs on every exit
+  path.
+- The footer advertised `stage`/`unstage`/`discard` on selections that then
+  refused to run, because it re-derived eligibility with a repo-wide
+  predicate instead of asking the model.
 - `shift+enter` inserts a newline in the note composer again. The diff pane
   never asked for the kitty keyboard protocol, which is the only way a
   terminal can report `shift+enter` as distinct from `enter`, so it was

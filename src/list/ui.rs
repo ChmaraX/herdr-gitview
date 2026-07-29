@@ -479,35 +479,33 @@ fn footer_hints(app: &App, width: usize) -> Line<'static> {
             // Only advertise what is currently possible.
             let has_files = !app.entries.is_empty();
             let worktree = app.scope == Scope::Worktree;
-            let selected = app.selected_entry();
-            let on_dir = app.selected_dir().is_some();
-            // A directory row is a valid stage/discard target too, so the
-            // hints stay up while the cursor rests on one.
-            let sel_ok = on_dir
-                || selected
-                    .map(|(e, _)| e.kind != ChangeKind::Conflicted)
-                    .unwrap_or(false);
+            // What the selection actually allows, straight from the model —
+            // the footer used to re-derive this with a repo-wide predicate
+            // and advertise keys that then refused to run.
+            let ops = app.selection_ops();
             let any_staged = app
                 .entries
                 .iter()
                 .any(|e| matches!(e.stage, StageState::Staged | StageState::Partial));
-            let sel_staged = if on_dir {
-                any_staged
-            } else {
-                selected
-                    .map(|(e, _)| matches!(e.stage, StageState::Staged | StageState::Partial))
-                    .unwrap_or(false)
-            };
 
             let mut pairs = Vec::new();
             if has_files {
                 pairs.push((sym(app.keys.hint(Action::Edit)), "edit"));
             }
-            if worktree && sel_ok {
-                pairs.push((sym(app.keys.hint(Action::Stage)), "stage"));
-                if sel_staged {
-                    pairs.push((sym(app.keys.hint(Action::Unstage)), "unstage"));
-                }
+            if ops.stage {
+                pairs.push((
+                    sym(app.keys.hint(Action::Stage)),
+                    if ops.stage_unstages {
+                        "unstage"
+                    } else {
+                        "stage"
+                    },
+                ));
+            }
+            if ops.unstage && !ops.stage_unstages {
+                pairs.push((sym(app.keys.hint(Action::Unstage)), "unstage"));
+            }
+            if ops.discard {
                 pairs.push((sym(app.keys.hint(Action::Discard)), "discard"));
             }
             if worktree && any_staged {
