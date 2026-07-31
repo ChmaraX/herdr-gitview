@@ -212,7 +212,24 @@ impl Session {
 
     fn on_mouse(&mut self, m: MouseEvent) {
         let before = show_key(&self.app);
-        let activate = self.app.on_mouse(m.kind, m.row);
+        let mut activate = self.app.on_mouse(m.kind, m.row);
+        // While the editor owns the preview PTY, clicking files is browsing,
+        // not editing: a (double-)click closes a clean nvim so the diff view
+        // returns (mirrors the keyboard-browsing close in `on_key`). Enter
+        // remains the explicit "switch the open nvim to this file" path.
+        if self.app.busy.is_some()
+            && matches!(self.app.mode, app::Mode::Files | app::Mode::CommitFiles)
+            && self.app.modal.is_none()
+        {
+            let moved = show_key(&self.app) != before;
+            if (moved || activate)
+                && !self.probe_pending
+                && self.app.editor_close_request.is_none()
+            {
+                self.spawn_probe(None);
+            }
+            activate = false;
+        }
         if activate {
             self.activate_selection();
         }
