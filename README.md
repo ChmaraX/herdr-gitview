@@ -83,14 +83,21 @@ defaults; any key works):
 
 ```toml
 [[keys.command]]
+key = "cmd+shift+g"
+type = "plugin_action"
+command = "chmarax.gitview.toggle"   # sidebar in the current tab
+description = "git view sidebar"
+
+[[keys.command]]
 key = "cmd+g"
 type = "plugin_action"
-command = "chmarax.gitview.toggle"   # <plugin_id>.<action_id>
-description = "git view"
+command = "chmarax.gitview.toggle-tab"   # dedicated gitview tab
+description = "git view tab"
 ```
 
-The shortcut is a smart toggle: it opens the view for the repo you're in,
-jumps to it from any other tab, and closes it when pressed inside.
+`toggle` opens a sidebar in the tab you're in (each tab can have its own);
+press again in that tab to close. `toggle-tab` opens one dedicated tab per
+repo and jumps to it if it's already open.
 
 **To update**, reinstall - your config survives:
 

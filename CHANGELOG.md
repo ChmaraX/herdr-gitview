@@ -5,6 +5,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Sidebar toggle (`toggle` / typically `cmd+shift+g`) no longer jumps to
+  another tab that already has gitview open. Each tab can host its own
+  sidebar instance; pressing the shortcut again in that tab closes it.
+  The dedicated-tab toggle (`toggle-tab` / typically `cmd+g`) still
+  focuses the existing view tab from elsewhere.
+- Sidebar preview no longer sticks on "waiting for file list…": per-tab
+  socket paths were long enough to hit macOS's AF_UNIX `sun_path` limit
+  (bind failed; the list pane timed out). Tab keys in those paths are
+  now 8 hex chars.
+
 ### Changed
 
 - The sidebar (`toggle`) now splits the tab evenly: half for the panes you

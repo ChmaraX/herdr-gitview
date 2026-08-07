@@ -12,7 +12,7 @@ use crate::logx::{log, state_dir};
 const PLUGIN_ID: &str = "chmarax.gitview";
 
 /// How the view is laid out.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ViewMode {
     /// Full-height sidebar in the invoking tab (existing layout squeezed
@@ -23,11 +23,17 @@ pub enum ViewMode {
     Tab,
 }
 
-/// Everything needed to find and tear down an open view later, keyed on disk
-/// by a hash of the repo root (see `views_dir`). For `Sidebar` mode `tab_id`
-/// is the *host* tab the sidebar lives in; for `Tab` mode it is the view's
-/// own tab.
-#[derive(Serialize, Deserialize)]
+/// Everything needed to find and tear down an open view later.
+///
+/// Disk layout under `views_dir`:
+/// - Tab mode (singleton per repo): `{repo_hash}.tab.json` + `.tab.sock`
+/// - Sidebar mode (one per host tab): `{repo_hash}.{tab_key}.json` + matching sock
+///   (`tab_key` is 8 hex chars — 16 would push `.sock` past macOS `sun_path`)
+/// - Legacy single-file `{repo_hash}.json` is still read for migration.
+///
+/// For `Sidebar` mode `tab_id` is the *host* tab the sidebar lives in; for
+/// `Tab` mode it is the view's own tab.
+#[derive(Serialize, Deserialize, Clone)]
 struct ViewState {
     repo: PathBuf,
     tab_id: String,
@@ -53,20 +59,28 @@ struct RecoverState {
     steps: Vec<MoveStep>,
 }
 
+/// Sidebar toggle (`toggle` action): open/close a sidebar in the *current*
+/// tab only. Never jumps to another tab's gitview — each tab can have its
+/// own instance.
 pub fn toggle() -> Result<()> {
-    toggle_mode(ViewMode::Sidebar)
-}
-
-pub fn toggle_tab() -> Result<()> {
-    toggle_mode(ViewMode::Tab)
-}
-
-fn toggle_mode(mode: ViewMode) -> Result<()> {
     let repo = resolve_repo()?;
-    match read_state(&repo) {
-        // Open + invoked from some other tab → jump to the view instead of
-        // closing it; only a toggle from inside the view's own tab closes.
-        // (Whichever mode the open view uses — one view per repo.)
+    let tab_id = current_tab_id()?;
+    match read_sidebar_state(&repo, &tab_id) {
+        Some(state) if view_alive(&state) => close_view(&repo, &state),
+        Some(state) => {
+            log("stale sidebar state (panes gone) — cleaning up and reopening");
+            cleanup(&repo, &state);
+            open_sidebar_view(&repo)
+        }
+        None => open_sidebar_view(&repo),
+    }
+}
+
+/// Dedicated-tab toggle (`toggle-tab` action): one view tab per repo.
+/// Pressing again from another tab focuses that view; from inside it closes.
+pub fn toggle_tab() -> Result<()> {
+    let repo = resolve_repo()?;
+    match read_tab_state(&repo) {
         Some(state) if view_alive(&state) && !invoked_from(&state.tab_id) => {
             log(format!("focusing existing view tab {}", state.tab_id));
             herdr_json(&["tab", "focus", &state.tab_id])?;
@@ -74,32 +88,44 @@ fn toggle_mode(mode: ViewMode) -> Result<()> {
         }
         Some(state) if view_alive(&state) => close_view(&repo, &state),
         Some(state) => {
-            log("stale state file (panes gone) — cleaning up and reopening");
+            log("stale tab state (panes gone) — cleaning up and reopening");
             cleanup(&repo, &state);
-            open_view(&repo, mode)
+            open_tab_view(&repo)
         }
-        None => open_view(&repo, mode),
+        None => open_tab_view(&repo),
     }
 }
 
 pub fn open() -> Result<()> {
     let repo = resolve_repo()?;
-    match read_state(&repo) {
-        Some(state) if view_alive(&state) => Ok(()), // already open
+    let tab_id = current_tab_id().unwrap_or_default();
+    match read_sidebar_state(&repo, &tab_id) {
+        Some(state) if view_alive(&state) => Ok(()), // already open here
         Some(state) => {
             cleanup(&repo, &state);
-            open_view(&repo, ViewMode::Sidebar)
+            open_sidebar_view(&repo)
         }
-        None => open_view(&repo, ViewMode::Sidebar),
+        None => open_sidebar_view(&repo),
     }
 }
 
 pub fn close() -> Result<()> {
     let repo = resolve_repo()?;
-    match read_state(&repo) {
-        Some(state) => close_view(&repo, &state),
-        None => Ok(()),
+    // Pane-initiated close inherits GITVIEW_SOCKET — close that instance only.
+    if let Ok(socket) = std::env::var("GITVIEW_SOCKET")
+        && let Some(state) = find_state_by_socket(&repo, Path::new(&socket))
+    {
+        return close_view(&repo, &state);
     }
+    // CLI / no socket: tear down every alive view for this repo.
+    for state in all_states(&repo) {
+        if view_alive(&state) {
+            close_view(&repo, &state)?;
+        } else {
+            cleanup(&repo, &state);
+        }
+    }
+    Ok(())
 }
 
 /// Fire-and-forget `herdr-gitview close`, used by a pane to tear down the
@@ -112,13 +138,6 @@ pub fn spawn_close() {
 
 // ---- open/close ----------------------------------------------------------
 
-fn open_view(repo: &Path, mode: ViewMode) -> Result<()> {
-    match mode {
-        ViewMode::Sidebar => open_sidebar_view(repo),
-        ViewMode::Tab => open_tab_view(repo),
-    }
-}
-
 /// Open the view in its own dedicated tab (the original behavior):
 /// preview + list panes, list at `list_width_percent` of the tab.
 fn open_tab_view(repo: &Path) -> Result<()> {
@@ -127,7 +146,7 @@ fn open_tab_view(repo: &Path) -> Result<()> {
     let cfg = crate::config::Config::load();
     let views = views_dir();
     std::fs::create_dir_all(&views)?;
-    let socket = views.join(format!("{}.sock", repo_hash(repo)));
+    let socket = tab_socket_path(repo);
     let _ = std::fs::remove_file(&socket);
 
     let preview_pane = open_pane(
@@ -192,7 +211,7 @@ fn open_tab_view(repo: &Path) -> Result<()> {
         mode: ViewMode::Tab,
         origin_tab,
     };
-    std::fs::write(state_path(repo), serde_json::to_vec_pretty(&state)?)?;
+    write_state(repo, &state)?;
     log("tab view opened");
     Ok(())
 }
@@ -202,13 +221,13 @@ fn open_tab_view(repo: &Path) -> Result<()> {
 /// herdr-nvim style) and preview+list take the right `view_width_percent`.
 fn open_sidebar_view(repo: &Path) -> Result<()> {
     log(format!("opening view for {}", repo.display()));
-    replay_recovery(repo); // best-effort: undo an interrupted earlier open
-
     let ctx = view_context()?;
+    replay_recovery(repo, &ctx.tab); // best-effort: undo an interrupted earlier open
+
     let cfg = crate::config::Config::load();
     let views = views_dir();
     std::fs::create_dir_all(&views)?;
-    let socket = views.join(format!("{}.sock", repo_hash(repo)));
+    let socket = sidebar_socket_path(repo, &ctx.tab);
     let _ = std::fs::remove_file(&socket);
 
     let rects = pane_rects(&ctx.focused_pane)?;
@@ -230,7 +249,10 @@ fn open_sidebar_view(repo: &Path) -> Result<()> {
             parked: parked.clone(),
             steps: plan.steps.clone(),
         };
-        std::fs::write(recover_path(repo), serde_json::to_vec_pretty(&recover)?)?;
+        std::fs::write(
+            recover_path(repo, &ctx.tab),
+            serde_json::to_vec_pretty(&recover)?,
+        )?;
         for pane in &parked {
             move_pane(pane, &parking_tab, Dir::Right, None, None)?;
         }
@@ -316,7 +338,7 @@ fn open_sidebar_view(repo: &Path) -> Result<()> {
     if let Some((_, placeholder)) = parking {
         let _ = herdr_json(&["pane", "close", &placeholder]);
     }
-    let _ = std::fs::remove_file(recover_path(repo));
+    let _ = std::fs::remove_file(recover_path(repo, &ctx.tab));
     let _ = herdr_json(&["plugin", "pane", "focus", &list_pane]);
 
     let state = ViewState {
@@ -328,7 +350,7 @@ fn open_sidebar_view(repo: &Path) -> Result<()> {
         mode: ViewMode::Sidebar,
         origin_tab: None,
     };
-    std::fs::write(state_path(repo), serde_json::to_vec_pretty(&state)?)?;
+    write_state(repo, &state)?;
     log("view opened");
     Ok(())
 }
@@ -360,7 +382,14 @@ fn close_view(repo: &Path, state: &ViewState) -> Result<()> {
 
 fn cleanup(repo: &Path, state: &ViewState) {
     let _ = std::fs::remove_file(&state.socket);
-    let _ = std::fs::remove_file(state_path(repo));
+    let _ = std::fs::remove_file(state_file_for(repo, state));
+    // Drop legacy single-file state only when it describes this same view.
+    if let Some(legacy) = read_state_file(&legacy_state_path(repo))
+        && legacy.tab_id == state.tab_id
+        && legacy.preview_pane == state.preview_pane
+    {
+        let _ = std::fs::remove_file(legacy_state_path(repo));
+    }
 }
 
 /// The view is alive as long as either of its panes still exists.
@@ -371,12 +400,23 @@ fn view_alive(state: &ViewState) -> bool {
 /// If an earlier open crashed mid-evacuation, move the parked panes back to
 /// their recorded positions and drop the parking tab. Best-effort: a pane
 /// that no longer exists is skipped.
-fn replay_recovery(repo: &Path) {
-    let Ok(bytes) = std::fs::read(recover_path(repo)) else {
+fn replay_recovery(repo: &Path, tab_id: &str) {
+    let path = recover_path(repo, tab_id);
+    let Ok(bytes) = std::fs::read(&path) else {
+        // Legacy per-repo recover file (pre multi-sidebar).
+        let legacy = views_dir().join(format!("{}.recover.json", repo_hash(repo)));
+        let Ok(bytes) = std::fs::read(&legacy) else {
+            return;
+        };
+        replay_recovery_bytes(&bytes, &legacy);
         return;
     };
-    let Ok(rec) = serde_json::from_slice::<RecoverState>(&bytes) else {
-        let _ = std::fs::remove_file(recover_path(repo));
+    replay_recovery_bytes(&bytes, &path);
+}
+
+fn replay_recovery_bytes(bytes: &[u8], path: &Path) {
+    let Ok(rec) = serde_json::from_slice::<RecoverState>(bytes) else {
+        let _ = std::fs::remove_file(path);
         return;
     };
     log("replaying interrupted-open recovery");
@@ -393,7 +433,7 @@ fn replay_recovery(repo: &Path) {
         );
     }
     let _ = herdr_json(&["tab", "close", &rec.parking_tab]);
-    let _ = std::fs::remove_file(recover_path(repo));
+    let _ = std::fs::remove_file(path);
 }
 
 /// Open one of our plugin panes and return its pane id. Prefers the id from
@@ -525,28 +565,129 @@ fn views_dir() -> PathBuf {
     state_dir().join("views")
 }
 
-fn state_path(repo: &Path) -> PathBuf {
+fn legacy_state_path(repo: &Path) -> PathBuf {
     views_dir().join(format!("{}.json", repo_hash(repo)))
 }
 
-fn recover_path(repo: &Path) -> PathBuf {
-    views_dir().join(format!("{}.recover.json", repo_hash(repo)))
+fn tab_state_path(repo: &Path) -> PathBuf {
+    views_dir().join(format!("{}.tab.json", repo_hash(repo)))
 }
 
-fn read_state(repo: &Path) -> Option<ViewState> {
-    let bytes = std::fs::read(state_path(repo)).ok()?;
+fn sidebar_state_path(repo: &Path, tab_id: &str) -> PathBuf {
+    views_dir().join(format!("{}.{}.json", repo_hash(repo), tab_key(tab_id)))
+}
+
+fn tab_socket_path(repo: &Path) -> PathBuf {
+    views_dir().join(format!("{}.tab.sock", repo_hash(repo)))
+}
+
+fn sidebar_socket_path(repo: &Path, tab_id: &str) -> PathBuf {
+    views_dir().join(format!("{}.{}.sock", repo_hash(repo), tab_key(tab_id)))
+}
+
+fn recover_path(repo: &Path, tab_id: &str) -> PathBuf {
+    views_dir().join(format!(
+        "{}.{}.recover.json",
+        repo_hash(repo),
+        tab_key(tab_id)
+    ))
+}
+
+fn state_file_for(repo: &Path, state: &ViewState) -> PathBuf {
+    match state.mode {
+        ViewMode::Tab => tab_state_path(repo),
+        ViewMode::Sidebar => sidebar_state_path(repo, &state.tab_id),
+    }
+}
+
+fn write_state(repo: &Path, state: &ViewState) -> Result<()> {
+    let path = state_file_for(repo, state);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(state)?)?;
+    Ok(())
+}
+
+fn read_state_file(path: &Path) -> Option<ViewState> {
+    let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+/// Sidebar state for a specific host tab (new path, then legacy if it matches).
+fn read_sidebar_state(repo: &Path, tab_id: &str) -> Option<ViewState> {
+    if tab_id.is_empty() {
+        return None;
+    }
+    if let Some(state) = read_state_file(&sidebar_state_path(repo, tab_id)) {
+        return Some(state);
+    }
+    let legacy = read_state_file(&legacy_state_path(repo))?;
+    (legacy.mode == ViewMode::Sidebar && legacy.tab_id == tab_id).then_some(legacy)
+}
+
+/// Dedicated-tab view state (new path, then legacy Tab-mode file).
+fn read_tab_state(repo: &Path) -> Option<ViewState> {
+    if let Some(state) = read_state_file(&tab_state_path(repo)) {
+        return Some(state);
+    }
+    let legacy = read_state_file(&legacy_state_path(repo))?;
+    (legacy.mode == ViewMode::Tab).then_some(legacy)
+}
+
+fn all_states(repo: &Path) -> Vec<ViewState> {
+    let mut out = Vec::new();
+    let prefix = repo_hash(repo);
+    let Ok(entries) = std::fs::read_dir(views_dir()) else {
+        return out;
+    };
+    for ent in entries.flatten() {
+        let path = ent.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(&prefix) || !name.ends_with(".json") {
+            continue;
+        }
+        if name.ends_with(".recover.json") {
+            continue;
+        }
+        if let Some(state) = read_state_file(&path) {
+            out.push(state);
+        }
+    }
+    out
+}
+
+fn find_state_by_socket(repo: &Path, socket: &Path) -> Option<ViewState> {
+    all_states(repo)
+        .into_iter()
+        .find(|s| s.socket == socket)
+}
+
+fn current_tab_id() -> Result<String> {
+    Ok(view_context()?.tab)
 }
 
 /// FNV-1a, hand-rolled: deterministic across runs and Rust versions, which
 /// std's DefaultHasher does not guarantee.
-fn repo_hash(repo: &Path) -> String {
+fn fnv1a(s: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in repo.to_string_lossy().as_bytes() {
+    for byte in s.as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("{hash:016x}")
+    hash
+}
+
+fn repo_hash(repo: &Path) -> String {
+    format!("{:016x}", fnv1a(&repo.to_string_lossy()))
+}
+
+/// Compact tab id for filenames. Full 16-hex + `{repo}.….sock` exceeds macOS
+/// `sockaddr_un.sun_path` (104 incl. NUL) under the default plugin state dir.
+fn tab_key(tab_id: &str) -> String {
+    format!("{:08x}", fnv1a(tab_id) as u32)
 }
 
 // ---- herdr CLI ------------------------------------------------------------
@@ -729,6 +870,45 @@ fn collect_strs(value: &Value, key: &str, out: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // state_dir() reads HERDR_PLUGIN_STATE_DIR; serialize tests that set it.
+    static STATE_DIR_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_temp_state_dir<T>(f: impl FnOnce(&Path) -> T) -> T {
+        let _guard = STATE_DIR_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "gitview-orch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("views")).unwrap();
+        // SAFETY: guarded by STATE_DIR_LOCK; restored before unlock.
+        unsafe {
+            std::env::set_var("HERDR_PLUGIN_STATE_DIR", &dir);
+        }
+        let result = f(&dir);
+        unsafe {
+            std::env::remove_var("HERDR_PLUGIN_STATE_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    }
+
+    fn sample_state(repo: &Path, tab_id: &str, mode: ViewMode, socket: PathBuf) -> ViewState {
+        ViewState {
+            repo: repo.to_path_buf(),
+            tab_id: tab_id.into(),
+            preview_pane: "p1".into(),
+            list_pane: "p2".into(),
+            socket,
+            mode,
+            origin_tab: None,
+        }
+    }
 
     #[test]
     fn collect_cwds_matches_real_action_context_keys() {
@@ -765,5 +945,128 @@ mod tests {
         collect_cwds(&ctx, &mut out);
         out.sort();
         assert_eq!(out, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+    }
+
+    #[test]
+    fn sidebar_state_is_per_tab_not_shared_across_tabs() {
+        with_temp_state_dir(|_| {
+            let repo = Path::new("/repo");
+            let a = sample_state(
+                repo,
+                "tab-a",
+                ViewMode::Sidebar,
+                sidebar_socket_path(repo, "tab-a"),
+            );
+            write_state(repo, &a).unwrap();
+
+            assert!(read_sidebar_state(repo, "tab-a").is_some());
+            // Another tab must not see tab-a's sidebar — that's the bug fix.
+            assert!(read_sidebar_state(repo, "tab-b").is_none());
+        });
+    }
+
+    #[test]
+    fn tab_state_is_singleton_and_ignores_sidebars() {
+        with_temp_state_dir(|_| {
+            let repo = Path::new("/repo");
+            let sidebar = sample_state(
+                repo,
+                "host-tab",
+                ViewMode::Sidebar,
+                sidebar_socket_path(repo, "host-tab"),
+            );
+            write_state(repo, &sidebar).unwrap();
+            assert!(read_tab_state(repo).is_none());
+
+            let tab = sample_state(repo, "view-tab", ViewMode::Tab, tab_socket_path(repo));
+            write_state(repo, &tab).unwrap();
+            let got = read_tab_state(repo).unwrap();
+            assert_eq!(got.tab_id, "view-tab");
+            assert_eq!(got.mode, ViewMode::Tab);
+        });
+    }
+
+    #[test]
+    fn legacy_sidebar_state_only_matches_its_host_tab() {
+        with_temp_state_dir(|_| {
+            let repo = Path::new("/repo");
+            let state = sample_state(
+                repo,
+                "tab-a",
+                ViewMode::Sidebar,
+                views_dir().join(format!("{}.sock", repo_hash(repo))),
+            );
+            std::fs::write(
+                legacy_state_path(repo),
+                serde_json::to_vec_pretty(&state).unwrap(),
+            )
+            .unwrap();
+
+            assert!(read_sidebar_state(repo, "tab-a").is_some());
+            assert!(read_sidebar_state(repo, "tab-b").is_none());
+            assert!(read_tab_state(repo).is_none());
+        });
+    }
+
+    #[test]
+    fn find_state_by_socket_picks_the_right_instance() {
+        with_temp_state_dir(|_| {
+            let repo = Path::new("/repo");
+            let a = sample_state(
+                repo,
+                "tab-a",
+                ViewMode::Sidebar,
+                sidebar_socket_path(repo, "tab-a"),
+            );
+            let b = sample_state(
+                repo,
+                "tab-b",
+                ViewMode::Sidebar,
+                sidebar_socket_path(repo, "tab-b"),
+            );
+            write_state(repo, &a).unwrap();
+            write_state(repo, &b).unwrap();
+
+            let found = find_state_by_socket(repo, &b.socket).unwrap();
+            assert_eq!(found.tab_id, "tab-b");
+        });
+    }
+
+    #[test]
+    fn sidebar_socket_fits_macos_sun_path_and_binds() {
+        // macOS sockaddr_un.sun_path is 104 bytes including the NUL.
+        const MAX_SOCK_PATH: usize = 103;
+        let repo = Path::new("/Users/adamchmara/projects/herdr-gitview");
+        let tab = "w22:t8";
+        let prefix = "/Users/adamchmara/.local/state/herdr/plugins/chmarax.gitview/views";
+        let new_path = format!("{prefix}/{}.{}.sock", repo_hash(repo), tab_key(tab));
+        let old_path = format!("{prefix}/{}.{:016x}.sock", repo_hash(repo), fnv1a(tab));
+        assert!(
+            new_path.len() <= MAX_SOCK_PATH,
+            "sidebar socket too long: {new_path} ({} bytes)",
+            new_path.len()
+        );
+        // Sanity: the pre-fix 16-hex tab key is what broke preview IPC.
+        assert!(
+            old_path.len() > MAX_SOCK_PATH,
+            "expected old naming to exceed limit, got {} bytes",
+            old_path.len()
+        );
+
+        // Bind under a short dir — macOS temp paths are themselves long enough
+        // to blow the limit even with an 8-hex tab key.
+        let dir = std::env::temp_dir().join("gv");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join(format!("{}.{}.sock", repo_hash(repo), tab_key(tab)));
+        assert!(
+            sock.to_string_lossy().len() <= MAX_SOCK_PATH,
+            "short-dir bind path still too long: {} ({} bytes)",
+            sock.display(),
+            sock.to_string_lossy().len()
+        );
+        let _ = std::fs::remove_file(&sock);
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        drop(listener);
+        let _ = std::fs::remove_file(&sock);
     }
 }
