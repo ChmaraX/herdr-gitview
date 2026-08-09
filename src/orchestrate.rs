@@ -660,9 +660,7 @@ fn all_states(repo: &Path) -> Vec<ViewState> {
 }
 
 fn find_state_by_socket(repo: &Path, socket: &Path) -> Option<ViewState> {
-    all_states(repo)
-        .into_iter()
-        .find(|s| s.socket == socket)
+    all_states(repo).into_iter().find(|s| s.socket == socket)
 }
 
 fn current_tab_id() -> Result<String> {

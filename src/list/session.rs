@@ -222,9 +222,7 @@ impl Session {
             && self.app.modal.is_none()
         {
             let moved = show_key(&self.app) != before;
-            if (moved || activate)
-                && !self.probe_pending
-                && self.app.editor_close_request.is_none()
+            if (moved || activate) && !self.probe_pending && self.app.editor_close_request.is_none()
             {
                 self.spawn_probe(None);
             }
