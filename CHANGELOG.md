@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-09
+
 ### Fixed
 
 - Sidebar toggle (`toggle` / typically `cmd+shift+g`) no longer jumps to
@@ -194,5 +196,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Release packaging: platform binaries with checksum-verified installer
   and source-build fallback.
 
-[Unreleased]: https://github.com/ChmaraX/herdr-gitview/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ChmaraX/herdr-gitview/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ChmaraX/herdr-gitview/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ChmaraX/herdr-gitview/releases/tag/v0.1.0
