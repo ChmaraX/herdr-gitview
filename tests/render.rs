@@ -331,3 +331,91 @@ fn a_repo_git_cannot_report_on_says_so_instead_of_clean() {
     assert!(!body.contains("working tree clean"), "{body}");
     assert!(body.contains("retries"), "no way out offered: {body}");
 }
+
+// ---- "which diff am I looking at" ------------------------------------------
+
+/// Render at an explicit width, for the wide-pane header extras.
+fn draw_wide(app: &mut App, width: u16) -> Buffer {
+    let backend = TestBackend::new(width, H);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| ui::render(frame, app)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+fn text_at(buf: &Buffer, y: u16, width: u16) -> String {
+    (0..width).map(|x| buf[(x, y)].symbol()).collect()
+}
+
+#[test]
+fn the_header_names_the_comparison_not_just_the_branch() {
+    let mut app = app_with(vec![entry(
+        "src/main.rs",
+        ChangeKind::Modified,
+        StageState::Unstaged,
+        3,
+        1,
+    )]);
+    let header = row_text(&draw(&mut app), 0);
+    assert!(header.contains("uncommitted"), "{header}");
+
+    app.scope = herdr_gitview::git::Scope::Branch;
+    app.base = "origin/next".to_string();
+    let header = row_text(&draw(&mut app), 0);
+    assert!(header.contains("vs origin/next"), "{header}");
+}
+
+#[test]
+fn the_comparison_survives_a_narrow_pane_and_a_long_branch_name() {
+    let mut app = app_with(vec![entry(
+        "src/main.rs",
+        ChangeKind::Modified,
+        StageState::Unstaged,
+        3,
+        1,
+    )]);
+    app.scope = herdr_gitview::git::Scope::Branch;
+    app.base = "origin/next".to_string();
+    app.branch = Some("feature/a-very-long-branch-name-indeed".to_string());
+    // The branch name is elided away; the comparison stays.
+    let header = text_at(&draw_wide(&mut app, 28), 0, 28);
+    assert!(header.contains("vs origin/next"), "{header}");
+}
+
+#[test]
+fn a_wide_pane_also_says_how_many_commits_the_branch_scope_covers() {
+    let mut app = app_with(vec![entry(
+        "src/main.rs",
+        ChangeKind::Modified,
+        StageState::Unstaged,
+        3,
+        1,
+    )]);
+    app.scope = herdr_gitview::git::Scope::Branch;
+    app.base = "origin/next".to_string();
+    app.branch = Some("feat/x".to_string());
+    app.branch_commits = Some(3);
+    let header = text_at(&draw_wide(&mut app, 80), 0, 80);
+    assert!(header.contains("3 commits"), "{header}");
+
+    app.branch_commits = Some(1);
+    let header = text_at(&draw_wide(&mut app, 80), 0, 80);
+    assert!(header.contains("1 commit "), "{header}");
+}
+
+#[test]
+fn the_footer_says_which_comparison_w_switches_to() {
+    let mut app = app_with(vec![entry(
+        "src/main.rs",
+        ChangeKind::Modified,
+        StageState::Unstaged,
+        3,
+        1,
+    )]);
+    app.base = "origin/next".to_string();
+    let footer = text_at(&draw_wide(&mut app, 80), H - 1, 80);
+    assert!(footer.contains("vs origin/next"), "{footer}");
+
+    app.scope = herdr_gitview::git::Scope::Branch;
+    let footer = text_at(&draw_wide(&mut app, 80), H - 1, 80);
+    assert!(footer.contains("uncommitted"), "{footer}");
+}

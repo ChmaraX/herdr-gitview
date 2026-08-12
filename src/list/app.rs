@@ -91,6 +91,9 @@ pub struct App {
     /// the first scope toggle.
     pub base: String,
     pub merge_base: Option<String>,
+    /// Commits HEAD has on top of `merge_base`, for the header. None until
+    /// the base resolves, or when git cannot count them.
+    pub branch_commits: Option<u32>,
 
     /// Current branch name for the header (None = detached HEAD).
     pub branch: Option<String>,
@@ -157,8 +160,7 @@ impl App {
         if app.scope == Scope::Branch {
             match app.repo.resolve_base(&app.cfg.base) {
                 Ok((base, mb)) => {
-                    app.base = base;
-                    app.merge_base = Some(mb);
+                    app.set_base(base, mb);
                     if let Ok(entries) = app.load_entries() {
                         app.entries = entries;
                         app.rebuild_rows();
@@ -193,6 +195,7 @@ impl App {
             list_offset: 0,
             base: String::new(),
             merge_base: None,
+            branch_commits: None,
             branch,
             status_msg: None,
             load_error: None,
@@ -468,10 +471,7 @@ impl App {
     fn toggle_log_filter(&mut self) {
         if !self.log_branch_only && self.merge_base.is_none() {
             match self.repo.resolve_base(&self.cfg.base) {
-                Ok((base, mb)) => {
-                    self.base = base;
-                    self.merge_base = Some(mb);
-                }
+                Ok((base, mb)) => self.set_base(base, mb),
                 Err(err) => {
                     self.set_status(format!("no base found: {err}"));
                     return;
@@ -501,6 +501,14 @@ impl App {
                 self.set_status(format!("log failed: {err}"));
             }
         }
+    }
+
+    /// Record the resolved base and count what sits on top of it, so every
+    /// place that resolves a base also gets the header's commit count.
+    fn set_base(&mut self, base: String, merge_base: String) {
+        self.branch_commits = self.repo.commits_ahead(&merge_base);
+        self.base = base;
+        self.merge_base = Some(merge_base);
     }
 
     /// The base ref label, with a placeholder when it hasn't resolved.
@@ -776,10 +784,7 @@ impl App {
             Scope::Worktree => {
                 if self.merge_base.is_none() {
                     match self.repo.resolve_base(&self.cfg.base) {
-                        Ok((base, mb)) => {
-                            self.base = base;
-                            self.merge_base = Some(mb);
-                        }
+                        Ok((base, mb)) => self.set_base(base, mb),
                         Err(err) => {
                             self.set_status(format!("no base found: {err}"));
                             return; // stay in worktree scope

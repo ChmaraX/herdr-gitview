@@ -309,6 +309,16 @@ impl Repo {
         Ok((base, mb))
     }
 
+    /// How many commits HEAD has on top of `from` (a ref or merge-base),
+    /// so the header can say how much "vs <base>" actually covers. None when
+    /// git cannot answer.
+    pub fn commits_ahead(&self, from: &str) -> Option<u32> {
+        match self.commits_between(from, "HEAD") {
+            u32::MAX => None,
+            n => Some(n),
+        }
+    }
+
     /// The current HEAD commit id (cache key for base resolution).
     pub fn head_sha(&self) -> Option<String> {
         let out = self.git_lenient(&["rev-parse", "HEAD"]).ok()?;

@@ -96,7 +96,7 @@ fn shows_diff_and_header_path() {
     let buf = draw(&mut a);
     let header = row(&buf, 0);
     assert!(header.contains("src/main.rs"), "header: {header:?}");
-    assert!(header.contains("worktree"), "header: {header:?}");
+    assert!(header.contains("uncommitted"), "header: {header:?}");
 
     let body: String = (1..H - 1).map(|y| row(&buf, y)).collect();
     assert!(body.contains("line 0"), "body: {body:?}");

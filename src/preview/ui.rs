@@ -36,9 +36,11 @@ fn render_header(frame: &mut Frame, area: Rect, app: &PreviewApp) {
         Some(req) => {
             let scope = match (&req.commit, req.scope) {
                 (Some(sha), _) => format!("commit {}", &sha[..sha.len().min(7)]),
-                (None, Scope::Worktree) => "worktree".to_string(),
+                // Same words as the list pane's header: both panes must
+                // name the same comparison, or the split is confusing.
+                (None, Scope::Worktree) => "uncommitted".to_string(),
                 (None, Scope::Branch) => {
-                    format!("branch vs {}", app.base.as_deref().unwrap_or("base"))
+                    format!("vs {}", app.base.as_deref().unwrap_or("base"))
                 }
             };
             let staged = if req.cached && req.scope == Scope::Worktree {

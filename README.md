@@ -53,8 +53,11 @@ https://github.com/user-attachments/assets/1cfdf22a-fc5a-40e2-af6c-546156d05c3b
   <img width="1539" height="778" alt="image" src="https://github.com/user-attachments/assets/23ee0639-4a6e-42c5-a003-6e71ab619c43" />
   <img width="1544" height="777" alt="image" src="https://github.com/user-attachments/assets/9b615b5b-3202-4ad4-8967-3bab03050e6c" />
 
-- **Branch vs. worktree scope** - `w` toggles between your working-tree
-  changes and everything on your branch (diff against the merge base).
+- **Always says which diff you are looking at** - the header names the
+  comparison first, before the branch: `uncommitted · feat/x` or
+  `vs origin/next · feat/x · 3 commits`. The diff pane says the same thing,
+  and the footer's `w` hint names the view it switches to. On a narrow pane
+  the file counts go before the comparison does.
 - **Mouse support** - click to select, double-click to open, drag-select diff
   lines, wheel to scroll, click folds to expand.
 

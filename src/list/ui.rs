@@ -22,10 +22,7 @@ const HELP_ACTIONS: &[(Action, &str)] = &[
     (Action::Top, "jump to top"),
     (Action::Bottom, "jump to bottom"),
     (Action::Edit, "open in editor"),
-    (
-        Action::ToggleScope,
-        "worktree / branch (log: branch commits)",
-    ),
+    (Action::ToggleScope, "compare: uncommitted / vs base branch"),
     (Action::Stage, "stage / unstage file or folder"),
     (Action::Unstage, "unstage file or folder"),
     (Action::Discard, "discard changes (file or folder)"),
@@ -73,31 +70,57 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 // ---- header ---------------------------------------------------------------
 
+/// Wide enough to also say how many commits the branch scope covers. Below
+/// this the count is the first thing dropped — the two sides of the diff
+/// matter more than its size.
+const COMMIT_COUNT_MIN_WIDTH: usize = 46;
+
+/// What the current view compares, as the user would say it out loud:
+/// "uncommitted" or "vs origin/next". This is the header's whole job — the
+/// pane must never leave you guessing which diff is on screen.
+pub fn scope_label(app: &App) -> String {
+    match app.scope {
+        Scope::Worktree => "uncommitted".to_string(),
+        Scope::Branch => format!("vs {}", base_label(app)),
+    }
+}
+
 fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     let branch = app.branch.clone().unwrap_or_else(|| "DETACHED".to_string());
+    let wide = area.width as usize >= COMMIT_COUNT_MIN_WIDTH;
     let left = match (&app.busy, app.mode) {
         (Some(what), _) => format!(" {what}"),
         (None, Mode::Log) if app.log_branch_only => {
-            format!(" log — {branch}  vs {}", base_label(app))
+            format!(" log · vs {} · {branch}", base_label(app))
         }
-        (None, Mode::Log) => format!(" log — {branch}  all"),
+        (None, Mode::Log) => format!(" log · all commits · {branch}"),
         (None, Mode::CommitFiles) => match &app.commit {
             Some(c) => format!(" {} {}", c.short, c.subject),
             None => " commit".to_string(),
         },
         (None, Mode::Notes) => " review notes".to_string(),
+        // Comparison first, branch second: on a narrow pane the tail is
+        // elided, and "which diff is this" outranks "which branch am I on".
         (None, Mode::Files) => {
-            let scope_label = match app.scope {
-                Scope::Worktree => "working tree".to_string(),
-                Scope::Branch => format!("vs {}", base_label(app)),
-            };
-            format!(" {branch}  {scope_label}")
+            let mut left = format!(" {} · {branch}", scope_label(app));
+            if let (Scope::Branch, true, Some(n)) = (app.scope, wide, app.branch_commits) {
+                let s = if n == 1 { "" } else { "s" };
+                left.push_str(&format!(" · {n} commit{s}"));
+            }
+            left
         }
     };
-    let right_spans = header_right_spans(app);
-    let right_width: usize = right_spans.iter().map(Span::width).sum();
+    let mut right_spans = header_right_spans(app);
+    let mut right_width: usize = right_spans.iter().map(Span::width).sum();
 
     let width = area.width as usize;
+    // The comparison outranks the file counts: on a pane too narrow for
+    // both, drop the counts rather than elide "vs origin/next" into a lie.
+    let need = scope_label(app).width() + 2;
+    if app.busy.is_none() && app.mode == Mode::Files && width.saturating_sub(right_width) < need {
+        right_spans.clear();
+        right_width = 0;
+    }
     let left = elide_tail(&left, width.saturating_sub(right_width + 1));
     let pad = width.saturating_sub(left.width() + right_width);
     let mut line_spans = vec![
@@ -184,7 +207,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
             (Mode::Log, _) => "no commits".to_string(),
             (Mode::CommitFiles, _) => "empty commit".to_string(),
             (Mode::Notes, _) => "no notes".to_string(),
-            (_, Scope::Worktree) => "working tree clean".to_string(),
+            (_, Scope::Worktree) => "working tree clean — nothing uncommitted".to_string(),
             (_, Scope::Branch) => format!("no changes vs {}", base_label(app)),
         };
         let mid = Rect {
@@ -460,6 +483,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
 /// On narrow panes, hints are dropped from the tail until the line fits;
 /// `? help` always survives so everything stays discoverable.
 fn footer_hints(app: &App, width: usize) -> Line<'static> {
+    // `w` names the view it switches *to*, so the other comparison is
+    // discoverable without pressing anything.
+    let other_scope = match app.scope {
+        Scope::Worktree => format!("vs {}", base_label(app)),
+        Scope::Branch => "uncommitted".to_string(),
+    };
     let pairs: Vec<(String, &str)> = match app.mode {
         Mode::Log => {
             let mut pairs = Vec::new();
@@ -537,6 +566,7 @@ fn footer_hints(app: &App, width: usize) -> Line<'static> {
             if !app.notes.is_empty() {
                 pairs.push((sym(app.keys.hint(Action::NotesView)), "notes"));
             }
+            pairs.push((sym(app.keys.hint(Action::ToggleScope)), &other_scope));
             pairs.push((sym(app.keys.hint(Action::Log)), "log"));
             pairs.push((sym(app.keys.hint(Action::Help)), "help"));
             pairs.push((sym(app.keys.hint(Action::Quit)), "quit"));
