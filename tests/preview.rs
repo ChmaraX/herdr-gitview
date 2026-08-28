@@ -51,6 +51,7 @@ fn fake_diff(n: usize) -> render::DiffDoc {
         &hl,
         herdr_gitview::config::Theme::Dark,
         3,
+        4,
     )
 }
 
@@ -64,6 +65,7 @@ fn empty_diff() -> render::DiffDoc {
         &hl,
         herdr_gitview::config::Theme::Dark,
         3,
+        4,
     )
 }
 
