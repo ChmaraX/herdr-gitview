@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "rust",
+  "include-component-in-tag": false,
+  "bootstrap-sha": "2bd0c3922ae461f2e6601d6bd220936504849f69",
+  "packages": {
+    ".": {
+      "package-name": "herdr-gitview",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "herdr-plugin.toml",
+          "jsonpath": "$.version"
+        }
+      ]
+    }
+  }
+}
