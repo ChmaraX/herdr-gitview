@@ -27,6 +27,10 @@ pub struct Config {
     /// Unchanged context lines kept around each change before folding (git's
     /// diff.context equivalent). Clamped to 0..=20.
     pub context_lines: usize,
+    /// Number of columns a tab expands to in the diff pane. Tabs are expanded
+    /// to spaces at render time because ratatui does not interpret `\t`.
+    /// Clamped to 1..=16.
+    pub tab_width: usize,
     /// action name -> key string, overrides `keymap::DEFAULT_KEYS`.
     pub keybindings: HashMap<String, String>,
     /// How much of the tab the whole gitview sidebar takes (percent of the
@@ -83,6 +87,7 @@ impl Default for Config {
             theme: Theme::Dark,
             default_scope: ScopePref::Worktree,
             context_lines: 3,
+            tab_width: 4,
             keybindings: HashMap::new(),
             view_width_percent: 50,
             list_width_percent: 25,
@@ -113,6 +118,7 @@ impl Config {
             }
         };
         cfg.context_lines = cfg.context_lines.min(20);
+        cfg.tab_width = cfg.tab_width.clamp(1, 16);
         cfg.view_width_percent = cfg.view_width_percent.clamp(20, 80);
         cfg.list_width_percent = cfg.list_width_percent.clamp(10, 80);
         // A tiny non-zero poll interval would hammer git; keep it sane.
@@ -178,6 +184,14 @@ mod tests {
         let cfg = Config::parse("view_width_percent = 5\nlist_width_percent = 99");
         assert_eq!(cfg.view_width_percent, 20);
         assert_eq!(cfg.list_width_percent, 80);
+    }
+
+    #[test]
+    fn tab_width_defaults_and_clamps() {
+        assert_eq!(Config::parse("").tab_width, 4);
+        assert_eq!(Config::parse("tab_width = 0").tab_width, 1);
+        assert_eq!(Config::parse("tab_width = 99").tab_width, 16);
+        assert_eq!(Config::parse("tab_width = 8").tab_width, 8);
     }
 
     #[test]

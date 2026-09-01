@@ -2,6 +2,7 @@
 //! highlighting, red/green line backgrounds, word-level emphasis, and folded
 //! context — ported (simplified) from persiyanov/herdr-reviewr `diff.rs` (MIT).
 
+use std::borrow::Cow;
 use std::path::Path;
 
 use ratatui::style::{Color, Style};
@@ -167,6 +168,39 @@ impl Palette {
     }
 }
 
+/// Expand `\t` to spaces using tab stops of `width` columns. ratatui draws to
+/// a cell grid and never interprets tabs, so we expand them before highlight
+/// and diff. Returns the input borrowed unchanged when it contains no tab, so
+/// the common (tab-free) case allocates nothing.
+fn expand_tabs(s: &str, width: usize) -> Cow<'_, str> {
+    if !s.contains('\t') {
+        return Cow::Borrowed(s);
+    }
+    let width = width.max(1);
+    let mut out = String::with_capacity(s.len() + width);
+    // Column resets at every line break; a tab pads to the next multiple of
+    // `width` within the current line.
+    let mut col = 0usize;
+    for ch in s.chars() {
+        match ch {
+            '\t' => {
+                let pad = width - (col % width);
+                out.extend(std::iter::repeat_n(' ', pad));
+                col += pad;
+            }
+            '\n' => {
+                out.push('\n');
+                col = 0;
+            }
+            other => {
+                out.push(other);
+                col += 1;
+            }
+        }
+    }
+    Cow::Owned(out)
+}
+
 /// Build the full document from old and new file content.
 pub fn build(
     path: &Path,
@@ -175,6 +209,7 @@ pub fn build(
     hl: &Highlighter,
     theme: crate::config::Theme,
     context_lines: usize,
+    tab_width: usize,
 ) -> DiffDoc {
     if old.contains('\0') || new.contains('\0') {
         return DiffDoc {
@@ -189,6 +224,9 @@ pub fn build(
         };
     }
     let ext = path.extension().and_then(|e| e.to_str());
+    let old = expand_tabs(old, tab_width);
+    let new = expand_tabs(new, tab_width);
+    let (old, new) = (old.as_ref(), new.as_ref());
     let old_lines = hl.highlight(old, ext);
     let new_lines = hl.highlight(new, ext);
     let line = |lines: &[Vec<Run>], i: usize| lines.get(i).cloned().unwrap_or_default();
@@ -569,7 +607,22 @@ mod tests {
             &hl,
             crate::config::Theme::Dark,
             3,
+            4,
         )
+    }
+
+    #[test]
+    fn expand_tabs_is_noop_without_tabs() {
+        assert!(matches!(expand_tabs("no tabs here\n", 4), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn expand_tabs_uses_tab_stops_and_resets_per_line() {
+        // Leading tab -> full width; tab after 2 cols -> pad to next stop.
+        assert_eq!(expand_tabs("\tx", 4), "    x");
+        assert_eq!(expand_tabs("ab\tx", 4), "ab  x");
+        // Column resets after newline.
+        assert_eq!(expand_tabs("a\n\tb", 4), "a\n    b");
     }
 
     #[test]
