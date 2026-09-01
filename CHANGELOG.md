@@ -5,15 +5,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-08-14
-
-### Fixed
-
-- Tab-indented files no longer render flush left. ratatui draws to a cell
-  grid and never interprets `\t`, so tabs are now expanded to spaces at
-  render time (column-aware tab stops, reset per line). Adds a `tab_width`
-  config option (default 4, clamped 1..=16). Tab-free files allocate nothing.
-
 ## [0.2.0] - 2026-08-09
 
 ### Fixed

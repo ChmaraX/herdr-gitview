@@ -1,6 +1,6 @@
 [package]
 name = "herdr-gitview"
-version = "0.2.1"
+version = "0.2.0"
 edition = "2024"
 description = "Two-pane git view plugin for herdr: changed files + syntax-highlighted diff, real nvim editing, staging, history, and review notes for AI agents"
 license = "MIT"
