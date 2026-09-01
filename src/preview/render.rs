@@ -185,7 +185,7 @@ fn expand_tabs(s: &str, width: usize) -> Cow<'_, str> {
         match ch {
             '\t' => {
                 let pad = width - (col % width);
-                out.extend(std::iter::repeat(' ').take(pad));
+                out.extend(std::iter::repeat_n(' ', pad));
                 col += pad;
             }
             '\n' => {
