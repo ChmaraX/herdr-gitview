@@ -1,6 +1,6 @@
 id = "chmarax.gitview"
 name = "gitview"
-version = "0.1.0"
+version = "0.2.1"
 min_herdr_version = "0.7.0"
 description = "Two-pane git view: changed files + diff, Enter opens nvim"
 platforms = ["macos", "linux"]

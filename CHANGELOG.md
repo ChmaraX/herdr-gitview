@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.1](https://github.com/ChmaraX/herdr-gitview/compare/v0.2.0...v0.2.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* expand tabs so tab-indented files render correctly ([#2](https://github.com/ChmaraX/herdr-gitview/issues/2)) ([54b31d1](https://github.com/ChmaraX/herdr-gitview/commit/54b31d11a21a3c6691404f74221d533470e8c3b1))
+
 ## [Unreleased]
 
 ## [0.2.0] - 2026-08-09
