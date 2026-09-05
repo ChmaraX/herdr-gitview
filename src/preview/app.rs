@@ -80,6 +80,11 @@ pub struct PreviewApp {
     built: Option<super::render::DiffDoc>,
     /// Styled, capped diff text (plus a truncation notice line when capped).
     pub doc: Text<'static>,
+    /// `doc`, word-wrapped to `viewport_w`, plus the row<->line maps. Kept in
+    /// sync with `doc`/`viewport_w` via `sync_wrapped` — every scroll/click
+    /// computation must go through this (never `doc.lines.len()` directly),
+    /// since a wrapped line renders as more rows than it has logical lines.
+    wrapped: super::render::WrappedDoc,
     /// First inserted line's new-file number (editor jump target).
     pub first_change: Option<u32>,
     /// Extra lines hidden by the cap (0 = not truncated).
@@ -146,6 +151,7 @@ impl PreviewApp {
             current: None,
             built: None,
             doc: Text::default(),
+            wrapped: super::render::WrappedDoc::default(),
             first_change: None,
             scroll: 0,
             viewport_h: 0,
@@ -189,6 +195,7 @@ impl PreviewApp {
         self.shown_file = None;
         self.saved_tint.clear();
         self.doc = Text::default();
+        self.sync_wrapped();
         self.first_change = None;
         self.scroll = 0;
         self.state = State::Splash("no file selected");
@@ -232,6 +239,7 @@ impl PreviewApp {
             self.built = None;
             self.saved_tint.clear();
             self.doc = Text::default();
+            self.sync_wrapped();
             self.state = State::Binary;
             self.clamp_scroll();
             return;
@@ -240,6 +248,7 @@ impl PreviewApp {
             self.built = None;
             self.saved_tint.clear();
             self.doc = Text::default();
+            self.sync_wrapped();
             self.state = State::Empty;
             self.clamp_scroll();
             return;
@@ -395,7 +404,11 @@ impl PreviewApp {
             MouseEventKind::ScrollDown => self.scroll_by(3),
             MouseEventKind::ScrollUp => self.scroll_by(-3),
             MouseEventKind::Down(MouseButton::Left) if y >= 1 => {
-                let line = self.scroll as usize + (y - 1) as usize;
+                // `scroll`/`y` are rendered-row coordinates (what a wrapped
+                // line actually paints); map back to the logical doc line
+                // everything else here (cards, cursor, folds) addresses.
+                let row = self.scroll as usize + (y - 1) as usize;
+                let line = self.line_of_row(row);
                 // Cards count as their neighbors; clicks on them do nothing.
                 let card_free = !self.card_lines.contains(&line);
                 let to_built = self.doc_to_built(line);
@@ -413,8 +426,8 @@ impl PreviewApp {
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) if y >= 1 => {
-                let line = (self.scroll as usize + (y - 1) as usize)
-                    .min(self.content_lines().saturating_sub(1));
+                let row = self.scroll as usize + (y - 1) as usize;
+                let line = self.line_of_row(row).min(self.content_lines().saturating_sub(1));
                 if self.select_anchor.is_none() {
                     self.select_anchor = Some(self.cursor_line);
                 }
@@ -445,19 +458,55 @@ impl PreviewApp {
         if self.viewport_w != w {
             self.viewport_w = w;
             if matches!(self.state, State::Diff) {
-                self.rebuild();
+                self.rebuild(); // re-boxes cards and re-wraps for the new width
+            } else {
+                self.sync_wrapped(); // still re-wrap so `wrapped` stays current
             }
         }
         self.clamp_scroll();
     }
 
-    /// Number of content lines currently in the document (incl. any notice).
+    /// Number of logical content lines in the document (incl. any notice).
+    /// This is *not* what's on screen once a line wraps — use
+    /// `visible_row_count` for anything measured against `scroll`.
     fn content_lines(&self) -> usize {
         self.doc.lines.len()
     }
 
+    /// Re-wrap `doc` to `viewport_w`. Call after either changes, before any
+    /// scroll-bound math (`max_scroll`, click mapping, ...) runs against it.
+    fn sync_wrapped(&mut self) {
+        self.wrapped = super::render::wrap_diff_text(&self.doc, self.viewport_w as usize);
+    }
+
+    /// The wrapped text actually painted in the diff body.
+    pub fn wrapped_text(&self) -> Text<'static> {
+        self.wrapped.text.clone()
+    }
+
+    /// Rendered rows currently in the document — the unit `scroll` and
+    /// on-screen `y` coordinates count in, once lines can wrap.
+    fn visible_row_count(&self) -> usize {
+        self.wrapped.text.lines.len()
+    }
+
+    /// The rendered row logical `line` starts on.
+    fn row_of_line(&self, line: usize) -> usize {
+        self.wrapped.line_to_row.get(line).copied().unwrap_or(0)
+    }
+
+    /// The logical doc line rendered `row` belongs to (clamped to the last
+    /// line once `row` runs past the wrapped content).
+    fn line_of_row(&self, row: usize) -> usize {
+        self.wrapped
+            .row_to_line
+            .get(row)
+            .copied()
+            .unwrap_or_else(|| self.content_lines().saturating_sub(1))
+    }
+
     fn max_scroll(&self) -> u16 {
-        self.content_lines()
+        self.visible_row_count()
             .saturating_sub(self.viewport_h as usize)
             .min(u16::MAX as usize) as u16
     }
@@ -494,13 +543,16 @@ impl PreviewApp {
         if self.select_anchor.is_some() {
             return;
         }
-        let last = self.content_lines().saturating_sub(1);
+        // `scroll`/`viewport_h` are row-space; the cursor is a logical doc
+        // line, so clamp in row-space and map the result back to a line.
+        let last_row = self.visible_row_count().saturating_sub(1);
         let top = self.scroll as usize;
-        let bottom = (top + self.viewport_h.max(1) as usize - 1).min(last);
-        let clamped = self.cursor_line.clamp(top.min(bottom), bottom);
+        let bottom = (top + self.viewport_h.max(1) as usize - 1).min(last_row);
+        let cur_row = self.row_of_line(self.cursor_line);
+        let clamped_row = cur_row.clamp(top.min(bottom), bottom);
         // Snapping away from the clamp edge keeps the cursor on screen.
-        let dir = if clamped < self.cursor_line { -1 } else { 1 };
-        let clamped = self.snap_off_card(clamped, dir);
+        let dir = if clamped_row < cur_row { -1 } else { 1 };
+        let clamped = self.snap_off_card(self.line_of_row(clamped_row), dir);
         if clamped != self.cursor_line {
             self.cursor_line = clamped;
             self.restyle();
@@ -600,12 +652,14 @@ impl PreviewApp {
         };
         // Step over a whole card rather than into it.
         self.cursor_line = self.snap_off_card(target, dir);
-        // Keep the cursor inside the viewport.
+        // Keep the cursor inside the viewport. `scroll`/`vh` are row-space;
+        // convert the cursor's logical line to its row before comparing.
         let vh = self.viewport_h.max(1) as usize;
-        if self.cursor_line < self.scroll as usize {
-            self.scroll = self.cursor_line as u16;
-        } else if self.cursor_line >= self.scroll as usize + vh {
-            self.scroll = (self.cursor_line + 1 - vh) as u16;
+        let cur_row = self.row_of_line(self.cursor_line);
+        if cur_row < self.scroll as usize {
+            self.scroll = cur_row as u16;
+        } else if cur_row >= self.scroll as usize + vh {
+            self.scroll = (cur_row + 1 - vh) as u16;
         }
         self.restyle();
     }
@@ -705,6 +759,11 @@ impl PreviewApp {
             None => tint(self.cursor_line, cursor_bg, &mut saved, &mut self.doc.lines),
         }
         self.saved_tint = saved;
+        // `doc` just changed (tint applied/moved) — re-wrap so the rendered
+        // text (and the row<->line maps scroll/click math relies on) stays
+        // in lockstep. `restyle` is the one place every doc mutation ends up
+        // going through, content rebuilds included.
+        self.sync_wrapped();
     }
 
     // ---- notes ------------------------------------------------------------
@@ -876,12 +935,14 @@ impl PreviewApp {
             return;
         };
         let vh = self.viewport_h.max(1) as usize;
-        let end = start + len;
-        if end > self.scroll as usize + vh {
-            self.scroll = (end - vh) as u16;
+        let last_line = (start + len).saturating_sub(1).min(self.content_lines().saturating_sub(1));
+        let start_row = self.row_of_line(start);
+        let end_row = self.row_of_line(last_line) + 1; // one past the box's last row
+        if end_row > self.scroll as usize + vh {
+            self.scroll = (end_row - vh) as u16;
         }
-        if (self.scroll as usize) > start {
-            self.scroll = start as u16;
+        if (self.scroll as usize) > start_row {
+            self.scroll = start_row as u16;
         }
         self.clamp_scroll();
     }
@@ -941,7 +1002,8 @@ impl PreviewApp {
         let Some((_, line)) = self.card_starts.iter().find(|(n, _)| *n == id) else {
             return; // not in the shown file, or its card is the open composer
         };
-        self.scroll = line.saturating_sub(3) as u16;
+        let row = self.row_of_line(*line);
+        self.scroll = row.saturating_sub(3) as u16;
         self.clamp_scroll();
         self.keep_cursor_visible();
     }
