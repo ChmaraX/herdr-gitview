@@ -7,6 +7,7 @@ use std::path::Path;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use similar::{ChangeTag, TextDiff};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::highlight::{Highlighter, Rgb, Run};
 
@@ -407,6 +408,144 @@ fn collapse_context(rows: Vec<Row>, margin: usize) -> Vec<Row> {
     out
 }
 
+// ---- wrapping ---------------------------------------------------------------
+
+/// A doc word-wrapped to a pane's `width`, plus the row maps that translate
+/// between a *logical* doc line (what the cursor, click handling, and note
+/// anchors all address) and a *rendered row* (what `Paragraph::scroll` and
+/// on-screen `y` coordinates actually count) once a line can wrap into more
+/// than one row. Without this map, scrolling/clicking desyncs from what's
+/// painted the moment any line wraps.
+#[derive(Debug, Default, Clone)]
+pub struct WrappedDoc {
+    pub text: Text<'static>,
+    /// Rendered row index -> the logical line it came from.
+    pub row_to_line: Vec<usize>,
+    /// Logical line index -> the rendered row it starts on.
+    pub line_to_row: Vec<usize>,
+}
+
+/// The built preview doc (diff lines + any spliced note cards), word-wrapped
+/// to the pane's `width`. Continuation rows are indented by the gutter width
+/// (blank, no line number) so wrapped content lines up under the first row's
+/// text instead of hugging the left edge — matching how editors like VS Code
+/// wrap gutter content. Note-card lines are already sized to fit `width`, so
+/// they pass through unchanged; only overflowing diff rows actually wrap.
+pub fn wrap_diff_text(text: &Text<'static>, width: usize) -> WrappedDoc {
+    let indent = GUTTER_CHARS as usize;
+    let mut out = Vec::with_capacity(text.lines.len());
+    let mut row_to_line = Vec::with_capacity(text.lines.len());
+    let mut line_to_row = Vec::with_capacity(text.lines.len());
+    for (i, line) in text.lines.iter().enumerate() {
+        line_to_row.push(out.len());
+        let rows = if width == 0 {
+            vec![line.clone()]
+        } else {
+            wrap_line_spans(line, width, indent)
+        };
+        row_to_line.extend(std::iter::repeat_n(i, rows.len()));
+        out.extend(rows);
+    }
+    WrappedDoc { text: Text::from(out), row_to_line, line_to_row }
+}
+
+/// Wrap one `Line`'s spans into one or more rows of at most `width` cells.
+/// The first row keeps the line's own content and style; continuation rows
+/// get a leading blank span of `indent` cells (default style, so the line's
+/// background tint shows through) plus whatever content still fits.
+#[allow(unused_assignments)] // the final `word_w = 0` reset is dead after the loop ends; harmless
+fn wrap_line_spans(line: &Line<'static>, width: usize, indent: usize) -> Vec<Line<'static>> {
+    let total_w: usize = line.spans.iter().map(|s| s.content.width()).sum();
+    if total_w <= width {
+        return vec![line.clone()];
+    }
+    let cont_width = width.saturating_sub(indent).max(1);
+
+    let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+    let mut row_w = 0usize; // cells used on the current row
+    let mut budget = width; // current row's cell budget (first row: full width)
+    let mut pending_space: Option<Span<'static>> = None; // trailing space, dropped if it'd start a new row
+
+    for span in &line.spans {
+        let style = span.style;
+        let mut word = String::new();
+        let mut word_w = 0usize;
+
+        macro_rules! flush_word {
+            () => {
+                if !word.is_empty() {
+                    if row_w + word_w > budget && row_w > 0 {
+                        rows.push(Vec::new());
+                        row_w = 0;
+                        budget = cont_width;
+                        pending_space = None;
+                    }
+                    if word_w > budget {
+                        // A single word longer than a whole row: hard-break it.
+                        for ch in word.chars() {
+                            let cw = ch.width().unwrap_or(0);
+                            if row_w + cw > budget && row_w > 0 {
+                                rows.push(Vec::new());
+                                row_w = 0;
+                                budget = cont_width;
+                            }
+                            rows.last_mut().unwrap().push(Span::styled(ch.to_string(), style));
+                            row_w += cw;
+                        }
+                    } else {
+                        rows.last_mut().unwrap().push(Span::styled(word.clone(), style));
+                        row_w += word_w;
+                    }
+                    word.clear();
+                    word_w = 0;
+                }
+            };
+        }
+
+        for ch in span.content.chars() {
+            if ch.is_whitespace() {
+                flush_word!();
+                let cw = ch.width().unwrap_or(0);
+                if row_w + cw > budget {
+                    // Whitespace that doesn't fit is dropped, not carried over.
+                    pending_space = None;
+                    rows.push(Vec::new());
+                    row_w = 0;
+                    budget = cont_width;
+                } else {
+                    if let Some(sp) = pending_space.take() {
+                        rows.last_mut().unwrap().push(sp);
+                    }
+                    pending_space = Some(Span::styled(ch.to_string(), style));
+                    row_w += cw;
+                }
+            } else {
+                if let Some(sp) = pending_space.take() {
+                    rows.last_mut().unwrap().push(sp);
+                }
+                word.push(ch);
+                word_w += ch.width().unwrap_or(0);
+            }
+        }
+        flush_word!();
+    }
+    if let Some(sp) = pending_space {
+        rows.last_mut().unwrap().push(sp);
+    }
+
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, mut spans)| {
+            if i > 0 {
+                let mut with_indent = vec![Span::raw(" ".repeat(indent))];
+                with_indent.append(&mut spans);
+                spans = with_indent;
+            }
+            Line::from(spans).style(line.style)
+        })
+        .collect()
+}
+
 // ---- painting --------------------------------------------------------------
 
 /// Chars before the content on a rendered row: a 1-char change-bar cell,
@@ -670,5 +809,106 @@ mod tests {
             "return (row - inner.y) as usize;",
         );
         assert!(ratio < MIN_SIMILARITY);
+    }
+
+    // ---- wrapping ----
+
+    /// Concatenate a line's span contents, for content assertions that don't
+    /// care about styling.
+    fn flat(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn wrap_leaves_a_short_line_untouched() {
+        let text = Text::from(vec![Line::from("short")]);
+        let w = wrap_diff_text(&text, 100);
+        assert_eq!(w.text.lines.len(), 1);
+        assert_eq!(flat(&w.text.lines[0]), "short");
+        assert_eq!(w.row_to_line, vec![0]);
+        assert_eq!(w.line_to_row, vec![0]);
+    }
+
+    #[test]
+    fn wrap_hard_breaks_a_word_longer_than_the_row() {
+        // width 10, indent (GUTTER_CHARS) 6 -> continuation rows get 4 cols.
+        let text = Text::from(vec![Line::from("abcdefghijklmno")]); // 15 chars
+        let w = wrap_diff_text(&text, 10);
+        assert_eq!(w.text.lines.len(), 3);
+        assert_eq!(flat(&w.text.lines[0]), "abcdefghij"); // first row: full width
+        assert_eq!(flat(&w.text.lines[1]), " ".repeat(6) + "klmn"); // then 4-col rows
+        assert_eq!(flat(&w.text.lines[2]), " ".repeat(6) + "o");
+        // No content lost or duplicated across the hard break.
+        let rebuilt: String = w.text.lines.iter().map(flat).collect::<String>().replace(' ', "");
+        assert_eq!(rebuilt, "abcdefghijklmno");
+    }
+
+    #[test]
+    fn wrap_drops_a_space_that_does_not_fit_the_row() {
+        // "a"*12 fills width 12 exactly; the following space has no room
+        // left and is dropped rather than starting the next row.
+        let text = Text::from(vec![Line::from("aaaaaaaaaaaa b")]);
+        let w = wrap_diff_text(&text, 12);
+        assert_eq!(w.text.lines.len(), 2);
+        assert_eq!(flat(&w.text.lines[0]), "a".repeat(12));
+        assert_eq!(flat(&w.text.lines[1]), " ".repeat(6) + "b");
+        let rebuilt: String = w.text.lines.iter().map(flat).collect();
+        assert!(!rebuilt.contains("12 b"), "sanity");
+        assert!(!rebuilt.contains("a b"), "the space must not survive: {rebuilt:?}");
+    }
+
+    #[test]
+    fn wrap_preserves_per_span_styles_across_a_wrap_point() {
+        let style_a = Style::new().fg(Color::Red);
+        let style_b = Style::new().fg(Color::Blue);
+        let line = Line::from(vec![
+            Span::styled("hello ", style_a),
+            Span::styled("world", style_b),
+        ]);
+        let w = wrap_diff_text(&Text::from(vec![line]), 8); // cont_width = 8-6 = 2
+        assert_eq!(w.text.lines.len(), 4, "{:#?}", w.text.lines);
+        // Row 0 keeps "hello " under style A.
+        for span in &w.text.lines[0].spans {
+            assert_eq!(span.style, style_a);
+        }
+        assert_eq!(flat(&w.text.lines[0]), "hello ");
+        // "world" hard-breaks 2 cols at a time under style B, each
+        // continuation row indented by the gutter width.
+        let continuations: String = w.text.lines[1..]
+            .iter()
+            .map(|l| {
+                assert_eq!(l.spans[0].content.as_ref(), " ".repeat(6), "leading indent");
+                assert_eq!(l.spans[0].style, Style::default(), "indent has no fg");
+                l.spans[1..].iter().map(|s| {
+                    assert_eq!(s.style, style_b);
+                    s.content.as_ref()
+                }).collect::<String>()
+            })
+            .collect();
+        assert_eq!(continuations, "world");
+    }
+
+    #[test]
+    fn wrap_keeps_the_line_background_on_every_continuation_row() {
+        let bg = Style::new().bg(Color::Rgb(10, 20, 30));
+        let line = Line::from("abcdefghijklmno").style(bg);
+        let w = wrap_diff_text(&Text::from(vec![line]), 10);
+        assert!(w.text.lines.len() > 1);
+        for l in &w.text.lines {
+            assert_eq!(l.style, bg, "every wrapped row keeps the source line's background");
+        }
+    }
+
+    #[test]
+    fn wrap_diff_text_maps_rows_back_to_their_source_line() {
+        let text = Text::from(vec![
+            Line::from("short"),               // row 0
+            Line::from("abcdefghijklmno"),      // rows 1..=3 (hard-wrapped)
+            Line::from("tail"),                 // row 4
+        ]);
+        let w = wrap_diff_text(&text, 10);
+        assert_eq!(w.text.lines.len(), 5);
+        assert_eq!(w.row_to_line, vec![0, 1, 1, 1, 2]);
+        assert_eq!(w.line_to_row, vec![0, 1, 4]);
     }
 }
