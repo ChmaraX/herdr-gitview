@@ -960,3 +960,42 @@ fn a_note_whose_line_is_gone_says_so_instead_of_posing_as_a_file_note() {
     assert!(body[top].contains("whole file"));
     assert!(!body[top].contains("anchor lost"));
 }
+
+/// Regression: colors computed for one build of a file must not land on a
+/// newer build of the same request (a refresh racing an unfold) — runs carry
+/// their text, so they would paint the old content over the new.
+#[test]
+fn highlights_for_an_older_build_are_not_applied_to_a_newer_one() {
+    let hl = Highlighter::new(herdr_gitview::config::Theme::Dark);
+    let build = |new: &str| {
+        render::build_plain(
+            &PathBuf::from("a.rs"),
+            "",
+            new,
+            &hl,
+            herdr_gitview::config::Theme::Dark,
+            3,
+        )
+    };
+    let older = build("let old_text = 1;\n");
+    let stale = older.highlight_job().unwrap().run(&hl, &|| false).unwrap();
+
+    let mut a = app();
+    let r = req("a.rs");
+    a.begin_show(r.clone());
+    a.apply_diff(&r, Ok(build("let new_text = 2;\n")));
+    assert!(!a.apply_highlights(&r, &stale), "stale colors rejected");
+    let text: String = a.doc.lines[0]
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(
+        text.contains("new_text") && !text.contains("old_text"),
+        "{text}"
+    );
+    assert!(
+        a.highlight_pending(),
+        "the new build still gets its own colors"
+    );
+}

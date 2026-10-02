@@ -270,7 +270,9 @@ impl PreviewApp {
         let Some(built) = self.built.as_mut() else {
             return false;
         };
-        built.apply_highlights(h);
+        if !built.apply_highlights(h) {
+            return false;
+        }
         self.rebuild();
         true
     }

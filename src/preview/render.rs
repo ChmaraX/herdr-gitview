@@ -185,7 +185,10 @@ impl DiffDoc {
     /// Swap highlighted runs in for the lines they cover (folded rows
     /// included), then re-render. The text of each line is unchanged, so
     /// word emphasis, folds, and line maps all stay valid.
-    pub fn apply_highlights(&mut self, h: &Highlights) {
+    pub fn apply_highlights(&mut self, h: &Highlights) -> bool {
+        if !Arc::ptr_eq(&self.old, &h.old_text) || !Arc::ptr_eq(&self.new, &h.new_text) {
+            return false; // computed for another build of this file
+        }
         let old: HashMap<usize, &Vec<Run>> = h.old.iter().map(|(i, r)| (*i, r)).collect();
         let new: HashMap<usize, &Vec<Run>> = h.new.iter().map(|(i, r)| (*i, r)).collect();
         fn patch(
@@ -221,6 +224,7 @@ impl DiffDoc {
             }
         }
         self.rebuild();
+        true
     }
 }
 
@@ -247,6 +251,8 @@ impl HighlightJob {
             hl.highlight_lines(&lines, ext, wanted, cancelled)
         };
         Some(Highlights {
+            old_text: Arc::clone(&self.old_text),
+            new_text: Arc::clone(&self.new_text),
             old: side(&self.old_text, &self.old)?,
             new: side(&self.new_text, &self.new)?,
         })
@@ -254,8 +260,12 @@ impl HighlightJob {
 }
 
 /// Syntax-colored runs for some lines of each side (0-based line indices).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Highlights {
+    /// The content the runs were computed from: they only fit a doc built
+    /// from these very texts (a refresh of the same file may not be).
+    old_text: Arc<str>,
+    new_text: Arc<str>,
     old: Vec<(usize, Vec<Run>)>,
     new: Vec<(usize, Vec<Run>)>,
 }
