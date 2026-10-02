@@ -770,6 +770,7 @@ fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
     common::git(&dir, &["mv", "r.txt", "r2.txt"]);
     write(&dir, "r2.txt", "renamed\nkeep\n");
     common::git(&dir, &["add", "r2.txt"]);
+    write(&dir, "r2.txt", "renamed\nkeep\nthen edited\n"); // RM: more after staging
     std::fs::remove_file(dir.join("d.txt")).unwrap();
     write(&dir, "u.txt", "brand new\n");
     let mut w = World::new(repo);
@@ -815,7 +816,22 @@ fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
         ChangeKind::Renamed,
         None,
     );
-    has(&t, &["rename me", "renamed", "keep"], &[]);
+    has(&t, &["rename me", "renamed", "keep"], &["then edited"]);
+    // Unstaged side of that rename: index (new path) -> worktree, so only
+    // the later edit is a change — not the whole file against nothing.
+    let t = show(
+        &mut w,
+        "r2.txt",
+        Some("r.txt"),
+        false,
+        ChangeKind::Renamed,
+        None,
+    );
+    has(&t, &["then edited"], &["rename me"]);
+    assert!(
+        !w.diff_text().contains("▌   1 renamed"),
+        "line 1 is unchanged context, not an insertion: {t:?}"
+    );
     // Deleted: everything removed, nothing added.
     let t = show(&mut w, "d.txt", None, false, ChangeKind::Deleted, None);
     has(&t, &["doomed"], &[]);

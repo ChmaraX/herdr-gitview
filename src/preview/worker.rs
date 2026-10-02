@@ -378,8 +378,16 @@ fn sources(req: &ShowReq) -> Result<(Source, Source), String> {
             ]),
             worktree,
         ),
-        // Unstaged view: index vs working tree (untracked → empty old).
-        Scope::Worktree => (rev(":0", &old_path), worktree),
+        // Unstaged view: index vs working tree (untracked → empty old). A
+        // staged rename sits in the index under its new path; an unstaged
+        // one only under the old path.
+        Scope::Worktree => (
+            Source::Rev(vec![
+                (":0".to_string(), path.to_string()),
+                (":0".to_string(), old_path.to_string()),
+            ]),
+            worktree,
+        ),
     })
 }
 
