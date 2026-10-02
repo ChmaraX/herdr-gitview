@@ -980,7 +980,30 @@ fn branch_scope_follows_the_merge_base_when_head_moves() {
     assert_eq!(files(&w), vec!["f.txt"]);
     let before = w.list.app.merge_base.clone();
 
-    common::git(&dir, &["merge", "-q", "--no-edit", "main"]);
+    // The poll's `git status` can hold the index lock for a moment.
+    let merged = (0..20).any(|_| {
+        let ok = std::process::Command::new("git")
+            .args([
+                "-C",
+                dir.to_str().unwrap(),
+                "merge",
+                "-q",
+                "--no-edit",
+                "main",
+            ])
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .status()
+            .unwrap()
+            .success();
+        if !ok {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        ok
+    });
+    assert!(merged, "git merge kept failing");
     let main = rev("main");
     let deadline = Instant::now() + Duration::from_secs(10);
     while w.list.app.merge_base.as_deref() != Some(main.as_str()) {

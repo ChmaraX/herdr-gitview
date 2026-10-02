@@ -601,6 +601,11 @@ impl App {
             Ok(resolved) => resolved,
             Err(err) => {
                 self.set_status(format!("no base found: {err}"));
+                if then == BaseThen::Refresh {
+                    // Stop following HEAD rather than retry every poll; the
+                    // last merge-base stays in use.
+                    self.base_head = None;
+                }
                 return; // stay where we are
             }
         };

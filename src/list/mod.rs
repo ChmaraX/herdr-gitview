@@ -152,10 +152,12 @@ pub fn spawn_poll_thread(tx: Sender<Event>, shared: Arc<Mutex<Shared>>, repo: Re
                 Ok(s) => s.base_head.clone(),
                 Err(_) => return,
             };
-            if let (Some(known), Some(head)) = (base_head, repo.head_sha())
-                && head != known
+            // Reloading now would use the stale merge-base: report instead,
+            // every tick, until the list has re-resolved it.
+            if let Some(known) = base_head
+                && repo.head_sha().is_some_and(|head| head != known)
             {
-                if tx.send(Event::HeadMoved { head }).is_err() {
+                if tx.send(Event::HeadMoved).is_err() {
                     break;
                 }
                 continue;

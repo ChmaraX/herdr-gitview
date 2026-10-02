@@ -36,9 +36,7 @@ pub enum Event {
     BaseResolved(Result<app::ResolvedBase, String>),
     /// The poll thread saw HEAD move away from the one the base was
     /// resolved for.
-    HeadMoved {
-        head: String,
-    },
+    HeadMoved,
     /// Background nvim probe finished. `unsaved: Some(false)` means the
     /// editor was clean and has already been told to quit; `Some(true)` means
     /// it holds unsaved buffers; `None` means it couldn't be asked.
@@ -168,13 +166,9 @@ impl Session {
                 self.sync_shared();
                 self.mark_dirty(); // the scope or the merge-base may have changed
             }
-            Event::HeadMoved { head } => {
-                // Recorded now so the poll asks once per move, even if the
-                // resolution fails.
-                self.app.base_head = Some(head);
-                self.sync_shared();
-                self.app.request_base(app::BaseThen::Refresh);
-            }
+            // The poll repeats this (and holds off reloading against the
+            // stale merge-base) until the new base lands.
+            Event::HeadMoved => self.app.request_base(app::BaseThen::Refresh),
             Event::Refresh(entries) => {
                 self.app.apply_refresh(entries);
                 // Content may have changed under the cursor — re-show.
