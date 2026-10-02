@@ -191,11 +191,12 @@ impl World {
     /// screen with all its colors.
     fn wait_landed(&mut self, shows: usize) {
         let deadline = Instant::now() + Duration::from_secs(30);
-        while self.preview.timings.len() < shows
+        while self.preview.telemetry.shows().len() < shows
             || self
                 .preview
-                .timings
-                .last()
+                .telemetry
+                .shows()
+                .back()
                 .is_none_or(|t| t.colored.is_none())
         {
             assert!(Instant::now() < deadline, "the last Show never landed");
@@ -669,12 +670,12 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
     // Step back and forth: the file already built comes back colored in
     // one paint, from the worker's cache.
     for k in ['k', 'j'] {
-        let shows = w.preview.timings.len();
+        let shows = w.preview.telemetry.shows().len();
         w.list.on_event(list::Event::Key(key(k)));
         w.list.tick();
         w.wait_landed(shows + 1);
     }
-    let revisit = w.preview.timings.last().unwrap();
+    let revisit = w.preview.telemetry.shows().back().unwrap();
     assert_eq!(revisit.file, PathBuf::from(name(FILES - 1)));
     assert!(
         revisit.first_paint.is_some() && revisit.first_paint == revisit.colored,
@@ -686,7 +687,8 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !w
         .preview
-        .prefetches
+        .telemetry
+        .prefetches()
         .iter()
         .any(|(f, _)| f.as_os_str() == name(FILES).as_str())
     {
@@ -697,11 +699,11 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
         w.list.tick(); // the settle timer runs in the list's tick
         w.drain_preview_for(Duration::from_millis(5));
     }
-    let shows = w.preview.timings.len();
+    let shows = w.preview.telemetry.shows().len();
     w.list.on_event(list::Event::Key(key('j')));
     w.list.tick();
     w.wait_landed(shows + 1);
-    let stepped = w.preview.timings.last().unwrap();
+    let stepped = w.preview.telemetry.shows().back().unwrap();
     assert_eq!(stepped.file, PathBuf::from(name(FILES)));
     assert!(
         stepped.first_paint == stepped.colored,
@@ -714,7 +716,7 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
         big.lines().count(),
         FILES - 1
     );
-    for t in &w.preview.timings {
+    for t in w.preview.telemetry.shows() {
         let paint = t
             .first_paint
             .map_or("superseded".to_string(), |d| format!("{d:?}"));
@@ -724,7 +726,7 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
             t.file.display()
         ));
     }
-    for (file, took) in &w.preview.prefetches {
+    for (file, took) in w.preview.telemetry.prefetches() {
         report.push_str(&format!("{}\tprefetched in {took:?}\n", file.display()));
     }
     let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))

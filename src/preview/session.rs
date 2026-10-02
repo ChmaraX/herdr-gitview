@@ -7,13 +7,14 @@
 use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use super::app::{self, PreviewApp, ShowReq};
 use super::render;
+use super::telemetry::Telemetry;
 use super::worker::Worker;
 use crate::git::Repo;
 use crate::git::first_line;
@@ -59,28 +60,10 @@ pub enum Event {
     },
 }
 
-/// How long one `Show` took to reach the screen (the browsing-latency
-/// scenario writes these out as its artifact). `None` = superseded before it landed.
-#[derive(Debug, Clone)]
-pub struct ShowTiming {
-    pub file: std::path::PathBuf,
-    requested: Instant,
-    /// Until the first diff for this Show was on screen.
-    pub first_paint: Option<Duration>,
-    /// Until every on-screen line of it carried syntax colors.
-    pub colored: Option<Duration>,
-}
-
-/// Timings kept for the most recent Shows only.
-const MAX_TIMINGS: usize = 256;
-
 pub struct Session {
     pub app: PreviewApp,
     pub env: HostEnv,
-    /// Per-Show latency, newest last.
-    pub timings: Vec<ShowTiming>,
-    /// Background builds of neighbors and how long each took, newest last.
-    pub prefetches: Vec<(std::path::PathBuf, Duration)>,
+    pub telemetry: Telemetry,
     tx: Sender<Event>,
     worker: Worker,
     conn: Option<Conn>,
@@ -102,8 +85,7 @@ impl Session {
         Session {
             app,
             env,
-            timings: Vec::new(),
-            prefetches: Vec::new(),
+            telemetry: Telemetry::default(),
             tx,
             worker,
             conn: None,
@@ -175,51 +157,27 @@ impl Session {
                 let current = self.app.current.as_ref() == Some(&req);
                 self.app.apply_diff(&req, result.map(|doc| *doc));
                 if current {
-                    self.record_paint(&req);
+                    self.painted(&req);
                 }
             }
-            Event::Prefetched { file, took } => {
-                if self.prefetches.len() >= MAX_TIMINGS {
-                    self.prefetches.remove(0);
-                }
-                self.prefetches.push((file, took));
-            }
+            Event::Prefetched { file, took } => self.telemetry.prefetched(file, took),
             Event::Highlights { req, highlights } => {
                 if self.app.apply_highlights(&req, &highlights) {
-                    self.record_paint(&req);
+                    self.painted(&req);
                 }
             }
         }
     }
 
     fn show(&mut self, req: ShowReq) {
-        self.record_show(&req);
+        self.telemetry.requested(&req.file);
         self.app.begin_show(req.clone());
         self.worker.show(req);
     }
 
-    fn record_show(&mut self, req: &ShowReq) {
-        if self.timings.len() >= MAX_TIMINGS {
-            self.timings.remove(0);
-        }
-        self.timings.push(ShowTiming {
-            file: req.file.clone(),
-            requested: Instant::now(),
-            first_paint: None,
-            colored: None,
-        });
-    }
-
-    fn record_paint(&mut self, req: &ShowReq) {
-        if let Some(t) = self.timings.last_mut()
-            && t.file == req.file
-        {
-            let took = t.requested.elapsed();
-            t.first_paint.get_or_insert(took);
-            if t.colored.is_none() && !self.app.highlight_pending() {
-                t.colored = Some(took);
-            }
-        }
+    fn painted(&mut self, req: &ShowReq) {
+        let colored = !self.app.highlight_pending();
+        self.telemetry.painted(&req.file, colored);
     }
 
     fn on_ipc(&mut self, msg: ToPreview) {

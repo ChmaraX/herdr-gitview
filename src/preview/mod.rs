@@ -9,6 +9,7 @@ pub mod editor;
 pub mod highlight;
 pub mod render;
 pub mod session;
+pub mod telemetry;
 pub mod ui;
 pub mod worker;
 
