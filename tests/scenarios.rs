@@ -54,6 +54,7 @@ struct World {
     herdr: FakeHerdr,
     list: list::Session,
     list_rx: Receiver<list::Event>,
+    list_tx: mpsc::Sender<list::Event>,
     preview: preview::Session,
     preview_rx: Receiver<preview::Event>,
     editor: RecordingEditor,
@@ -90,7 +91,12 @@ impl World {
         )
         .unwrap();
         let (list_tx, list_rx) = mpsc::channel();
-        let mut list = list::Session::new(list_app, env("w:pLIST", Some("w:pPREV")), list_tx, true);
+        let mut list = list::Session::new(
+            list_app,
+            env("w:pLIST", Some("w:pPREV")),
+            list_tx.clone(),
+            true,
+        );
         list.show_debounce = Duration::ZERO;
         list.set_popup_liveness(Duration::ZERO);
 
@@ -115,6 +121,7 @@ impl World {
             herdr,
             list,
             list_rx,
+            list_tx,
             preview,
             preview_rx,
             editor: RecordingEditor::default(),
@@ -890,7 +897,10 @@ fn a_pinned_base_is_resolved_off_the_ui_thread_and_named_by_both_panes() {
         herdr_gitview::git::Scope::Worktree,
         "the key returns before the base is resolved"
     );
-    assert_eq!(w.list.app.active_status(), Some("resolving base…"));
+    assert!(
+        matches!(w.list.app.base_job, list::app::BaseJob::Running { .. }),
+        "resolving on the session's thread"
+    );
     w.pump();
     assert_eq!(w.list.app.scope, herdr_gitview::git::Scope::Branch);
     assert_eq!(w.list.app.base, "main");
@@ -920,4 +930,71 @@ fn a_pinned_base_is_resolved_off_the_ui_thread_and_named_by_both_panes() {
     w.press("j");
     assert_eq!(w.shown_file().as_deref(), Some("r.txt"));
     assert!(w.diff_text().contains("from release"), "{}", w.diff_text());
+}
+
+/// HEAD moving (here: merging the base in) moves the merge-base. Both panes
+/// must follow — diffing against the merge-base resolved before the move
+/// lists the base's own new commits as this branch's changes.
+#[test]
+fn branch_scope_follows_the_merge_base_when_head_moves() {
+    let repo = fixture("head-moves");
+    let dir = repo.dir.clone();
+    let rev = |what: &str| {
+        let out = std::process::Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "rev-parse", what])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    common::git(&dir, &["checkout", "-q", "-b", "feature"]);
+    write(&dir, "f.txt", "feature work\n");
+    common::git(&dir, &["add", "."]);
+    common::git(&dir, &["commit", "-q", "-m", "feature work"]);
+    common::git(&dir, &["checkout", "-q", "main"]);
+    write(&dir, "m.txt", "main moved on\n");
+    common::git(&dir, &["add", "."]);
+    common::git(&dir, &["commit", "-q", "-m", "main work"]);
+    common::git(&dir, &["checkout", "-q", "feature"]);
+    let cfg = Config {
+        base: "main".to_string(),
+        ..Config::default()
+    };
+    let mut w = World::with_config(repo, cfg);
+    list::spawn_poll_thread(
+        w.list_tx.clone(),
+        w.list.shared_handle(),
+        Repo { root: dir.clone() },
+        20,
+    );
+    let files = |w: &World| -> Vec<String> {
+        w.list
+            .app
+            .entries
+            .iter()
+            .map(|e| e.path.display().to_string())
+            .collect()
+    };
+    w.press("w");
+    assert_eq!(files(&w), vec!["f.txt"]);
+    let before = w.list.app.merge_base.clone();
+
+    common::git(&dir, &["merge", "-q", "--no-edit", "main"]);
+    let main = rev("main");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while w.list.app.merge_base.as_deref() != Some(main.as_str()) {
+        assert!(Instant::now() < deadline, "the merge-base never moved");
+        w.pump();
+    }
+    assert_ne!(w.list.app.merge_base, before);
+    assert_eq!(
+        files(&w),
+        vec!["f.txt"],
+        "main's own file is not a branch change"
+    );
+    let shown = w.preview.app.current.clone().unwrap();
+    assert_eq!(
+        shown.base.map(|b| b.merge_base),
+        Some(main),
+        "the diff pane follows"
+    );
 }

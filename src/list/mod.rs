@@ -139,13 +139,27 @@ fn spawn_input_thread(tx: Sender<Event>) {
 }
 
 /// Every `poll_ms`, hash the status; on change reload the current scope and
-/// push a `Refresh`. Cheap fingerprint avoids redundant reloads.
-fn spawn_poll_thread(tx: Sender<Event>, shared: Arc<Mutex<Shared>>, repo: Repo, poll_ms: u64) {
+/// push a `Refresh`. Cheap fingerprint avoids redundant reloads. Once a base
+/// is resolved, HEAD moving off the one it was resolved for is reported
+/// first (`HeadMoved`): reloading against a stale merge-base would be wrong.
+pub fn spawn_poll_thread(tx: Sender<Event>, shared: Arc<Mutex<Shared>>, repo: Repo, poll_ms: u64) {
     thread::spawn(move || {
         let show_untracked = shared.lock().map(|s| s.show_untracked).unwrap_or(true);
         let mut last = repo.fingerprint(show_untracked);
         loop {
             thread::sleep(Duration::from_millis(poll_ms));
+            let base_head = match shared.lock() {
+                Ok(s) => s.base_head.clone(),
+                Err(_) => return,
+            };
+            if let (Some(known), Some(head)) = (base_head, repo.head_sha())
+                && head != known
+            {
+                if tx.send(Event::HeadMoved { head }).is_err() {
+                    break;
+                }
+                continue;
+            }
             let fp = repo.fingerprint(show_untracked);
             if fp == last {
                 continue;

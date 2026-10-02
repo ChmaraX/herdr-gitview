@@ -57,19 +57,21 @@ pub enum Modal {
     },
 }
 
-/// A branch base, resolved: the ref, its merge-base with HEAD, and how many
-/// commits HEAD has on top of it.
+/// A branch base, resolved: the ref, its merge-base with HEAD, how many
+/// commits HEAD has on top of it, and which HEAD that was.
 #[derive(Debug, Clone)]
 pub struct ResolvedBase {
     pub base: String,
     pub merge_base: String,
     pub ahead: Option<u32>,
+    pub head: Option<String>,
 }
 
 /// The one place a base is resolved (both panes get it from here — the
 /// diff pane via `Show`): `cfg_base` when pinned, else auto-detected. Runs
 /// several git calls, so the session does it on a thread.
 pub fn resolve_base(repo: &Repo, cfg_base: &str) -> Result<ResolvedBase, String> {
+    let head = repo.head_sha();
     let (base, merge_base) = repo
         .resolve_base(cfg_base)
         .map_err(|e| first_line(&e.to_string()))?;
@@ -78,6 +80,7 @@ pub fn resolve_base(repo: &Repo, cfg_base: &str) -> Result<ResolvedBase, String>
         base,
         merge_base,
         ahead,
+        head,
     })
 }
 
@@ -88,6 +91,26 @@ pub enum BaseThen {
     Scope,
     /// Filter the log to this branch's commits.
     LogFilter,
+    /// HEAD moved: the merge-base may have too; reload against the new one.
+    Refresh,
+}
+
+/// Where a base resolution stands; one runs at a time. `since` is when its
+/// "resolving base…" message went up (None: it shows none), so landing
+/// clears that message and no other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseJob {
+    Idle,
+    /// Asked for; the session starts it on its next tick.
+    Wanted {
+        then: BaseThen,
+        since: Option<Instant>,
+    },
+    /// Running on the session's thread.
+    Running {
+        then: BaseThen,
+        since: Option<Instant>,
+    },
 }
 
 /// What a confirmed modal should do. Paths are resolved back to entries when
@@ -127,9 +150,11 @@ pub struct App {
     /// Commits HEAD has on top of `merge_base`, for the header. None until
     /// the base resolves, or when git cannot count them.
     pub branch_commits: Option<u32>,
-    /// An action is waiting on the base; the session resolves it off the
-    /// UI thread and hands the result to `on_base_resolved`.
-    pub base_request: Option<BaseThen>,
+    /// HEAD when `merge_base` was resolved; HEAD moving re-resolves it.
+    pub base_head: Option<String>,
+    /// A resolution in flight: the session runs it off the UI thread and
+    /// hands the result to `on_base_resolved`.
+    pub base_job: BaseJob,
 
     /// Current branch name for the header (None = detached HEAD).
     pub branch: Option<String>,
@@ -197,7 +222,7 @@ impl App {
             // Startup, before the first frame: resolve in place. No base
             // means staying in worktree scope.
             app.scope = Scope::Worktree;
-            app.base_request = Some(BaseThen::Scope);
+            app.request_base(BaseThen::Scope);
             app.resolve_pending_base();
         }
         Ok(app)
@@ -227,7 +252,8 @@ impl App {
             base: String::new(),
             merge_base: None,
             branch_commits: None,
-            base_request: None,
+            base_head: None,
+            base_job: BaseJob::Idle,
             branch,
             status_msg: None,
             load_error: None,
@@ -535,24 +561,42 @@ impl App {
         }
     }
 
-    /// Ask the session for the base, then `then`.
-    fn request_base(&mut self, then: BaseThen) {
-        self.base_request = Some(then);
-        self.set_status("resolving base…");
+    /// Ask for the base, then `then`. A request while one is in flight
+    /// replaces what happens when it lands.
+    pub fn request_base(&mut self, then: BaseThen) {
+        self.base_job = match self.base_job {
+            BaseJob::Running { since, .. } => BaseJob::Running { then, since },
+            BaseJob::Idle | BaseJob::Wanted { .. } => {
+                // A background refresh resolves silently.
+                let since = (then != BaseThen::Refresh).then(|| {
+                    self.set_status("resolving base…");
+                    self.status_msg.as_ref().map_or_else(Instant::now, |s| s.1)
+                });
+                BaseJob::Wanted { then, since }
+            }
+        };
     }
 
     /// Resolve a requested base right here, blocking. For startup (no UI
     /// yet) and callers without a session; the session itself goes through
     /// a thread.
     pub fn resolve_pending_base(&mut self) {
-        if let Some(then) = self.base_request.take() {
+        if matches!(self.base_job, BaseJob::Wanted { .. }) {
             let result = resolve_base(&self.repo, &self.cfg.base);
-            self.on_base_resolved(then, result);
+            self.on_base_resolved(result);
         }
     }
 
-    /// A requested base resolution landed: record it and finish `then`.
-    pub fn on_base_resolved(&mut self, then: BaseThen, result: Result<ResolvedBase, String>) {
+    /// The requested resolution landed: record it, then redo the action
+    /// that asked for it — if the view is still where it was asked.
+    pub fn on_base_resolved(&mut self, result: Result<ResolvedBase, String>) {
+        let (then, since) = match std::mem::replace(&mut self.base_job, BaseJob::Idle) {
+            BaseJob::Wanted { then, since } | BaseJob::Running { then, since } => (then, since),
+            BaseJob::Idle => return, // nobody asked
+        };
+        if since.is_some() && self.status_msg.as_ref().map(|s| s.1) == since {
+            self.status_msg = None;
+        }
         let resolved = match result {
             Ok(resolved) => resolved,
             Err(err) => {
@@ -560,21 +604,18 @@ impl App {
                 return; // stay where we are
             }
         };
-        if matches!(self.active_status(), Some("resolving base…")) {
-            self.status_msg = None;
-        }
         self.branch_commits = resolved.ahead;
         self.base = resolved.base;
         self.merge_base = Some(resolved.merge_base);
+        self.base_head = resolved.head;
         match then {
-            // Only if still where the request was made.
             BaseThen::Scope if self.mode == Mode::Files && self.scope == Scope::Worktree => {
-                self.scope = Scope::Branch;
-                self.force_refresh();
+                self.toggle_scope();
             }
             BaseThen::LogFilter if self.mode == Mode::Log && !self.log_branch_only => {
                 self.toggle_log_filter();
             }
+            BaseThen::Refresh if self.scope == Scope::Branch => self.force_refresh(),
             _ => {}
         }
     }

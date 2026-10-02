@@ -33,9 +33,11 @@ pub enum Event {
     /// The preview pane went away (socket EOF).
     IpcClosed,
     /// A requested base resolution finished on its thread.
-    BaseResolved {
-        then: app::BaseThen,
-        result: Result<app::ResolvedBase, String>,
+    BaseResolved(Result<app::ResolvedBase, String>),
+    /// The poll thread saw HEAD move away from the one the base was
+    /// resolved for.
+    HeadMoved {
+        head: String,
     },
     /// Background nvim probe finished. `unsaved: Some(false)` means the
     /// editor was clean and has already been told to quit; `Some(true)` means
@@ -50,6 +52,8 @@ pub enum Event {
 pub struct Shared {
     pub scope: Scope,
     pub merge_base: Option<String>,
+    /// HEAD the merge-base was resolved for (None = no base yet).
+    pub base_head: Option<String>,
     pub show_untracked: bool,
 }
 
@@ -79,8 +83,6 @@ pub struct Session {
     pub prefetch_settle: Duration,
     /// When the last Show went out, while its neighbors are still due.
     prefetch_from: Option<Instant>,
-    /// A base resolution thread is running.
-    base_resolving: bool,
     quit_sent: bool,
 }
 
@@ -90,6 +92,7 @@ impl Session {
         let shared = Arc::new(Mutex::new(Shared {
             scope: app.scope,
             merge_base: app.merge_base.clone(),
+            base_head: app.base_head.clone(),
             show_untracked: app.cfg.show_untracked,
         }));
         Session {
@@ -107,7 +110,6 @@ impl Session {
             reconnect_budget: Duration::from_secs(2),
             prefetch_settle: Duration::from_millis(150),
             prefetch_from: None,
-            base_resolving: false,
             quit_sent: false,
         }
     }
@@ -161,11 +163,17 @@ impl Session {
             Event::Key(key) => self.on_key(key),
             Event::Mouse(m) => self.on_mouse(m),
             Event::EditorProbe { then, unsaved } => self.on_probe(then, unsaved),
-            Event::BaseResolved { then, result } => {
-                self.base_resolving = false;
-                self.app.on_base_resolved(then, result);
+            Event::BaseResolved(result) => {
+                self.app.on_base_resolved(result);
                 self.sync_shared();
-                self.mark_dirty(); // the scope may have changed
+                self.mark_dirty(); // the scope or the merge-base may have changed
+            }
+            Event::HeadMoved { head } => {
+                // Recorded now so the poll asks once per move, even if the
+                // resolution fails.
+                self.app.base_head = Some(head);
+                self.sync_shared();
+                self.app.request_base(app::BaseThen::Refresh);
             }
             Event::Refresh(entries) => {
                 self.app.apply_refresh(entries);
@@ -643,13 +651,10 @@ impl Session {
     /// Resolve a base the app asked for on a thread (many git calls); the
     /// result comes back as `Event::BaseResolved`. One at a time.
     fn spawn_base_resolution(&mut self) {
-        if self.base_resolving {
-            return;
-        }
-        let Some(then) = self.app.base_request.take() else {
+        let app::BaseJob::Wanted { then, since } = self.app.base_job else {
             return;
         };
-        self.base_resolving = true;
+        self.app.base_job = app::BaseJob::Running { then, since };
         let tx = self.tx.clone();
         let repo = crate::git::Repo {
             root: self.app.repo.root.clone(),
@@ -657,7 +662,7 @@ impl Session {
         let cfg_base = self.app.cfg.base.clone();
         thread::spawn(move || {
             let result = app::resolve_base(&repo, &cfg_base);
-            let _ = tx.send(Event::BaseResolved { then, result });
+            let _ = tx.send(Event::BaseResolved(result));
         });
     }
 
@@ -698,6 +703,7 @@ impl Session {
         if let Ok(mut s) = self.shared.lock() {
             s.scope = self.app.scope;
             s.merge_base = self.app.merge_base.clone();
+            s.base_head = self.app.base_head.clone();
         }
     }
 }
