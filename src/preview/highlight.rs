@@ -80,7 +80,7 @@ impl Highlighter {
     /// `LEAD_IN` lines above it, so the cost follows the diff, not the file;
     /// a string or comment opened further up than that may mis-color, the
     /// same trade-off delta makes. Returns `None` once `cancelled` says so
-    /// (checked between runs and every few hundred lines).
+    /// (checked between runs and every 32 lines).
     pub fn highlight_lines(
         &self,
         lines: &[&str],
@@ -119,7 +119,7 @@ impl Highlighter {
             let mut want = want.into_iter().peekable();
             let start = first.saturating_sub(LEAD_IN);
             for (i, line) in lines.iter().enumerate().take(last + 1).skip(start) {
-                if i % 256 == 0 && cancelled() {
+                if i % 32 == 0 && cancelled() {
                     return None;
                 }
                 let runs = self.highlight_one(&mut h, line);

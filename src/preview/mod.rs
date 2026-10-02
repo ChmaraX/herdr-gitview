@@ -10,6 +10,7 @@ pub mod highlight;
 pub mod render;
 pub mod session;
 pub mod ui;
+pub mod worker;
 
 pub use app::{PreviewApp, ShowReq};
 pub use session::{EditorHost, Event, Session};

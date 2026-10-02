@@ -13,10 +13,10 @@ use anyhow::Result;
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use super::app::{self, PreviewApp, ShowReq};
-use super::{highlight, render};
-use crate::config::Config;
+use super::render;
+use super::worker::Worker;
+use crate::git::Repo;
 use crate::git::first_line;
-use crate::git::{Repo, Scope};
 use crate::hostenv::HostEnv;
 use crate::ipc::{Conn, ToList, ToPreview};
 use crate::popup::{Answer, Popups};
@@ -47,6 +47,11 @@ pub enum Event {
         req: ShowReq,
         result: Result<Box<render::DiffDoc>, String>,
     },
+    /// Syntax colors for lines of the doc already shown for `req`.
+    Highlights {
+        req: ShowReq,
+        highlights: render::Highlights,
+    },
 }
 
 /// How long one `Show` took to reach the screen (the browsing-latency
@@ -57,6 +62,8 @@ pub struct ShowTiming {
     requested: Instant,
     /// Until the first diff for this Show was on screen.
     pub first_paint: Option<Duration>,
+    /// Until every on-screen line of it carried syntax colors.
+    pub colored: Option<Duration>,
 }
 
 /// Timings kept for the most recent Shows only.
@@ -68,7 +75,7 @@ pub struct Session {
     /// Per-Show latency, newest last.
     pub timings: Vec<ShowTiming>,
     tx: Sender<Event>,
-    work_tx: Sender<ShowReq>,
+    worker: Worker,
     conn: Option<Conn>,
     popups: Popups<PreviewPopup>,
     last_notes_rev: u64,
@@ -78,7 +85,7 @@ impl Session {
     /// Builds the session and spawns the latest-wins diff worker (real git,
     /// real highlighting — also under test).
     pub fn new(app: PreviewApp, env: HostEnv, tx: Sender<Event>) -> Session {
-        let work_tx = spawn_diff_worker(
+        let worker = Worker::spawn(
             tx.clone(),
             Repo {
                 root: app.repo.root.clone(),
@@ -90,7 +97,7 @@ impl Session {
             env,
             timings: Vec::new(),
             tx,
-            work_tx,
+            worker,
             conn: None,
             popups: Popups::default(),
             last_notes_rev: 0,
@@ -140,14 +147,14 @@ impl Session {
             Event::Ipc(ToPreview::Edit { file }) => {
                 self.run_editor(&file, host);
                 if let Some(req) = self.app.current.clone() {
-                    let _ = self.work_tx.send(req); // file changed — re-diff
+                    self.worker.show(req); // file changed — re-diff
                 }
                 self.send(&ToList::EditDone { file });
             }
             Event::Ipc(ToPreview::GitInPane { argv }) => {
                 let ok = self.run_git_in_pane(&argv, host);
                 if let Some(req) = self.app.current.clone() {
-                    let _ = self.work_tx.send(req);
+                    self.worker.show(req);
                 }
                 self.send(&ToList::GitDone { ok });
             }
@@ -163,6 +170,11 @@ impl Session {
                     self.record_paint(&req);
                 }
             }
+            Event::Highlights { req, highlights } => {
+                if self.app.apply_highlights(&req, &highlights) {
+                    self.record_paint(&req);
+                }
+            }
         }
     }
 
@@ -174,15 +186,19 @@ impl Session {
             file: req.file.clone(),
             requested: Instant::now(),
             first_paint: None,
+            colored: None,
         });
     }
 
     fn record_paint(&mut self, req: &ShowReq) {
         if let Some(t) = self.timings.last_mut()
             && t.file == req.file
-            && t.first_paint.is_none()
         {
-            t.first_paint = Some(t.requested.elapsed());
+            let took = t.requested.elapsed();
+            t.first_paint.get_or_insert(took);
+            if t.colored.is_none() && !self.app.highlight_pending() {
+                t.colored = Some(took);
+            }
         }
     }
 
@@ -206,7 +222,7 @@ impl Session {
                 };
                 self.record_show(&req);
                 self.app.begin_show(req.clone());
-                let _ = self.work_tx.send(req);
+                self.worker.show(req);
             }
             ToPreview::Scroll { delta } => self.app.scroll_by(delta),
             ToPreview::Page { down, full } => self.app.page(down, full),
@@ -245,6 +261,10 @@ impl Session {
     // ---- per-iteration work -----------------------------------------------
 
     pub fn tick(&mut self) {
+        // Lines just revealed (an unfold) still need their colors.
+        if let Some((req, job)) = self.app.take_highlight_job() {
+            self.worker.highlight(req, job);
+        }
         self.open_requested_popups();
         self.poll_popups();
 
@@ -472,100 +492,6 @@ impl Session {
             && c.send(msg).is_err()
         {
             self.conn = None;
-        }
-    }
-}
-
-/// Latest-wins diff runner: fetches the old/new file contents for a request
-/// and builds the styled document off the UI thread.
-fn spawn_diff_worker(tx: Sender<Event>, repo: Repo, cfg: Config) -> Sender<ShowReq> {
-    let (work_tx, work_rx) = mpsc::channel::<ShowReq>();
-    thread::spawn(move || {
-        // The highlighter is expensive to set up — build it once per worker.
-        let hl = highlight::Highlighter::new(cfg.theme);
-        // Branch-scope base resolution cached per HEAD (it only moves when
-        // HEAD does) so holding j doesn't spawn a git storm.
-        let mut base_cache: Option<(String, String)> = None; // (head, merge_base)
-        while let Ok(mut req) = work_rx.recv() {
-            // Collapse a backlog to the newest request.
-            while let Ok(newer) = work_rx.try_recv() {
-                req = newer;
-            }
-            let result = fetch_contents(&repo, &cfg, &req, &mut base_cache).map(|(old, new)| {
-                Box::new(render::build(
-                    &req.file,
-                    &old,
-                    &new,
-                    &hl,
-                    cfg.theme,
-                    cfg.context_lines,
-                    cfg.tab_width,
-                ))
-            });
-            if tx.send(Event::Diff { req, result }).is_err() {
-                break;
-            }
-        }
-    });
-    work_tx
-}
-
-/// The (old, new) content pair a request diffs, per scope/staged/commit.
-/// `base_cache` holds `(head_sha, merge_base)` across calls.
-fn fetch_contents(
-    repo: &Repo,
-    cfg: &Config,
-    req: &ShowReq,
-    base_cache: &mut Option<(String, String)>,
-) -> Result<(String, String), String> {
-    let path = &req.file;
-    let old_path = req.orig_path.as_deref().unwrap_or(path);
-    let err = |e: anyhow::Error| first_line(&e.to_string());
-    let some =
-        |r: Result<Option<String>, anyhow::Error>| r.map_err(err).map(Option::unwrap_or_default);
-
-    if let Some(sha) = &req.commit {
-        // One commit's change: parent vs commit (root commit → empty old).
-        let old = some(repo.file_at(&format!("{sha}^"), old_path))?;
-        let new = some(repo.file_at(sha, path))?;
-        return Ok((old, new));
-    }
-    match req.scope {
-        Scope::Branch => {
-            let head = repo.head_sha().unwrap_or_default();
-            let mb = match base_cache {
-                Some((cached_head, mb)) if *cached_head == head => mb.clone(),
-                _ => {
-                    let (_, mb) = repo.resolve_base(&cfg.base).map_err(err)?;
-                    *base_cache = Some((head, mb.clone()));
-                    mb
-                }
-            };
-            let old = some(repo.file_at(&mb, old_path))?;
-            let new = repo.file_in_worktree(path).unwrap_or_default();
-            Ok((old, new))
-        }
-        Scope::Worktree if req.cached => {
-            // Staged view: HEAD vs index.
-            let old = some(repo.file_at("HEAD", old_path))?;
-            let new = some(repo.file_at(":0", path))?;
-            Ok((old, new))
-        }
-        Scope::Worktree if req.kind == crate::git::ChangeKind::Conflicted => {
-            // Unmerged paths have no stage-0 entry; diff "ours" (stage 2,
-            // falling back to HEAD) against the conflicted worktree file.
-            let ours = match repo.file_at(":2", path).map_err(err)? {
-                Some(content) => content,
-                None => some(repo.file_at("HEAD", path))?,
-            };
-            let new = repo.file_in_worktree(path).unwrap_or_default();
-            Ok((ours, new))
-        }
-        Scope::Worktree => {
-            // Unstaged view: index vs working tree (untracked → empty old).
-            let old = some(repo.file_at(":0", path))?;
-            let new = repo.file_in_worktree(path).unwrap_or_default();
-            Ok((old, new))
         }
     }
 }

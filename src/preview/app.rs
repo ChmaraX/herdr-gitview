@@ -78,6 +78,8 @@ pub struct PreviewApp {
     pub current: Option<ShowReq>,
     /// The built diff (kept for click-to-unfold rebuilds).
     built: Option<super::render::DiffDoc>,
+    /// An unfold revealed uncolored lines; the session asks the worker.
+    highlight_wanted: bool,
     /// Styled, capped diff text (plus a truncation notice line when capped).
     pub doc: Text<'static>,
     /// `doc`, word-wrapped to `viewport_w`, plus the row<->line maps. Kept in
@@ -150,6 +152,7 @@ impl PreviewApp {
             keys,
             current: None,
             built: None,
+            highlight_wanted: false,
             doc: Text::default(),
             wrapped: super::render::WrappedDoc::default(),
             first_change: None,
@@ -231,6 +234,36 @@ impl PreviewApp {
             Ok(doc) => self.set_diff(doc),
             Err(msg) => self.state = State::Error(msg),
         }
+    }
+
+    /// Color lines of the shown doc, if `req` is still what is shown.
+    /// Returns whether they were applied.
+    pub fn apply_highlights(&mut self, req: &ShowReq, h: &super::render::Highlights) -> bool {
+        if self.current.as_ref() != Some(req) {
+            return false;
+        }
+        let Some(built) = self.built.as_mut() else {
+            return false;
+        };
+        built.apply_highlights(h);
+        self.rebuild();
+        true
+    }
+
+    /// Lines on screen are still waiting for syntax colors.
+    pub fn highlight_pending(&self) -> bool {
+        self.built
+            .as_ref()
+            .is_some_and(|b| b.highlight_job().is_some())
+    }
+
+    /// The coloring an unfold made necessary, for the worker to run.
+    pub fn take_highlight_job(&mut self) -> Option<(ShowReq, super::render::HighlightJob)> {
+        if !std::mem::take(&mut self.highlight_wanted) {
+            return None;
+        }
+        let job = self.built.as_ref()?.highlight_job()?;
+        Some((self.current.clone()?, job))
     }
 
     fn set_diff(&mut self, built: super::render::DiffDoc) {
@@ -415,6 +448,7 @@ impl PreviewApp {
                 if let (Some(bl), Some(built)) = (to_built, self.built.as_mut())
                     && built.unfold_at(bl)
                 {
+                    self.highlight_wanted = true; // the revealed lines are plain
                     self.clamp_scroll();
                     self.rebuild();
                     return;

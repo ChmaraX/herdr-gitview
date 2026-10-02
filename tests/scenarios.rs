@@ -168,6 +168,28 @@ impl World {
         }
     }
 
+    /// Wait until every line on the preview's screen carries its colors.
+    fn wait_colored(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while self.preview.app.highlight_pending() {
+            assert!(Instant::now() < deadline, "highlighting never finished");
+            self.drain_preview_for(Duration::from_millis(2));
+        }
+    }
+
+    /// Distinct foreground colors in the preview's rendered doc.
+    fn diff_colors(&self) -> usize {
+        let colors: std::collections::HashSet<_> = self
+            .preview
+            .app
+            .doc
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter().filter_map(|s| s.style.fg))
+            .collect();
+        colors.len()
+    }
+
     fn press(&mut self, key: &str) {
         let (code, mods) = parse_key(key).unwrap();
         self.list
@@ -595,9 +617,29 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
         w.drain_preview_for(Duration::from_millis(2));
     }
     let landed = last_press.elapsed();
+    w.wait_colored();
+    let colored = last_press.elapsed();
+    assert!(
+        w.diff_colors() > 3,
+        "the landed diff carries syntax colors, not one plain color"
+    );
+
+    // Expanding the leading fold reveals uncolored lines; they get colored
+    // too, without rebuilding the doc (the cursor stays put).
+    let before = w.preview.app.doc.lines.len();
+    w.preview.app.on_mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        1,
+    );
+    assert!(w.preview.app.doc.lines.len() > before, "the fold expanded");
+    assert!(
+        w.preview.app.highlight_pending(),
+        "revealed lines start plain"
+    );
+    w.wait_colored();
 
     let mut report = format!(
-        "rapid browse: {} files x {} lines, {} j presses\nfinal diff landed {landed:?} after the last press\n",
+        "rapid browse: {} files x {} lines, {} j presses\nfinal diff landed {landed:?} after the last press, colored after {colored:?}\n",
         FILES,
         big.lines().count(),
         FILES - 1
@@ -606,7 +648,11 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
         let paint = t
             .first_paint
             .map_or("superseded".to_string(), |d| format!("{d:?}"));
-        report.push_str(&format!("{}\tfirst paint {paint}\n", t.file.display()));
+        let colored = t.colored.map_or("-".to_string(), |d| format!("{d:?}"));
+        report.push_str(&format!(
+            "{}\tfirst paint {paint}\tcolored {colored}\n",
+            t.file.display()
+        ));
     }
     let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .parent()
