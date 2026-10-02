@@ -37,6 +37,13 @@ pub enum ToPreview {
         /// worktree/branch diff.
         #[serde(default)]
         commit: Option<String>,
+        /// Branch scope: the base the list resolved (label for the header)
+        /// and its merge-base with HEAD (the old side). The list is the only
+        /// place a base is resolved, so both panes always name the same one.
+        #[serde(default)]
+        base: Option<String>,
+        #[serde(default)]
+        merge_base: Option<String>,
     },
     /// Scroll the diff without switching pane focus. delta in lines;
     /// `i32::MIN`/`MAX` = home/end.
@@ -270,6 +277,8 @@ mod tests {
                 cached: false,
                 kind: ChangeKind::Modified,
                 commit: Some("abc123".into()),
+                base: Some("origin/main".into()),
+                merge_base: Some("def456".into()),
             },
             ToPreview::Scroll { delta: -3 },
             ToPreview::Page {

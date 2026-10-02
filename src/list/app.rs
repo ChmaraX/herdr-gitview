@@ -57,6 +57,39 @@ pub enum Modal {
     },
 }
 
+/// A branch base, resolved: the ref, its merge-base with HEAD, and how many
+/// commits HEAD has on top of it.
+#[derive(Debug, Clone)]
+pub struct ResolvedBase {
+    pub base: String,
+    pub merge_base: String,
+    pub ahead: Option<u32>,
+}
+
+/// The one place a base is resolved (both panes get it from here — the
+/// diff pane via `Show`): `cfg_base` when pinned, else auto-detected. Runs
+/// several git calls, so the session does it on a thread.
+pub fn resolve_base(repo: &Repo, cfg_base: &str) -> Result<ResolvedBase, String> {
+    let (base, merge_base) = repo
+        .resolve_base(cfg_base)
+        .map_err(|e| first_line(&e.to_string()))?;
+    let ahead = repo.commits_ahead(&merge_base);
+    Ok(ResolvedBase {
+        base,
+        merge_base,
+        ahead,
+    })
+}
+
+/// What to finish once a requested base resolution lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseThen {
+    /// Switch to branch scope.
+    Scope,
+    /// Filter the log to this branch's commits.
+    LogFilter,
+}
+
 /// What a confirmed modal should do. Paths are resolved back to entries when
 /// the action actually runs, so a refresh between ask and answer is harmless.
 pub enum PendingAction {
@@ -94,6 +127,9 @@ pub struct App {
     /// Commits HEAD has on top of `merge_base`, for the header. None until
     /// the base resolves, or when git cannot count them.
     pub branch_commits: Option<u32>,
+    /// An action is waiting on the base; the session resolves it off the
+    /// UI thread and hands the result to `on_base_resolved`.
+    pub base_request: Option<BaseThen>,
 
     /// Current branch name for the header (None = detached HEAD).
     pub branch: Option<String>,
@@ -158,16 +194,11 @@ impl App {
             app.load_error = Some(msg);
         }
         if app.scope == Scope::Branch {
-            match app.repo.resolve_base(&app.cfg.base) {
-                Ok((base, mb)) => {
-                    app.set_base(base, mb);
-                    if let Ok(entries) = app.load_entries() {
-                        app.entries = entries;
-                        app.rebuild_rows();
-                    }
-                }
-                Err(_) => app.scope = Scope::Worktree, // no base — stay in worktree
-            }
+            // Startup, before the first frame: resolve in place. No base
+            // means staying in worktree scope.
+            app.scope = Scope::Worktree;
+            app.base_request = Some(BaseThen::Scope);
+            app.resolve_pending_base();
         }
         Ok(app)
     }
@@ -196,6 +227,7 @@ impl App {
             base: String::new(),
             merge_base: None,
             branch_commits: None,
+            base_request: None,
             branch,
             status_msg: None,
             load_error: None,
@@ -470,13 +502,8 @@ impl App {
     /// full history. Resolves the base lazily, exactly like scope toggling.
     fn toggle_log_filter(&mut self) {
         if !self.log_branch_only && self.merge_base.is_none() {
-            match self.repo.resolve_base(&self.cfg.base) {
-                Ok((base, mb)) => self.set_base(base, mb),
-                Err(err) => {
-                    self.set_status(format!("no base found: {err}"));
-                    return;
-                }
-            }
+            self.request_base(BaseThen::LogFilter);
+            return;
         }
         self.log_branch_only = !self.log_branch_only;
         match self.load_commits() {
@@ -503,12 +530,48 @@ impl App {
         }
     }
 
-    /// Record the resolved base and count what sits on top of it, so every
-    /// place that resolves a base also gets the header's commit count.
-    fn set_base(&mut self, base: String, merge_base: String) {
-        self.branch_commits = self.repo.commits_ahead(&merge_base);
-        self.base = base;
-        self.merge_base = Some(merge_base);
+    /// Ask the session for the base, then `then`.
+    fn request_base(&mut self, then: BaseThen) {
+        self.base_request = Some(then);
+        self.set_status("resolving base…");
+    }
+
+    /// Resolve a requested base right here, blocking. For startup (no UI
+    /// yet) and callers without a session; the session itself goes through
+    /// a thread.
+    pub fn resolve_pending_base(&mut self) {
+        if let Some(then) = self.base_request.take() {
+            let result = resolve_base(&self.repo, &self.cfg.base);
+            self.on_base_resolved(then, result);
+        }
+    }
+
+    /// A requested base resolution landed: record it and finish `then`.
+    pub fn on_base_resolved(&mut self, then: BaseThen, result: Result<ResolvedBase, String>) {
+        let resolved = match result {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                self.set_status(format!("no base found: {err}"));
+                return; // stay where we are
+            }
+        };
+        if matches!(self.active_status(), Some("resolving base…")) {
+            self.status_msg = None;
+        }
+        self.branch_commits = resolved.ahead;
+        self.base = resolved.base;
+        self.merge_base = Some(resolved.merge_base);
+        match then {
+            // Only if still where the request was made.
+            BaseThen::Scope if self.mode == Mode::Files && self.scope == Scope::Worktree => {
+                self.scope = Scope::Branch;
+                self.force_refresh();
+            }
+            BaseThen::LogFilter if self.mode == Mode::Log && !self.log_branch_only => {
+                self.toggle_log_filter();
+            }
+            _ => {}
+        }
     }
 
     /// The base ref label, with a placeholder when it hasn't resolved.
@@ -783,13 +846,9 @@ impl App {
         match self.scope {
             Scope::Worktree => {
                 if self.merge_base.is_none() {
-                    match self.repo.resolve_base(&self.cfg.base) {
-                        Ok((base, mb)) => self.set_base(base, mb),
-                        Err(err) => {
-                            self.set_status(format!("no base found: {err}"));
-                            return; // stay in worktree scope
-                        }
-                    }
+                    // Base detection is many git calls: off the UI thread.
+                    self.request_base(BaseThen::Scope);
+                    return;
                 }
                 self.scope = Scope::Branch;
             }

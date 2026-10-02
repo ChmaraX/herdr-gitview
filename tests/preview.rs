@@ -36,6 +36,8 @@ fn req(file: &str) -> ShowReq {
         cached: false,
         kind: ChangeKind::Modified,
         commit: None,
+        base: None,
+        merge_base: None,
     }
 }
 

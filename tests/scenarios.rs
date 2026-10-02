@@ -62,6 +62,10 @@ struct World {
 
 impl World {
     fn new(repo: TempRepo) -> World {
+        World::with_config(repo, Config::default())
+    }
+
+    fn with_config(repo: TempRepo, cfg: Config) -> World {
         let host_dir = repo.dir.parent().unwrap().join(format!(
             "{}-host",
             repo.dir.file_name().unwrap().to_string_lossy()
@@ -76,7 +80,6 @@ impl World {
             socket: Some(socket_base.clone()),
         };
 
-        let cfg = Config::default();
         let keys = Keymap::build(&HashMap::new()).unwrap();
         let list_app = list::App::new(
             Repo {
@@ -780,6 +783,8 @@ fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
                 cached,
                 kind,
                 commit: commit.map(str::to_string),
+                base: None,
+                merge_base: None,
             };
             w.preview.on_event(preview::Event::Ipc(msg), &mut w.editor);
             w.wait_colored();
@@ -840,4 +845,67 @@ fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
     has(&t, &["brand new"], &[]);
     let t = show(&mut w, "base.txt", None, false, ChangeKind::Modified, None);
     has(&t, &["two UNSTAGED"], &["two unstaged"]);
+}
+
+/// A pinned `base` is what both panes compare against and name — the diff
+/// pane used to auto-detect its own base for the header and ignore the pin.
+/// Resolving it doesn't block the list: `w` returns at once and the scope
+/// switches when the resolution lands.
+#[test]
+fn a_pinned_base_is_resolved_off_the_ui_thread_and_named_by_both_panes() {
+    let repo = fixture("pinned-base");
+    let dir = repo.dir.clone();
+    // feature is stacked on release, so auto-detection would pick release;
+    // the pin says main, which brings release's own commit into the diff.
+    common::git(&dir, &["checkout", "-q", "-b", "release"]);
+    write(&dir, "r.txt", "from release\n");
+    common::git(&dir, &["add", "."]);
+    common::git(&dir, &["commit", "-q", "-m", "release work"]);
+    common::git(&dir, &["checkout", "-q", "-b", "feature"]);
+    write(&dir, "f.txt", "from feature\n");
+    common::git(&dir, &["add", "."]);
+    common::git(&dir, &["commit", "-q", "-m", "feature work"]);
+    let cfg = Config {
+        base: "main".to_string(),
+        ..Config::default()
+    };
+    let mut w = World::with_config(repo, cfg);
+
+    w.list.on_event(list::Event::Key(key('w')));
+    w.list.tick();
+    assert_eq!(
+        w.list.app.scope,
+        herdr_gitview::git::Scope::Worktree,
+        "the key returns before the base is resolved"
+    );
+    assert_eq!(w.list.app.active_status(), Some("resolving base…"));
+    w.pump();
+    assert_eq!(w.list.app.scope, herdr_gitview::git::Scope::Branch);
+    assert_eq!(w.list.app.base, "main");
+    let files: Vec<String> = w
+        .list
+        .app
+        .entries
+        .iter()
+        .map(|e| e.path.display().to_string())
+        .collect();
+    assert_eq!(files, vec!["f.txt", "r.txt"], "diffed against the pin");
+
+    // The diff pane names the same base, and diffs against its merge-base.
+    let shown = w.shown_file().unwrap();
+    let req = w.preview.app.current.clone().unwrap();
+    assert_eq!(req.base.as_deref(), Some("main"));
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 10)).unwrap();
+    term.draw(|f| preview::ui::render(f, &mut w.preview.app))
+        .unwrap();
+    let header: String = (0..80)
+        .map(|x| term.backend().buffer()[(x, 0)].symbol().to_string())
+        .collect();
+    assert!(header.contains("[vs main]"), "header: {header:?}");
+    assert_eq!(shown, "f.txt");
+    assert!(w.diff_text().contains("from feature"), "{}", w.diff_text());
+    // release's file is new relative to main's merge-base.
+    w.press("j");
+    assert_eq!(w.shown_file().as_deref(), Some("r.txt"));
+    assert!(w.diff_text().contains("from release"), "{}", w.diff_text());
 }

@@ -33,6 +33,10 @@ pub struct ShowReq {
     pub kind: ChangeKind,
     /// History view: show this commit's change instead of a live diff.
     pub commit: Option<String>,
+    /// Branch scope: the base ref's label and its merge-base with HEAD,
+    /// as resolved by the list.
+    pub base: Option<String>,
+    pub merge_base: Option<String>,
 }
 
 impl ShowReq {
@@ -46,6 +50,8 @@ impl ShowReq {
                 cached,
                 kind,
                 commit,
+                base,
+                merge_base,
             } => Some(ShowReq {
                 file,
                 orig_path,
@@ -53,6 +59,8 @@ impl ShowReq {
                 cached,
                 kind,
                 commit,
+                base,
+                merge_base,
             }),
             _ => None,
         }
@@ -120,9 +128,6 @@ pub struct PreviewApp {
     /// Body width of the last draw; note cards are boxed to it.
     pub viewport_w: u16,
 
-    /// Branch-scope base ref, resolved once for the header.
-    pub base: Option<String>,
-
     // ---- review notes / selection ----
     /// Cursor line in the rendered doc (drives selection).
     pub cursor_line: usize,
@@ -183,7 +188,6 @@ impl PreviewApp {
             scroll: 0,
             viewport_h: 0,
             viewport_w: 0,
-            base: None,
             cursor_line: 0,
             select_anchor: None,
             notes: Vec::new(),
@@ -241,9 +245,6 @@ impl PreviewApp {
             .unwrap_or(false);
         if !same_file {
             self.scroll = 0;
-        }
-        if req.scope == Scope::Branch && self.base.is_none() {
-            self.base = Some(self.repo.detect_base());
         }
         self.current = Some(req);
     }
@@ -1005,6 +1006,8 @@ impl PreviewApp {
             cached: note.cached,
             kind: crate::git::ChangeKind::Modified,
             commit: None,
+            base: None,
+            merge_base: None,
         })
     }
 

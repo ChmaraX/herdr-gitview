@@ -32,6 +32,11 @@ pub enum Event {
     Ipc(ToList),
     /// The preview pane went away (socket EOF).
     IpcClosed,
+    /// A requested base resolution finished on its thread.
+    BaseResolved {
+        then: app::BaseThen,
+        result: Result<app::ResolvedBase, String>,
+    },
     /// Background nvim probe finished. `unsaved: Some(false)` means the
     /// editor was clean and has already been told to quit; `Some(true)` means
     /// it holds unsaved buffers; `None` means it couldn't be asked.
@@ -74,6 +79,8 @@ pub struct Session {
     pub prefetch_settle: Duration,
     /// When the last Show went out, while its neighbors are still due.
     prefetch_from: Option<Instant>,
+    /// A base resolution thread is running.
+    base_resolving: bool,
     quit_sent: bool,
 }
 
@@ -100,6 +107,7 @@ impl Session {
             reconnect_budget: Duration::from_secs(2),
             prefetch_settle: Duration::from_millis(150),
             prefetch_from: None,
+            base_resolving: false,
             quit_sent: false,
         }
     }
@@ -153,6 +161,12 @@ impl Session {
             Event::Key(key) => self.on_key(key),
             Event::Mouse(m) => self.on_mouse(m),
             Event::EditorProbe { then, unsaved } => self.on_probe(then, unsaved),
+            Event::BaseResolved { then, result } => {
+                self.base_resolving = false;
+                self.app.on_base_resolved(then, result);
+                self.sync_shared();
+                self.mark_dirty(); // the scope may have changed
+            }
             Event::Refresh(entries) => {
                 self.app.apply_refresh(entries);
                 // Content may have changed under the cursor — re-show.
@@ -335,6 +349,7 @@ impl Session {
 
         self.open_requested_popups();
         self.poll_popups();
+        self.spawn_base_resolution();
 
         // `p`: hand off to the preview (it owns the notes + picker flow).
         if self.app.send_notes_request {
@@ -627,6 +642,27 @@ impl Session {
         });
     }
 
+    /// Resolve a base the app asked for on a thread (many git calls); the
+    /// result comes back as `Event::BaseResolved`. One at a time.
+    fn spawn_base_resolution(&mut self) {
+        if self.base_resolving {
+            return;
+        }
+        let Some(then) = self.app.base_request.take() else {
+            return;
+        };
+        self.base_resolving = true;
+        let tx = self.tx.clone();
+        let repo = crate::git::Repo {
+            root: self.app.repo.root.clone(),
+        };
+        let cfg_base = self.app.cfg.base.clone();
+        thread::spawn(move || {
+            let result = app::resolve_base(&repo, &cfg_base);
+            let _ = tx.send(Event::BaseResolved { then, result });
+        });
+    }
+
     /// Send a composer request to the diff pane and give it the focus, which
     /// is where the keystrokes need to land.
     fn hand_off(&mut self, msg: ToPreview) {
@@ -717,6 +753,7 @@ fn show_for_row(app: &App, row: usize) -> Option<ToPreview> {
         app::Mode::CommitFiles => Some(app.commit.as_ref()?.sha.clone()),
         _ => None,
     };
+    let branch = app.scope == Scope::Branch && commit.is_none();
     Some(ToPreview::Show {
         file: e.path.clone(),
         orig_path: e.orig_path.clone(),
@@ -726,6 +763,8 @@ fn show_for_row(app: &App, row: usize) -> Option<ToPreview> {
         cached: section.cached(),
         kind: e.kind,
         commit,
+        base: branch.then(|| app.base.clone()),
+        merge_base: app.merge_base.clone().filter(|_| branch),
     })
 }
 
@@ -764,6 +803,8 @@ fn note_show(app: &App, id: u64) -> Option<ToPreview> {
             .map(|e| e.kind)
             .unwrap_or(crate::git::ChangeKind::Modified),
         commit: None,
+        base: None,
+        merge_base: None,
     })
 }
 

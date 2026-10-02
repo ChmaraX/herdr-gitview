@@ -84,7 +84,6 @@ fn run(rx: Receiver<Job>, events: Sender<Event>, repo: Repo, cfg: Config, curren
         repo,
         cfg,
         events,
-        base_cache: None,
         last_file: None,
         docs: DocCache::default(),
     };
@@ -129,9 +128,6 @@ struct State {
     repo: Repo,
     cfg: Config,
     events: Sender<Event>,
-    /// Branch-scope base resolution cached per HEAD (it only moves when
-    /// HEAD does) so holding j doesn't spawn a git storm.
-    base_cache: Option<(String, String)>, // (head, merge_base)
     /// The file of the last Show handled: a repeat is a refresh.
     last_file: Option<PathBuf>,
     docs: DocCache,
@@ -142,7 +138,7 @@ impl State {
     /// time it took. Skipped when already cached; dropped on `cancelled`.
     fn prefetch(&mut self, req: ShowReq, cancelled: &dyn Fn() -> bool) -> Result<(), Gone> {
         let started = Instant::now();
-        let Ok(fetched) = fetch(&self.repo, &self.cfg, &req, &mut self.base_cache) else {
+        let Ok(fetched) = fetch(&self.repo, &req) else {
             return Ok(());
         };
         let Some((old, new)) = fetched.stamps.clone() else {
@@ -202,7 +198,7 @@ impl State {
             Duration::ZERO
         };
         self.last_file = Some(req.file.clone());
-        let fetched = match fetch(&self.repo, &self.cfg, &req, &mut self.base_cache) {
+        let fetched = match fetch(&self.repo, &req) {
             Ok(fetched) => fetched,
             Err(msg) => {
                 return emit(
@@ -353,13 +349,7 @@ enum Source {
 }
 
 /// The two sides a request diffs, per scope/staged/commit.
-/// `base_cache` holds `(head_sha, merge_base)` across calls.
-fn sources(
-    repo: &Repo,
-    cfg: &Config,
-    req: &ShowReq,
-    base_cache: &mut Option<(String, String)>,
-) -> Result<(Source, Source), String> {
+fn sources(req: &ShowReq) -> Result<(Source, Source), String> {
     let path = req.file.to_string_lossy();
     let old_path = req
         .orig_path
@@ -372,20 +362,11 @@ fn sources(
         return Ok((rev(&format!("{sha}^"), &old_path), rev(sha, &path)));
     }
     Ok(match req.scope {
-        Scope::Branch => {
-            let head = repo.head_sha().unwrap_or_default();
-            let mb = match base_cache {
-                Some((cached_head, mb)) if *cached_head == head => mb.clone(),
-                _ => {
-                    let (_, mb) = repo
-                        .resolve_base(&cfg.base)
-                        .map_err(|e| first_line(&e.to_string()))?;
-                    *base_cache = Some((head, mb.clone()));
-                    mb
-                }
-            };
-            (rev(&mb, &old_path), worktree)
-        }
+        // The list resolved the base; its merge-base is the old side.
+        Scope::Branch => match &req.merge_base {
+            Some(mb) => (rev(mb, &old_path), worktree),
+            None => return Err("branch base not resolved".to_string()),
+        },
         // Staged view: HEAD vs index.
         Scope::Worktree if req.cached => (rev("HEAD", &old_path), rev(":0", &path)),
         // Unmerged paths have no stage-0 entry; diff "ours" (stage 2,
@@ -404,13 +385,8 @@ fn sources(
 
 /// Read both sides of `req` — every git side in a single `cat-file` call —
 /// stamping each for the cache.
-fn fetch(
-    repo: &Repo,
-    cfg: &Config,
-    req: &ShowReq,
-    base_cache: &mut Option<(String, String)>,
-) -> Result<Fetched, String> {
-    let (old_src, new_src) = sources(repo, cfg, req, base_cache)?;
+fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
+    let (old_src, new_src) = sources(req)?;
     let specs: Vec<String> = [&old_src, &new_src]
         .into_iter()
         .flat_map(|s| match s {
