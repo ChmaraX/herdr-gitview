@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::sync::mpsc::{self, Sender};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{KeyEvent, MouseEvent};
@@ -48,9 +49,24 @@ pub enum Event {
     },
 }
 
+/// How long one `Show` took to reach the screen (the browsing-latency
+/// scenario writes these out as its artifact). `None` = superseded before it landed.
+#[derive(Debug, Clone)]
+pub struct ShowTiming {
+    pub file: std::path::PathBuf,
+    requested: Instant,
+    /// Until the first diff for this Show was on screen.
+    pub first_paint: Option<Duration>,
+}
+
+/// Timings kept for the most recent Shows only.
+const MAX_TIMINGS: usize = 256;
+
 pub struct Session {
     pub app: PreviewApp,
     pub env: HostEnv,
+    /// Per-Show latency, newest last.
+    pub timings: Vec<ShowTiming>,
     tx: Sender<Event>,
     work_tx: Sender<ShowReq>,
     conn: Option<Conn>,
@@ -72,6 +88,7 @@ impl Session {
         Session {
             app,
             env,
+            timings: Vec::new(),
             tx,
             work_tx,
             conn: None,
@@ -139,7 +156,33 @@ impl Session {
                 // The list (and thus the whole view) is gone — exit cleanly.
                 self.app.should_quit = true;
             }
-            Event::Diff { req, result } => self.app.apply_diff(&req, result),
+            Event::Diff { req, result } => {
+                let current = self.app.current.as_ref() == Some(&req);
+                self.app.apply_diff(&req, result);
+                if current {
+                    self.record_paint(&req);
+                }
+            }
+        }
+    }
+
+    fn record_show(&mut self, req: &ShowReq) {
+        if self.timings.len() >= MAX_TIMINGS {
+            self.timings.remove(0);
+        }
+        self.timings.push(ShowTiming {
+            file: req.file.clone(),
+            requested: Instant::now(),
+            first_paint: None,
+        });
+    }
+
+    fn record_paint(&mut self, req: &ShowReq) {
+        if let Some(t) = self.timings.last_mut()
+            && t.file == req.file
+            && t.first_paint.is_none()
+        {
+            t.first_paint = Some(t.requested.elapsed());
         }
     }
 
@@ -161,6 +204,7 @@ impl Session {
                     kind,
                     commit,
                 };
+                self.record_show(&req);
                 self.app.begin_show(req.clone());
                 let _ = self.work_tx.send(req);
             }

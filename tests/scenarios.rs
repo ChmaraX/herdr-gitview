@@ -532,3 +532,77 @@ fn quit_hands_shakes_both_panes_down() {
     assert!(w.list.should_quit());
     assert!(w.preview.should_quit(), "preview received Quit over IPC");
 }
+
+/// Holding `j` through a stack of large TypeScript files must not queue up
+/// a full rebuild per file: the diff for the file the cursor stops on lands
+/// promptly, and every Show's latency is written to `target/gitview-perf.txt`
+/// so a regression is visible as numbers, not as a vague "feels laggy".
+#[test]
+fn rapid_browsing_through_large_files_lands_the_final_diff() {
+    const FILES: usize = 11;
+    let big = include_str!("fixtures/large.ts");
+    let repo = fixture("rapid-browse");
+    let name = |i: usize| format!("big{i:02}.ts");
+    for i in 0..FILES {
+        write(&repo.dir, &name(i), big);
+    }
+    common::git(&repo.dir, &["add", "."]);
+    common::git(&repo.dir, &["commit", "-q", "-m", "big files"]);
+    // Three scattered edits per file, the last file carrying a marker.
+    for i in 0..FILES {
+        let mut lines: Vec<String> = big.lines().map(str::to_string).collect();
+        let n = lines.len();
+        for at in [n / 4, n / 2, 3 * n / 4] {
+            lines[at].push_str(&format!(" // edit in file {i}"));
+        }
+        write(&repo.dir, &name(i), &(lines.join("\n") + "\n"));
+    }
+    let mut w = World::new(repo);
+    assert_eq!(w.shown_file().as_deref(), Some("big00.ts"));
+
+    // Ten presses at key-repeat speed, the preview draining as it goes.
+    for _ in 0..FILES - 1 {
+        w.list.on_event(list::Event::Key(key('j')));
+        w.list.tick();
+        let until = Instant::now() + Duration::from_millis(30);
+        while Instant::now() < until {
+            while let Ok(ev) = w.preview_rx.try_recv() {
+                w.preview.on_event(ev, &mut w.editor);
+            }
+            w.preview.tick();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    let last_press = Instant::now();
+    let marker = format!("edit in file {}", FILES - 1);
+    while !(w.shown_file() == Some(name(FILES - 1))
+        && matches!(w.preview.app.state, State::Diff)
+        && w.diff_text().contains(&marker))
+    {
+        assert!(
+            last_press.elapsed() < Duration::from_secs(60),
+            "the final file's diff never landed"
+        );
+        w.pump();
+    }
+    let landed = last_press.elapsed();
+
+    let mut report = format!(
+        "rapid browse: {} files x {} lines, {} j presses\nfinal diff landed {landed:?} after the last press\n",
+        FILES,
+        big.lines().count(),
+        FILES - 1
+    );
+    for t in &w.preview.timings {
+        let paint = t
+            .first_paint
+            .map_or("superseded".to_string(), |d| format!("{d:?}"));
+        report.push_str(&format!("{}\tfirst paint {paint}\n", t.file.display()));
+    }
+    let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .parent()
+        .unwrap()
+        .join("gitview-perf.txt");
+    std::fs::write(&artifact, &report).unwrap();
+    eprintln!("{report}(written to {})", artifact.display());
+}
