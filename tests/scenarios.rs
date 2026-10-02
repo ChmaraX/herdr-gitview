@@ -732,7 +732,7 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
 /// again from the worker's cache never outlives an edit to its file.
 #[test]
 fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
-    use herdr_gitview::git::{ChangeKind, Scope};
+    use herdr_gitview::git::ChangeKind;
     use herdr_gitview::ipc::ToPreview;
 
     let repo = fixture("sides");
@@ -773,23 +773,21 @@ fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
     write(&dir, "u.txt", "brand new\n");
     let mut w = World::new(repo);
 
-    let show =
-        |w: &mut World, file: &str, orig: Option<&str>, cached, kind, commit: Option<&str>| {
-            let msg = ToPreview::Show {
-                file: file.into(),
-                orig_path: orig.map(Into::into),
-                scope: Scope::Worktree,
+    let show = |w: &mut World,
+                file: &str,
+                orig: Option<&str>,
                 cached,
                 kind,
-                commit: commit.map(str::to_string),
-                base: None,
-                merge_base: None,
-            };
-            w.preview.on_event(preview::Event::Ipc(msg), &mut w.editor);
-            w.wait_colored();
-            w.pump();
-            w.diff_text()
-        };
+                commit: Option<&str>| {
+        let msg = ToPreview::Show(herdr_gitview::ipc::ShowReq {
+            commit: commit.map(str::to_string),
+            ..herdr_gitview::ipc::ShowReq::worktree(file.into(), orig.map(Into::into), cached, kind)
+        });
+        w.preview.on_event(preview::Event::Ipc(msg), &mut w.editor);
+        w.wait_colored();
+        w.pump();
+        w.diff_text()
+    };
     let has = |text: &str, want: &[&str], not: &[&str]| {
         for s in want {
             assert!(text.contains(s), "missing {s:?} in {text:?}");
@@ -908,7 +906,7 @@ fn a_pinned_base_is_resolved_off_the_ui_thread_and_named_by_both_panes() {
     // The diff pane names the same base, and diffs against its merge-base.
     let shown = w.shown_file().unwrap();
     let req = w.preview.app.current.clone().unwrap();
-    assert_eq!(req.base.as_deref(), Some("main"));
+    assert_eq!(req.base.map(|b| b.label).as_deref(), Some("main"));
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 10)).unwrap();
     term.draw(|f| preview::ui::render(f, &mut w.preview.app))
         .unwrap();

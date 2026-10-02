@@ -16,7 +16,7 @@ use crossterm::event::{KeyEvent, MouseEvent};
 use super::app::{self, App};
 use crate::git::{FileEntry, Scope};
 use crate::hostenv::HostEnv;
-use crate::ipc::{Conn, ToList, ToPreview};
+use crate::ipc::{Conn, ShowReq, ToList, ToPreview};
 use crate::keymap::Action;
 use crate::popup::{Answer, Popups};
 
@@ -366,15 +366,15 @@ impl Session {
                 // Hovering a note: show its file's diff + scroll to the card.
                 if let Some(note) = self.app.selected_note() {
                     let id = note.id;
-                    if let Some(msg) = note_show(&self.app, id) {
-                        self.send(&msg);
+                    if let Some(req) = note_show(&self.app, id) {
+                        self.send(&ToPreview::Show(req));
                     }
                     self.send(&ToPreview::FocusNote { id });
                 }
             } else {
                 match current_show(&self.app) {
-                    Some(msg) => {
-                        self.send(&msg);
+                    Some(req) => {
+                        self.send(&ToPreview::Show(req));
                         self.prefetch_from = Some(Instant::now());
                     }
                     // Cursor resting on a directory row: keep showing the
@@ -420,9 +420,7 @@ impl Session {
             // window used to fail with "open that file's diff first".
             match current_show(&self.app) {
                 Some(show) => {
-                    self.hand_off(ToPreview::ComposeNote {
-                        show: Box::new(show),
-                    });
+                    self.hand_off(ToPreview::ComposeNote { show });
                     self.show_dirty = false; // the composer's Show is the current one
                 }
                 None => self.app.set_status("select a file to annotate"),
@@ -722,14 +720,14 @@ pub fn spawn_connector(tx: &Sender<Event>, socket: Option<PathBuf>, budget: Dura
 
 // ---- pure message builders (unit-testable) --------------------------------
 
-/// The Show message for the current selection, or `None` when nothing
-/// diffable is selected (headers, commit rows, empty list).
-fn current_show(app: &App) -> Option<ToPreview> {
+/// The Show for the current selection, or `None` when nothing diffable is
+/// selected (headers, commit rows, empty list).
+fn current_show(app: &App) -> Option<ShowReq> {
     show_for_row(app, app.cursor)
 }
 
 /// The Shows for the nearest file rows above and below the cursor.
-fn neighbor_shows(app: &App) -> Vec<ToPreview> {
+fn neighbor_shows(app: &App) -> Vec<ShowReq> {
     if !matches!(app.mode, app::Mode::Files | app::Mode::CommitFiles) {
         return Vec::new();
     }
@@ -743,18 +741,18 @@ fn neighbor_shows(app: &App) -> Vec<ToPreview> {
         .collect()
 }
 
-/// The Show message for the file on row `row`, if it is one.
-fn show_for_row(app: &App, row: usize) -> Option<ToPreview> {
-    let (e, section) = match app.rows.get(row)? {
-        app::ListRow::Entry { idx, section, .. } => (app.entries.get(*idx)?, *section),
-        _ => return None,
-    };
+/// The Show for the file on row `row`, if it is one.
+fn show_for_row(app: &App, row: usize) -> Option<ShowReq> {
+    let (e, section) = app.entry_at(row)?;
     let commit = match app.mode {
         app::Mode::CommitFiles => Some(app.commit.as_ref()?.sha.clone()),
         _ => None,
     };
-    let branch = app.scope == Scope::Branch && commit.is_none();
-    Some(ToPreview::Show {
+    let base = match app.scope {
+        Scope::Branch if commit.is_none() => app.branch_base(),
+        _ => None,
+    };
+    Some(ShowReq {
         file: e.path.clone(),
         orig_path: e.orig_path.clone(),
         scope: app.scope,
@@ -763,8 +761,7 @@ fn show_for_row(app: &App, row: usize) -> Option<ToPreview> {
         cached: section.cached(),
         kind: e.kind,
         commit,
-        base: branch.then(|| app.base.clone()),
-        merge_base: app.merge_base.clone().filter(|_| branch),
+        base,
     })
 }
 
@@ -788,24 +785,20 @@ fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
 }
 
 /// The Show for a hovered note: its file's live worktree diff.
-fn note_show(app: &App, id: u64) -> Option<ToPreview> {
+fn note_show(app: &App, id: u64) -> Option<ShowReq> {
     let note = app.notes.iter().find(|n| n.id == id)?;
     let file = &note.file;
     // Prefer real entry metadata when the file is among the current entries;
     // otherwise synthesize (kind only affects rename pathspecs).
     let entry = app.entries.iter().find(|e| &e.path == file);
-    Some(ToPreview::Show {
-        file: file.clone(),
-        orig_path: entry.and_then(|e| e.orig_path.clone()),
-        scope: Scope::Worktree,
-        cached: note.cached,
-        kind: entry
+    Some(ShowReq::worktree(
+        file.clone(),
+        entry.and_then(|e| e.orig_path.clone()),
+        note.cached,
+        entry
             .map(|e| e.kind)
             .unwrap_or(crate::git::ChangeKind::Modified),
-        commit: None,
-        base: None,
-        merge_base: None,
-    })
+    ))
 }
 
 /// Translate a diff scroll/page key into the message the preview

@@ -363,8 +363,8 @@ fn sources(req: &ShowReq) -> Result<(Source, Source), String> {
     }
     Ok(match req.scope {
         // The list resolved the base; its merge-base is the old side.
-        Scope::Branch => match &req.merge_base {
-            Some(mb) => (rev(mb, &old_path), worktree),
+        Scope::Branch => match &req.base {
+            Some(base) => (rev(&base.merge_base, &old_path), worktree),
             None => return Err("branch base not resolved".to_string()),
         },
         // Staged view: HEAD vs index.

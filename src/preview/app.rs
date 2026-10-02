@@ -21,51 +21,7 @@ const MAX_LINES: usize = 20_000;
 use super::card::{self, Card, MIN_WIDTH as MIN_CARD_WIDTH};
 use super::compose::{Composer, Outcome};
 
-/// The fields of a `ToPreview::Show`, kept together so we can compare the
-/// request that produced a diff against the one currently selected (stale
-/// results from the worker are dropped when they differ).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShowReq {
-    pub file: PathBuf,
-    pub orig_path: Option<PathBuf>,
-    pub scope: Scope,
-    pub cached: bool,
-    pub kind: ChangeKind,
-    /// History view: show this commit's change instead of a live diff.
-    pub commit: Option<String>,
-    /// Branch scope: the base ref's label and its merge-base with HEAD,
-    /// as resolved by the list.
-    pub base: Option<String>,
-    pub merge_base: Option<String>,
-}
-
-impl ShowReq {
-    /// The request a `ToPreview::Show` asks for (`None` for other messages).
-    pub fn from_msg(msg: crate::ipc::ToPreview) -> Option<ShowReq> {
-        match msg {
-            crate::ipc::ToPreview::Show {
-                file,
-                orig_path,
-                scope,
-                cached,
-                kind,
-                commit,
-                base,
-                merge_base,
-            } => Some(ShowReq {
-                file,
-                orig_path,
-                scope,
-                cached,
-                kind,
-                commit,
-                base,
-                merge_base,
-            }),
-            _ => None,
-        }
-    }
-}
+pub use crate::ipc::ShowReq;
 
 /// A batched review note, anchored to a file (and optionally a line range).
 #[derive(Debug, Clone)]
@@ -996,21 +952,17 @@ impl PreviewApp {
 
     /// The Show that puts a note's own file on screen, so the composer can
     /// open on it without the list having to say which file that is.
-    pub fn show_for_note(&self, id: u64) -> Option<crate::ipc::ToPreview> {
+    pub fn show_for_note(&self, id: u64) -> Option<ShowReq> {
         let note = self.notes.iter().find(|n| n.id == id)?;
         if self.current.as_ref().map(|r| &r.file) == Some(&note.file) {
             return None; // already showing it
         }
-        Some(crate::ipc::ToPreview::Show {
-            file: note.file.clone(),
-            orig_path: None,
-            scope: Scope::Worktree,
-            cached: note.cached,
-            kind: crate::git::ChangeKind::Modified,
-            commit: None,
-            base: None,
-            merge_base: None,
-        })
+        Some(ShowReq::worktree(
+            note.file.clone(),
+            None,
+            note.cached,
+            ChangeKind::Modified,
+        ))
     }
 
     /// Scroll so the whole composer box is on screen, preferring to keep its

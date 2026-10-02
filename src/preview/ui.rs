@@ -40,7 +40,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &PreviewApp) {
                 // name the same comparison, or the split is confusing.
                 (None, Scope::Worktree) => "uncommitted".to_string(),
                 (None, Scope::Branch) => {
-                    format!("vs {}", req.base.as_deref().unwrap_or("base"))
+                    format!("vs {}", req.base.as_ref().map_or("base", |b| &b.label))
                 }
             };
             let staged = if req.cached && req.scope == Scope::Worktree {

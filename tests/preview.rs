@@ -37,7 +37,6 @@ fn req(file: &str) -> ShowReq {
         kind: ChangeKind::Modified,
         commit: None,
         base: None,
-        merge_base: None,
     }
 }
 
@@ -722,7 +721,7 @@ fn editing_a_note_in_another_file_asks_for_that_file_first() {
     // The preview knows which file the note belongs to, so it can ask for it
     // itself rather than refusing and making the list guess.
     assert!(
-        matches!(a.show_for_note(1), Some(herdr_gitview::ipc::ToPreview::Show { file, .. }) if file == std::path::Path::new("other.rs"))
+        matches!(a.show_for_note(1), Some(ShowReq { file, .. }) if file == std::path::Path::new("other.rs"))
     );
     // An unknown id has nothing to show and nothing to edit.
     assert!(a.show_for_note(999).is_none());

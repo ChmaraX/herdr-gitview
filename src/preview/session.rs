@@ -192,6 +192,12 @@ impl Session {
         }
     }
 
+    fn show(&mut self, req: ShowReq) {
+        self.record_show(&req);
+        self.app.begin_show(req.clone());
+        self.worker.show(req);
+    }
+
     fn record_show(&mut self, req: &ShowReq) {
         if self.timings.len() >= MAX_TIMINGS {
             self.timings.remove(0);
@@ -218,32 +224,22 @@ impl Session {
 
     fn on_ipc(&mut self, msg: ToPreview) {
         match msg {
-            msg @ ToPreview::Show { .. } => {
-                let Some(req) = ShowReq::from_msg(msg) else {
-                    return;
-                };
-                self.record_show(&req);
-                self.app.begin_show(req.clone());
-                self.worker.show(req);
-            }
-            ToPreview::Prefetch { shows } => {
-                let reqs = shows.into_iter().filter_map(ShowReq::from_msg).collect();
-                self.worker.prefetch(reqs);
-            }
+            ToPreview::Show(req) => self.show(req),
+            ToPreview::Prefetch { shows } => self.worker.prefetch(shows),
             ToPreview::Scroll { delta } => self.app.scroll_by(delta),
             ToPreview::Page { down, full } => self.app.page(down, full),
             ToPreview::Clear => self.app.clear(),
             // A compose request carries the Show it needs, so it never
             // depends on a debounced one having landed first.
             ToPreview::ComposeNote { show } => {
-                self.on_ipc(*show);
+                self.show(show);
                 self.app.begin_file_note();
             }
             ToPreview::ComposeEditNote { id } => {
                 // The preview owns the note, so it can re-show the file the
                 // note belongs to itself.
                 if let Some(show) = self.app.show_for_note(id) {
-                    self.on_ipc(show);
+                    self.show(show);
                 }
                 if !self.app.begin_edit_note(id) {
                     self.app.flash("that note is gone");

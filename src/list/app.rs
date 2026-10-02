@@ -256,7 +256,12 @@ impl App {
 
     /// The selected entry and which section it sits in.
     pub fn selected_entry(&self) -> Option<(&FileEntry, Section)> {
-        match self.rows.get(self.cursor)? {
+        self.entry_at(self.cursor)
+    }
+
+    /// The file entry on row `row` and its section, if that row is a file.
+    pub fn entry_at(&self, row: usize) -> Option<(&FileEntry, Section)> {
+        match self.rows.get(row)? {
             ListRow::Entry { idx, section, .. } => Some((self.entries.get(*idx)?, *section)),
             _ => None,
         }
@@ -572,6 +577,14 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The resolved base, as a Show carries it.
+    pub fn branch_base(&self) -> Option<crate::ipc::BranchBase> {
+        Some(crate::ipc::BranchBase {
+            label: self.base.clone(),
+            merge_base: self.merge_base.clone()?,
+        })
     }
 
     /// The base ref label, with a placeholder when it hasn't resolved.
