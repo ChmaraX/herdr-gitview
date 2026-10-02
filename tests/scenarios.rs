@@ -152,6 +152,22 @@ impl World {
         }
     }
 
+    /// Feed the preview whatever its worker delivers for `dur`, without
+    /// waiting for quiet — for measuring latency while keys keep coming.
+    fn drain_preview_for(&mut self, dur: Duration) {
+        let until = Instant::now() + dur;
+        loop {
+            while let Ok(ev) = self.preview_rx.try_recv() {
+                self.preview.on_event(ev, &mut self.editor);
+            }
+            self.preview.tick();
+            if Instant::now() >= until {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     fn press(&mut self, key: &str) {
         let (code, mods) = parse_key(key).unwrap();
         self.list
@@ -564,14 +580,7 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
     for _ in 0..FILES - 1 {
         w.list.on_event(list::Event::Key(key('j')));
         w.list.tick();
-        let until = Instant::now() + Duration::from_millis(30);
-        while Instant::now() < until {
-            while let Ok(ev) = w.preview_rx.try_recv() {
-                w.preview.on_event(ev, &mut w.editor);
-            }
-            w.preview.tick();
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        w.drain_preview_for(Duration::from_millis(30));
     }
     let last_press = Instant::now();
     let marker = format!("edit in file {}", FILES - 1);
@@ -583,7 +592,7 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
             last_press.elapsed() < Duration::from_secs(60),
             "the final file's diff never landed"
         );
-        w.pump();
+        w.drain_preview_for(Duration::from_millis(2));
     }
     let landed = last_press.elapsed();
 

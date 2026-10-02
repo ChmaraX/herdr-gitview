@@ -3,12 +3,16 @@
 //! context — ported (simplified) from persiyanov/herdr-reviewr `diff.rs` (MIT).
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use similar::{ChangeTag, TextDiff};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use syntect::util::LinesWithEndings;
 
 use super::highlight::{Highlighter, Rgb, Run};
 
@@ -49,8 +53,21 @@ impl Row {
 
 /// The built document, ready to render. Folds can be expanded in place
 /// (`unfold_at`), which rebuilds `text`.
+///
+/// Rows start out uncolored (`build_plain`) and gain syntax colors line by
+/// line (`apply_highlights`), so a doc can go on screen before its
+/// highlighting is done and an unfolded run can be colored after the fact.
+#[derive(Clone)]
 pub struct DiffDoc {
     rows: Vec<Row>,
+    /// Both sides' full content, kept so lines revealed later (unfolding)
+    /// can still be highlighted.
+    old: Arc<str>,
+    new: Arc<str>,
+    ext: Option<String>,
+    /// Per side, by 0-based line: already carries syntax colors?
+    colored_old: Vec<bool>,
+    colored_new: Vec<bool>,
     theme: crate::config::Theme,
     default_fg: Rgb,
     /// Rendered line index → index into `rows`.
@@ -128,6 +145,119 @@ impl DiffDoc {
         self.text = text;
         self.line_rows = line_rows;
     }
+
+    /// The work to color every on-screen line that is still plain (folded
+    /// lines stay plain until revealed). `None` when nothing is left.
+    pub fn highlight_job(&self) -> Option<HighlightJob> {
+        let (mut old, mut new) = (Vec::new(), Vec::new());
+        for row in &self.rows {
+            match row {
+                Row::Deletion { old_no, .. } => old.push(*old_no as usize - 1),
+                Row::Insertion { new_no, .. } | Row::Context { new_no, .. } => {
+                    new.push(*new_no as usize - 1)
+                }
+                Row::Fold { .. } => {}
+            }
+        }
+        let pending = |lines: Vec<usize>, done: &[bool]| -> Vec<usize> {
+            let mut lines: Vec<usize> = lines
+                .into_iter()
+                .filter(|&i| !done.get(i).copied().unwrap_or(true))
+                .collect();
+            lines.sort_unstable();
+            lines.dedup();
+            lines
+        };
+        let old = pending(old, &self.colored_old);
+        let new = pending(new, &self.colored_new);
+        if old.is_empty() && new.is_empty() {
+            return None;
+        }
+        Some(HighlightJob {
+            old_text: Arc::clone(&self.old),
+            new_text: Arc::clone(&self.new),
+            ext: self.ext.clone(),
+            old,
+            new,
+        })
+    }
+
+    /// Swap highlighted runs in for the lines they cover (folded rows
+    /// included), then re-render. The text of each line is unchanged, so
+    /// word emphasis, folds, and line maps all stay valid.
+    pub fn apply_highlights(&mut self, h: &Highlights) {
+        let old: HashMap<usize, &Vec<Run>> = h.old.iter().map(|(i, r)| (*i, r)).collect();
+        let new: HashMap<usize, &Vec<Run>> = h.new.iter().map(|(i, r)| (*i, r)).collect();
+        fn patch(
+            rows: &mut [Row],
+            old: &HashMap<usize, &Vec<Run>>,
+            new: &HashMap<usize, &Vec<Run>>,
+        ) {
+            for row in rows {
+                match row {
+                    Row::Deletion { old_no, runs, .. } => {
+                        if let Some(r) = old.get(&(*old_no as usize - 1)) {
+                            *runs = (*r).clone();
+                        }
+                    }
+                    Row::Insertion { new_no, runs, .. } | Row::Context { new_no, runs, .. } => {
+                        if let Some(r) = new.get(&(*new_no as usize - 1)) {
+                            *runs = (*r).clone();
+                        }
+                    }
+                    Row::Fold { lines } => patch(lines, old, new),
+                }
+            }
+        }
+        patch(&mut self.rows, &old, &new);
+        for (i, _) in &h.old {
+            if let Some(done) = self.colored_old.get_mut(*i) {
+                *done = true;
+            }
+        }
+        for (i, _) in &h.new {
+            if let Some(done) = self.colored_new.get_mut(*i) {
+                *done = true;
+            }
+        }
+        self.rebuild();
+    }
+}
+
+/// Lines of a doc still waiting for syntax colors, with the content needed
+/// to color them — self-contained, so it can run on another thread.
+pub struct HighlightJob {
+    old_text: Arc<str>,
+    new_text: Arc<str>,
+    ext: Option<String>,
+    /// 0-based, ascending, per side.
+    old: Vec<usize>,
+    new: Vec<usize>,
+}
+
+impl HighlightJob {
+    /// Color the job's lines; `None` if `cancelled` fired part-way.
+    pub fn run(&self, hl: &Highlighter, cancelled: &dyn Fn() -> bool) -> Option<Highlights> {
+        let ext = self.ext.as_deref();
+        let side = |text: &str, wanted: &[usize]| {
+            if wanted.is_empty() {
+                return Some(Vec::new());
+            }
+            let lines: Vec<&str> = LinesWithEndings::from(text).collect();
+            hl.highlight_lines(&lines, ext, wanted, cancelled)
+        };
+        Some(Highlights {
+            old: side(&self.old_text, &self.old)?,
+            new: side(&self.new_text, &self.new)?,
+        })
+    }
+}
+
+/// Syntax-colored runs for some lines of each side (0-based line indices).
+#[derive(Debug, Clone, Default)]
+pub struct Highlights {
+    old: Vec<(usize, Vec<Run>)>,
+    new: Vec<(usize, Vec<Run>)>,
 }
 
 /// Colors for the diff chrome, themed light or dark to match the syntax theme.
@@ -202,7 +332,7 @@ fn expand_tabs(s: &str, width: usize) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Build the full document from old and new file content.
+/// Build the full document from old and new file content, highlighted.
 pub fn build(
     path: &Path,
     old: &str,
@@ -212,25 +342,55 @@ pub fn build(
     context_lines: usize,
     tab_width: usize,
 ) -> DiffDoc {
-    if old.contains('\0') || new.contains('\0') {
-        return DiffDoc {
-            rows: Vec::new(),
-            theme,
-            default_fg: hl.default_fg,
-            line_rows: Vec::new(),
-            text: Text::default(),
-            first_change: None,
-            is_empty: false,
-            binary: true,
-        };
+    let mut doc = build_plain(path, old, new, hl, theme, context_lines, tab_width);
+    if let Some(h) = doc.highlight_job().and_then(|job| job.run(hl, &|| false)) {
+        doc.apply_highlights(&h);
     }
-    let ext = path.extension().and_then(|e| e.to_str());
+    doc
+}
+
+/// Build the document with every line in the default color: diffing,
+/// emphasis and folding only, no grammar — cheap enough to show at once.
+pub fn build_plain(
+    path: &Path,
+    old: &str,
+    new: &str,
+    hl: &Highlighter,
+    theme: crate::config::Theme,
+    context_lines: usize,
+    tab_width: usize,
+) -> DiffDoc {
+    // Tabs become spaces before anything else: the diff, the highlighting
+    // (later, from the kept content) and the cells all see the same text.
     let old = expand_tabs(old, tab_width);
     let new = expand_tabs(new, tab_width);
     let (old, new) = (old.as_ref(), new.as_ref());
-    let old_lines = hl.highlight(old, ext);
-    let new_lines = hl.highlight(new, ext);
-    let line = |lines: &[Vec<Run>], i: usize| lines.get(i).cloned().unwrap_or_default();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_string);
+    let mut doc = DiffDoc {
+        rows: Vec::new(),
+        old: Arc::from(old),
+        new: Arc::from(new),
+        ext,
+        colored_old: Vec::new(),
+        colored_new: Vec::new(),
+        theme,
+        default_fg: hl.default_fg,
+        line_rows: Vec::new(),
+        text: Text::default(),
+        first_change: None,
+        is_empty: false,
+        binary: false,
+    };
+    if old.contains('\0') || new.contains('\0') {
+        doc.binary = true;
+        return doc;
+    }
+    let old_lines: Vec<&str> = LinesWithEndings::from(old).collect();
+    let new_lines: Vec<&str> = LinesWithEndings::from(new).collect();
+    let line = |lines: &[&str], i: usize| hl.plain(lines.get(i).copied().unwrap_or(""));
 
     let mut rows = Vec::new();
     for change in TextDiff::from_lines(old, new).iter_all_changes() {
@@ -271,18 +431,13 @@ pub fn build(
     });
 
     compute_emphasis(&mut rows);
-    let rows = collapse_context(rows, context_lines);
-    let (text, line_rows) = to_text(&rows, &Palette::new(theme), hl.default_fg);
-    DiffDoc {
-        rows,
-        theme,
-        default_fg: hl.default_fg,
-        line_rows,
-        text,
-        first_change,
-        is_empty,
-        binary: false,
-    }
+    doc.rows = collapse_context(rows, context_lines);
+    doc.colored_old = vec![false; old_lines.len()];
+    doc.colored_new = vec![false; new_lines.len()];
+    doc.first_change = first_change;
+    doc.is_empty = is_empty;
+    doc.rebuild();
+    doc
 }
 
 // ---- word-level emphasis ---------------------------------------------------

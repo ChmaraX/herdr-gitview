@@ -51,14 +51,15 @@ fn main() {
         let lines = old.lines().count();
         let runs = 5;
         let whole = time(runs, || hl.highlight(&new, ext));
+        let plain = time(runs, || {
+            render::build_plain(&path, &old, &new, &hl, Theme::Dark, 3, 4)
+        });
         let build = time(runs, || {
-            render::build(&path, &old, &new, &hl, Theme::Dark, 3)
+            render::build(&path, &old, &new, &hl, Theme::Dark, 3, 4)
         });
         println!(
-            "{} ({lines} lines): highlight whole file {:>7.1?}  build {:>7.1?}",
+            "{} ({lines} lines): highlight whole file {whole:>7.1?}  plain build {plain:>7.1?}  build {build:>7.1?}",
             path.display(),
-            whole,
-            build,
         );
     }
 }

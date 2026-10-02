@@ -45,7 +45,7 @@ pub enum Event {
     /// The diff worker produced a built document for `req`.
     Diff {
         req: ShowReq,
-        result: Result<render::DiffDoc, String>,
+        result: Result<Box<render::DiffDoc>, String>,
     },
 }
 
@@ -158,7 +158,7 @@ impl Session {
             }
             Event::Diff { req, result } => {
                 let current = self.app.current.as_ref() == Some(&req);
-                self.app.apply_diff(&req, result);
+                self.app.apply_diff(&req, result.map(|doc| *doc));
                 if current {
                     self.record_paint(&req);
                 }
@@ -492,7 +492,7 @@ fn spawn_diff_worker(tx: Sender<Event>, repo: Repo, cfg: Config) -> Sender<ShowR
                 req = newer;
             }
             let result = fetch_contents(&repo, &cfg, &req, &mut base_cache).map(|(old, new)| {
-                render::build(
+                Box::new(render::build(
                     &req.file,
                     &old,
                     &new,
@@ -500,7 +500,7 @@ fn spawn_diff_worker(tx: Sender<Event>, repo: Repo, cfg: Config) -> Sender<ShowR
                     cfg.theme,
                     cfg.context_lines,
                     cfg.tab_width,
-                )
+                ))
             });
             if tx.send(Event::Diff { req, result }).is_err() {
                 break;
