@@ -29,6 +29,8 @@ const REFRESH_BUDGET: Duration = Duration::from_millis(20);
 enum Job {
     /// Build the diff for this request.
     Show { req: ShowReq, generation: u64 },
+    /// Build these into the cache without showing them.
+    Prefetch { reqs: Vec<ShowReq>, generation: u64 },
     /// Color lines revealed after the fact (an unfolded run).
     Highlight {
         req: ShowReq,
@@ -56,6 +58,12 @@ impl Worker {
     pub fn show(&self, req: ShowReq) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let _ = self.jobs.send(Job::Show { req, generation });
+    }
+
+    /// Build `reqs` into the cache, until the next `show` interrupts.
+    pub fn prefetch(&self, reqs: Vec<ShowReq>) {
+        let generation = self.generation.load(Ordering::SeqCst);
+        let _ = self.jobs.send(Job::Prefetch { reqs, generation });
     }
 
     /// Color `job`'s lines of the doc currently shown for `req`.
@@ -88,12 +96,17 @@ fn run(rx: Receiver<Job>, events: Sender<Event>, repo: Repo, cfg: Config, curren
         for job in queue {
             let stale = |g: u64| current.load(Ordering::SeqCst) != g;
             let sent = match job {
-                Job::Show { generation, .. } | Job::Highlight { generation, .. }
+                Job::Show { generation, .. }
+                | Job::Prefetch { generation, .. }
+                | Job::Highlight { generation, .. }
                     if generation != newest =>
                 {
                     continue;
                 }
                 Job::Show { req, generation } => w.show(req, &|| stale(generation)),
+                Job::Prefetch { reqs, generation } => reqs
+                    .into_iter()
+                    .try_for_each(|req| w.prefetch(req, &|| stale(generation))),
                 Job::Highlight {
                     req,
                     job,
@@ -125,6 +138,59 @@ struct State {
 }
 
 impl State {
+    /// Build `req` into the cache only — nothing is sent but a note of the
+    /// time it took. Skipped when already cached; dropped on `cancelled`.
+    fn prefetch(&mut self, req: ShowReq, cancelled: &dyn Fn() -> bool) -> Result<(), Gone> {
+        let started = Instant::now();
+        let Ok(fetched) = fetch(&self.repo, &self.cfg, &req, &mut self.base_cache) else {
+            return Ok(());
+        };
+        let Some((old, new)) = fetched.stamps.clone() else {
+            return Ok(()); // uncacheable — nothing to gain
+        };
+        let key = Key {
+            req: req.clone(),
+            old,
+            new,
+        };
+        if cancelled() || self.docs.contains(&key) {
+            return Ok(());
+        }
+        let Some(doc) = self.build_colored(&req, &fetched, cancelled) else {
+            return Ok(());
+        };
+        self.docs.put(key, doc);
+        emit(
+            &self.events,
+            Event::Prefetched {
+                file: req.file,
+                took: started.elapsed(),
+            },
+        )
+    }
+
+    /// Diff and fully color `fetched`, or `None` once `cancelled`.
+    fn build_colored(
+        &self,
+        req: &ShowReq,
+        fetched: &Fetched,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<render::DiffDoc> {
+        let cfg = &self.cfg;
+        let mut doc = render::build_plain(
+            &req.file,
+            &fetched.old,
+            &fetched.new,
+            &self.hl,
+            cfg.theme,
+            cfg.context_lines,
+        );
+        if let Some(job) = doc.highlight_job() {
+            doc.apply_highlights(&job.run(&self.hl, cancelled)?);
+        }
+        Some(doc)
+    }
+
     /// Fetch, diff, and deliver one request: from the cache when its
     /// content is unchanged, else uncolored first if coloring runs past the
     /// budget and colored once it is done. Stops early once `cancelled`
@@ -233,6 +299,10 @@ struct DocCache {
 }
 
 impl DocCache {
+    fn contains(&self, key: &Key) -> bool {
+        self.entries.iter().any(|(k, _)| k == key)
+    }
+
     fn get(&mut self, key: &Key) -> Option<render::DiffDoc> {
         let at = self.entries.iter().position(|(k, _)| k == key)?;
         let entry = self.entries.remove(at);

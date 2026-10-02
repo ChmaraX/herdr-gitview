@@ -52,6 +52,11 @@ pub enum Event {
         req: ShowReq,
         highlights: render::Highlights,
     },
+    /// A neighbor's diff was built in the background, taking `took`.
+    Prefetched {
+        file: std::path::PathBuf,
+        took: Duration,
+    },
 }
 
 /// How long one `Show` took to reach the screen (the browsing-latency
@@ -74,6 +79,8 @@ pub struct Session {
     pub env: HostEnv,
     /// Per-Show latency, newest last.
     pub timings: Vec<ShowTiming>,
+    /// Background builds of neighbors and how long each took, newest last.
+    pub prefetches: Vec<(std::path::PathBuf, Duration)>,
     tx: Sender<Event>,
     worker: Worker,
     conn: Option<Conn>,
@@ -96,6 +103,7 @@ impl Session {
             app,
             env,
             timings: Vec::new(),
+            prefetches: Vec::new(),
             tx,
             worker,
             conn: None,
@@ -170,6 +178,12 @@ impl Session {
                     self.record_paint(&req);
                 }
             }
+            Event::Prefetched { file, took } => {
+                if self.prefetches.len() >= MAX_TIMINGS {
+                    self.prefetches.remove(0);
+                }
+                self.prefetches.push((file, took));
+            }
             Event::Highlights { req, highlights } => {
                 if self.app.apply_highlights(&req, &highlights) {
                     self.record_paint(&req);
@@ -204,25 +218,17 @@ impl Session {
 
     fn on_ipc(&mut self, msg: ToPreview) {
         match msg {
-            ToPreview::Show {
-                file,
-                orig_path,
-                scope,
-                cached,
-                kind,
-                commit,
-            } => {
-                let req = ShowReq {
-                    file,
-                    orig_path,
-                    scope,
-                    cached,
-                    kind,
-                    commit,
+            msg @ ToPreview::Show { .. } => {
+                let Some(req) = ShowReq::from_msg(msg) else {
+                    return;
                 };
                 self.record_show(&req);
                 self.app.begin_show(req.clone());
                 self.worker.show(req);
+            }
+            ToPreview::Prefetch { shows } => {
+                let reqs = shows.into_iter().filter_map(ShowReq::from_msg).collect();
+                self.worker.prefetch(reqs);
             }
             ToPreview::Scroll { delta } => self.app.scroll_by(delta),
             ToPreview::Page { down, full } => self.app.page(down, full),

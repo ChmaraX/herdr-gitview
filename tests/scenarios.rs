@@ -669,6 +669,37 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
         "a revisited file paints colored at once: {revisit:?}"
     );
 
+    // Resting on big09 has its unvisited neighbor big08 built in the
+    // background, so stepping onto it paints colored at once too.
+    let shows = w.preview.timings.len();
+    w.list.on_event(list::Event::Key(key('k')));
+    w.list.tick();
+    w.wait_landed(shows + 1);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !w
+        .preview
+        .prefetches
+        .iter()
+        .any(|(f, _)| f.as_os_str() == name(FILES - 3).as_str())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the neighbor was never prefetched"
+        );
+        w.list.tick(); // the settle timer runs in the list's tick
+        w.drain_preview_for(Duration::from_millis(5));
+    }
+    let shows = w.preview.timings.len();
+    w.list.on_event(list::Event::Key(key('k')));
+    w.list.tick();
+    w.wait_landed(shows + 1);
+    let stepped = w.preview.timings.last().unwrap();
+    assert_eq!(stepped.file, PathBuf::from(name(FILES - 3)));
+    assert!(
+        stepped.first_paint == stepped.colored,
+        "a prefetched neighbor paints colored at once: {stepped:?}"
+    );
+
     let mut report = format!(
         "rapid browse: {} files x {} lines, {} j presses\nfinal diff landed {landed:?} after the last press, colored after {colored:?}\n",
         FILES,
@@ -684,6 +715,9 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
             "{}\tfirst paint {paint}\tcolored {colored}\n",
             t.file.display()
         ));
+    }
+    for (file, took) in &w.preview.prefetches {
+        report.push_str(&format!("{}\tprefetched in {took:?}\n", file.display()));
     }
     let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .parent()

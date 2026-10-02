@@ -35,6 +35,30 @@ pub struct ShowReq {
     pub commit: Option<String>,
 }
 
+impl ShowReq {
+    /// The request a `ToPreview::Show` asks for (`None` for other messages).
+    pub fn from_msg(msg: crate::ipc::ToPreview) -> Option<ShowReq> {
+        match msg {
+            crate::ipc::ToPreview::Show {
+                file,
+                orig_path,
+                scope,
+                cached,
+                kind,
+                commit,
+            } => Some(ShowReq {
+                file,
+                orig_path,
+                scope,
+                cached,
+                kind,
+                commit,
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// A batched review note, anchored to a file (and optionally a line range).
 #[derive(Debug, Clone)]
 pub struct Note {

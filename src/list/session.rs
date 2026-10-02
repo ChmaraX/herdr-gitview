@@ -69,6 +69,11 @@ pub struct Session {
     pub show_debounce: Duration,
     /// Budget for `r`-triggered reconnect attempts.
     pub reconnect_budget: Duration,
+    /// How long the cursor must rest after a Show before the neighbors'
+    /// diffs are prefetched.
+    pub prefetch_settle: Duration,
+    /// When the last Show went out, while its neighbors are still due.
+    prefetch_from: Option<Instant>,
     quit_sent: bool,
 }
 
@@ -93,6 +98,8 @@ impl Session {
             dirty_since: Instant::now(),
             show_debounce: Duration::from_millis(40),
             reconnect_budget: Duration::from_secs(2),
+            prefetch_settle: Duration::from_millis(150),
+            prefetch_from: None,
             quit_sent: false,
         }
     }
@@ -351,7 +358,10 @@ impl Session {
                 }
             } else {
                 match current_show(&self.app) {
-                    Some(msg) => self.send(&msg),
+                    Some(msg) => {
+                        self.send(&msg);
+                        self.prefetch_from = Some(Instant::now());
+                    }
                     // Cursor resting on a directory row: keep showing the
                     // last diff instead of blanking the preview.
                     None if self.app.selected_dir().is_some() => {}
@@ -361,6 +371,19 @@ impl Session {
                 }
             }
             self.show_dirty = false;
+        }
+
+        // Once the cursor has rested on a file, have its neighbors' diffs
+        // built so stepping onto them is instant.
+        if !self.show_dirty
+            && let Some(from) = self.prefetch_from
+            && from.elapsed() >= self.prefetch_settle
+        {
+            self.prefetch_from = None;
+            let shows = neighbor_shows(&self.app);
+            if !shows.is_empty() {
+                self.send(&ToPreview::Prefetch { shows });
+            }
         }
 
         if self.app.should_quit && !self.quit_sent {
@@ -666,7 +689,30 @@ pub fn spawn_connector(tx: &Sender<Event>, socket: Option<PathBuf>, budget: Dura
 /// The Show message for the current selection, or `None` when nothing
 /// diffable is selected (headers, commit rows, empty list).
 fn current_show(app: &App) -> Option<ToPreview> {
-    let (e, section) = app.selected_entry()?;
+    show_for_row(app, app.cursor)
+}
+
+/// The Shows for the nearest file rows above and below the cursor.
+fn neighbor_shows(app: &App) -> Vec<ToPreview> {
+    if !matches!(app.mode, app::Mode::Files | app::Mode::CommitFiles) {
+        return Vec::new();
+    }
+    let is_file = |i: &usize| matches!(app.rows.get(*i), Some(app::ListRow::Entry { .. }));
+    let next = (app.cursor + 1..app.rows.len()).find(is_file);
+    let prev = (0..app.cursor).rev().find(is_file);
+    [next, prev]
+        .into_iter()
+        .flatten()
+        .filter_map(|i| show_for_row(app, i))
+        .collect()
+}
+
+/// The Show message for the file on row `row`, if it is one.
+fn show_for_row(app: &App, row: usize) -> Option<ToPreview> {
+    let (e, section) = match app.rows.get(row)? {
+        app::ListRow::Entry { idx, section, .. } => (app.entries.get(*idx)?, *section),
+        _ => return None,
+    };
     let commit = match app.mode {
         app::Mode::CommitFiles => Some(app.commit.as_ref()?.sha.clone()),
         _ => None,

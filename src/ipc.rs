@@ -57,6 +57,11 @@ pub enum ToPreview {
     GitInPane {
         argv: Vec<String>,
     },
+    /// The cursor settled: build these `Show`s (the neighbors) in the
+    /// background so moving onto them paints at once. Never shown.
+    Prefetch {
+        shows: Vec<ToPreview>,
+    },
     /// Nothing is selected any more (list emptied) — drop the shown diff.
     Clear,
     /// The list asked for a whole-file note: the preview shows this diff and
