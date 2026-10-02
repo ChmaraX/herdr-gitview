@@ -177,6 +177,22 @@ impl World {
         }
     }
 
+    /// Wait until the preview has had `shows` Shows and the newest is on
+    /// screen with all its colors.
+    fn wait_landed(&mut self, shows: usize) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while self.preview.timings.len() < shows
+            || self
+                .preview
+                .timings
+                .last()
+                .is_none_or(|t| t.colored.is_none())
+        {
+            assert!(Instant::now() < deadline, "the last Show never landed");
+            self.drain_preview_for(Duration::from_millis(2));
+        }
+    }
+
     /// Distinct foreground colors in the preview's rendered doc.
     fn diff_colors(&self) -> usize {
         let colors: std::collections::HashSet<_> = self
@@ -638,6 +654,21 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
     );
     w.wait_colored();
 
+    // Step back and forth: the file already built comes back colored in
+    // one paint, from the worker's cache.
+    for k in ['k', 'j'] {
+        let shows = w.preview.timings.len();
+        w.list.on_event(list::Event::Key(key(k)));
+        w.list.tick();
+        w.wait_landed(shows + 1);
+    }
+    let revisit = w.preview.timings.last().unwrap();
+    assert_eq!(revisit.file, PathBuf::from(name(FILES - 1)));
+    assert!(
+        revisit.first_paint.is_some() && revisit.first_paint == revisit.colored,
+        "a revisited file paints colored at once: {revisit:?}"
+    );
+
     let mut report = format!(
         "rapid browse: {} files x {} lines, {} j presses\nfinal diff landed {landed:?} after the last press, colored after {colored:?}\n",
         FILES,
@@ -660,4 +691,119 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
         .join("gitview-perf.txt");
     std::fs::write(&artifact, &report).unwrap();
     eprintln!("{report}(written to {})", artifact.display());
+}
+
+/// Every kind of change diffs the right pair of sides, and a doc served
+/// again from the worker's cache never outlives an edit to its file.
+#[test]
+fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
+    use herdr_gitview::git::{ChangeKind, Scope};
+    use herdr_gitview::ipc::ToPreview;
+
+    let repo = fixture("sides");
+    let dir = repo.dir.clone();
+    let commit = |msg: &str| {
+        common::git(&dir, &["add", "-A"]);
+        common::git(&dir, &["commit", "-q", "-m", msg]);
+    };
+    // A conflict: main and feature both rewrite c.txt.
+    write(&dir, "c.txt", "base line\n");
+    write(&dir, "staged.txt", "staged before\n");
+    write(&dir, "r.txt", "rename me\nkeep\n");
+    write(&dir, "d.txt", "doomed\n");
+    commit("seed");
+    common::git(&dir, &["checkout", "-q", "-b", "feature"]);
+    write(&dir, "c.txt", "theirs line\n");
+    commit("theirs");
+    let theirs_sha = {
+        let out = std::process::Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    common::git(&dir, &["checkout", "-q", "main"]);
+    write(&dir, "c.txt", "ours line\n");
+    commit("ours");
+    common::git_lenient(&dir, &["merge", "-q", "feature"]);
+    // The rest, on top of the conflicted merge.
+    write(&dir, "base.txt", "one\ntwo unstaged\n");
+    write(&dir, "staged.txt", "staged after\n");
+    common::git(&dir, &["add", "staged.txt"]);
+    common::git(&dir, &["mv", "r.txt", "r2.txt"]);
+    write(&dir, "r2.txt", "renamed\nkeep\n");
+    common::git(&dir, &["add", "r2.txt"]);
+    std::fs::remove_file(dir.join("d.txt")).unwrap();
+    write(&dir, "u.txt", "brand new\n");
+    let mut w = World::new(repo);
+
+    let show =
+        |w: &mut World, file: &str, orig: Option<&str>, cached, kind, commit: Option<&str>| {
+            let msg = ToPreview::Show {
+                file: file.into(),
+                orig_path: orig.map(Into::into),
+                scope: Scope::Worktree,
+                cached,
+                kind,
+                commit: commit.map(str::to_string),
+            };
+            w.preview.on_event(preview::Event::Ipc(msg), &mut w.editor);
+            w.wait_colored();
+            w.pump();
+            w.diff_text()
+        };
+    let has = |text: &str, want: &[&str], not: &[&str]| {
+        for s in want {
+            assert!(text.contains(s), "missing {s:?} in {text:?}");
+        }
+        for s in not {
+            assert!(!text.contains(s), "unexpected {s:?} in {text:?}");
+        }
+    };
+
+    // Unstaged: index -> worktree.
+    let t = show(&mut w, "base.txt", None, false, ChangeKind::Modified, None);
+    has(&t, &["two", "two unstaged"], &[]);
+    // Staged: HEAD -> index.
+    let t = show(&mut w, "staged.txt", None, true, ChangeKind::Modified, None);
+    has(&t, &["staged before", "staged after"], &[]);
+    // Staged rename: HEAD:old path -> index:new path.
+    let t = show(
+        &mut w,
+        "r2.txt",
+        Some("r.txt"),
+        true,
+        ChangeKind::Renamed,
+        None,
+    );
+    has(&t, &["rename me", "renamed", "keep"], &[]);
+    // Deleted: everything removed, nothing added.
+    let t = show(&mut w, "d.txt", None, false, ChangeKind::Deleted, None);
+    has(&t, &["doomed"], &[]);
+    assert!(matches!(w.preview.app.state, State::Diff));
+    // Untracked: all added against nothing.
+    let t = show(&mut w, "u.txt", None, false, ChangeKind::Untracked, None);
+    has(&t, &["brand new"], &[]);
+    // Conflicted: ours (stage 2) -> the worktree's conflict markers.
+    let t = show(&mut w, "c.txt", None, false, ChangeKind::Conflicted, None);
+    has(&t, &["ours line", "<<<<<<<", "theirs line"], &["base line"]);
+    // A commit: its parent -> it.
+    let t = show(
+        &mut w,
+        "c.txt",
+        None,
+        false,
+        ChangeKind::Modified,
+        Some(&theirs_sha),
+    );
+    has(&t, &["base line", "theirs line"], &["ours line", "<<<<<<<"]);
+
+    // Back to base.txt (a cache hit), then a same-size edit: the edit wins.
+    let t = show(&mut w, "base.txt", None, false, ChangeKind::Modified, None);
+    has(&t, &["two unstaged"], &[]);
+    write(&dir, "base.txt", "one\ntwo UNSTAGED\n");
+    let t = show(&mut w, "u.txt", None, false, ChangeKind::Untracked, None);
+    has(&t, &["brand new"], &[]);
+    let t = show(&mut w, "base.txt", None, false, ChangeKind::Modified, None);
+    has(&t, &["two UNSTAGED"], &["two unstaged"]);
 }

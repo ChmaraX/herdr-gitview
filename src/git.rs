@@ -59,6 +59,48 @@ pub struct Repo {
     pub root: PathBuf,
 }
 
+/// A git object read by [`Repo::read_blobs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blob {
+    pub oid: String,
+    pub content: String,
+}
+
+/// Parse `git cat-file --batch` output for `count` requests: a
+/// `<oid> <type> <size>` header plus the raw bytes per object, or a
+/// `<spec> missing` line.
+fn parse_batch(out: &[u8], count: usize) -> Result<Vec<Option<Blob>>> {
+    let mut blobs = Vec::with_capacity(count);
+    let mut rest = out;
+    for _ in 0..count {
+        let nl = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .context("truncated git cat-file output")?;
+        let header = String::from_utf8_lossy(&rest[..nl]).into_owned();
+        rest = &rest[nl + 1..];
+        let fields: Vec<&str> = header.split(' ').collect();
+        let size = match fields.as_slice() {
+            [_, _, size] => size.parse::<usize>().ok(),
+            _ => None,
+        };
+        let Some(size) = size else {
+            blobs.push(None); // "<spec> missing" / "ambiguous"
+            continue;
+        };
+        if rest.len() < size + 1 {
+            bail!("truncated git cat-file output");
+        }
+        let content = &rest[..size];
+        rest = &rest[size + 1..]; // object bytes + '\n'
+        blobs.push((fields[1] == "blob").then(|| Blob {
+            oid: fields[0].to_string(),
+            content: String::from_utf8_lossy(content).into_owned(),
+        }));
+    }
+    Ok(blobs)
+}
+
 impl Repo {
     pub fn discover(dir: &Path) -> Result<Repo> {
         let out = Command::new("git")
@@ -437,6 +479,43 @@ impl Repo {
             return Ok(None); // path absent at that rev (add/delete/rename)
         }
         Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+    }
+
+    /// Read several `rev:path` specs (`:0:path` = the index) in one git
+    /// call, each with its object id. `None` = absent at that rev (or not a
+    /// file). Paths containing a newline can't be sent this way: error.
+    pub fn read_blobs(&self, specs: &[String]) -> Result<Vec<Option<Blob>>> {
+        use std::io::{Read, Write};
+        use std::process::Stdio;
+        if specs.iter().any(|s| s.contains('\n')) {
+            bail!("path contains a newline");
+        }
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(["cat-file", "--batch"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("spawning git cat-file")?;
+        // A few short lines fit the pipe buffer, so writing them all before
+        // reading can't deadlock against git's output.
+        let mut input = specs.join("\n");
+        input.push('\n');
+        child
+            .stdin
+            .take()
+            .context("git cat-file stdin")?
+            .write_all(input.as_bytes())?;
+        let mut out = Vec::new();
+        child
+            .stdout
+            .take()
+            .context("git cat-file stdout")?
+            .read_to_end(&mut out)?;
+        child.wait()?;
+        parse_batch(&out, specs.len())
     }
 
     /// The working-tree content of a repo-relative path; `None` when missing.
