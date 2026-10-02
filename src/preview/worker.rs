@@ -78,7 +78,7 @@ impl Worker {
 }
 
 fn run(rx: Receiver<Job>, events: Sender<Event>, repo: Repo, cfg: Config, current: Arc<AtomicU64>) {
-    let mut w = State {
+    let mut worker = WorkerState {
         // The highlighter is expensive to set up — build it once per worker.
         hl: Highlighter::new(cfg.theme),
         repo,
@@ -102,16 +102,16 @@ fn run(rx: Receiver<Job>, events: Sender<Event>, repo: Repo, cfg: Config, curren
                 {
                     continue;
                 }
-                Job::Show { req, generation } => w.show(req, &|| stale(generation)),
+                Job::Show { req, generation } => worker.show(req, &|| stale(generation)),
                 Job::Prefetch { reqs, generation } => reqs
                     .into_iter()
-                    .try_for_each(|req| w.prefetch(req, &|| stale(generation))),
+                    .try_for_each(|req| worker.prefetch(req, &|| stale(generation))),
                 Job::Highlight {
                     req,
                     job,
                     generation,
-                } => match job.run(&w.hl, &mut || !stale(generation)) {
-                    Some(highlights) => emit(&w.events, Event::Highlights { req, highlights }),
+                } => match job.run(&worker.hl, &mut || !stale(generation)) {
+                    Some(highlights) => emit(&worker.events, Event::Highlights { req, highlights }),
                     None => Ok(()),
                 },
             };
@@ -123,7 +123,7 @@ fn run(rx: Receiver<Job>, events: Sender<Event>, repo: Repo, cfg: Config, curren
 }
 
 /// The worker thread's long-lived state.
-struct State {
+struct WorkerState {
     hl: Highlighter,
     repo: Repo,
     cfg: Config,
@@ -146,7 +146,7 @@ enum Built {
     Cancelled,
 }
 
-impl State {
+impl WorkerState {
     /// The steps a Show and a prefetch share: fetch both sides, reuse a
     /// cached doc for unchanged content, else diff, color, and cache.
     /// `checkpoint` runs between bits of coloring work with the doc still
