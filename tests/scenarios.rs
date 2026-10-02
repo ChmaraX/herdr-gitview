@@ -600,13 +600,15 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
     let big = include_str!("fixtures/large.ts");
     let repo = fixture("rapid-browse");
     let name = |i: usize| format!("big{i:02}.ts");
-    for i in 0..FILES {
+    // One more file below the last one browsed to: only a prefetch ever
+    // builds it.
+    for i in 0..=FILES {
         write(&repo.dir, &name(i), big);
     }
     common::git(&repo.dir, &["add", "."]);
     common::git(&repo.dir, &["commit", "-q", "-m", "big files"]);
-    // Three scattered edits per file, the last file carrying a marker.
-    for i in 0..FILES {
+    // Three scattered edits per file, each carrying its file's marker.
+    for i in 0..=FILES {
         let mut lines: Vec<String> = big.lines().map(str::to_string).collect();
         let n = lines.len();
         for at in [n / 4, n / 2, 3 * n / 4] {
@@ -672,18 +674,14 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
         "a revisited file paints colored at once: {revisit:?}"
     );
 
-    // Resting on big09 has its unvisited neighbor big08 built in the
+    // Resting on big10 has its never-visited neighbor big11 built in the
     // background, so stepping onto it paints colored at once too.
-    let shows = w.preview.timings.len();
-    w.list.on_event(list::Event::Key(key('k')));
-    w.list.tick();
-    w.wait_landed(shows + 1);
     let deadline = Instant::now() + Duration::from_secs(30);
     while !w
         .preview
         .prefetches
         .iter()
-        .any(|(f, _)| f.as_os_str() == name(FILES - 3).as_str())
+        .any(|(f, _)| f.as_os_str() == name(FILES).as_str())
     {
         assert!(
             Instant::now() < deadline,
@@ -693,11 +691,11 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
         w.drain_preview_for(Duration::from_millis(5));
     }
     let shows = w.preview.timings.len();
-    w.list.on_event(list::Event::Key(key('k')));
+    w.list.on_event(list::Event::Key(key('j')));
     w.list.tick();
     w.wait_landed(shows + 1);
     let stepped = w.preview.timings.last().unwrap();
-    assert_eq!(stepped.file, PathBuf::from(name(FILES - 3)));
+    assert_eq!(stepped.file, PathBuf::from(name(FILES)));
     assert!(
         stepped.first_paint == stepped.colored,
         "a prefetched neighbor paints colored at once: {stepped:?}"
