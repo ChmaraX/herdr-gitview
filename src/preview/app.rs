@@ -539,9 +539,12 @@ impl PreviewApp {
         self.wrapped = super::render::wrap_diff_text(&self.doc, self.viewport_w as usize);
     }
 
-    /// The wrapped text actually painted in the diff body.
-    pub fn wrapped_text(&self) -> Text<'static> {
-        self.wrapped.text.clone()
+    /// The wrapped rows painted in a body `height` rows tall at the current
+    /// scroll — only those, so a frame never copies the whole doc.
+    pub fn visible_text(&self, height: usize) -> Text<'static> {
+        let rows = &self.wrapped.text.lines;
+        let top = (self.scroll as usize).min(rows.len());
+        Text::from(rows[top..(top + height).min(rows.len())].to_vec())
     }
 
     /// Rendered rows currently in the document — the unit `scroll` and
@@ -759,6 +762,7 @@ impl PreviewApp {
     /// selection moves go through `restyle` alone.
     fn rebuild(&mut self) {
         self.sync_doc();
+        self.sync_wrapped();
         self.saved_tint.clear();
         // Cards have just moved (a note was added, edited, deleted, or the
         // pane was resized) and may now sit under the cursor.
@@ -772,12 +776,15 @@ impl PreviewApp {
     /// like an editor would).
     fn restyle(&mut self) {
         // Restore whatever was tinted before.
+        let mut touched = Vec::with_capacity(self.saved_tint.len() + 1);
         for (idx, line) in self.saved_tint.drain(..) {
             if let Some(slot) = self.doc.lines.get_mut(idx) {
                 *slot = line;
+                touched.push(idx);
             }
         }
         if !matches!(self.state, State::Diff) {
+            self.rewrap(&touched);
             return;
         }
         // The cursor line has to read as "you are here" against the diff's
@@ -818,12 +825,25 @@ impl PreviewApp {
             }
             None => tint(self.cursor_line, cursor_bg, &mut saved, &mut self.doc.lines),
         }
+        touched.extend(saved.iter().map(|(idx, _)| *idx));
         self.saved_tint = saved;
-        // `doc` just changed (tint applied/moved) — re-wrap so the rendered
-        // text (and the row<->line maps scroll/click math relies on) stays
-        // in lockstep. `restyle` is the one place every doc mutation ends up
-        // going through, content rebuilds included.
-        self.sync_wrapped();
+        self.rewrap(&touched);
+    }
+
+    /// Re-wrap just the doc lines a tint change touched. A tint never
+    /// changes a line's width, so its rows keep their count and every
+    /// row<->line map stays valid; anything else falls back to a full wrap.
+    fn rewrap(&mut self, lines: &[usize]) {
+        let width = self.viewport_w as usize;
+        for &idx in lines {
+            let Some(line) = self.doc.lines.get(idx) else {
+                continue;
+            };
+            if !self.wrapped.rewrap_line(idx, line, width) {
+                self.sync_wrapped();
+                return;
+            }
+        }
     }
 
     // ---- notes ------------------------------------------------------------

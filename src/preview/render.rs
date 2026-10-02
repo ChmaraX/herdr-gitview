@@ -618,6 +618,32 @@ pub struct WrappedDoc {
     pub line_to_row: Vec<usize>,
 }
 
+impl WrappedDoc {
+    /// Swap in a new rendering of logical line `idx` (same content, other
+    /// styling). False when its row count changed, or the maps don't know
+    /// the line: the caller must re-wrap everything.
+    pub fn rewrap_line(&mut self, idx: usize, line: &Line<'static>, width: usize) -> bool {
+        let Some(&start) = self.line_to_row.get(idx) else {
+            return false;
+        };
+        let end = self
+            .line_to_row
+            .get(idx + 1)
+            .copied()
+            .unwrap_or(self.text.lines.len());
+        let rows = if width == 0 {
+            vec![line.clone()]
+        } else {
+            wrap_line_spans(line, width, GUTTER_CHARS as usize)
+        };
+        if rows.len() != end - start {
+            return false;
+        }
+        self.text.lines.splice(start..end, rows);
+        true
+    }
+}
+
 /// The built preview doc (diff lines + any spliced note cards), word-wrapped
 /// to the pane's `width`. Continuation rows are indented by the gutter width
 /// (blank, no line number) so wrapped content lines up under the first row's

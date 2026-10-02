@@ -97,17 +97,26 @@ fn event_loop(
         session.tick();
         terminal.draw(|frame| ui::render(frame, &mut session.app))?;
 
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(event) => {
-                let mut host = TerminalHost {
-                    term,
-                    terminal,
-                    input_paused,
-                };
-                session.on_event(event, &mut host);
-            }
-            Err(RecvTimeoutError::Timeout) => {}
+        // Handle everything already queued before the next draw: a burst of
+        // keys or worker results costs one frame, not one frame each.
+        let first = match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(event) => Some(event),
+            Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        };
+        let mut host = TerminalHost {
+            term,
+            terminal,
+            input_paused,
+        };
+        for event in first
+            .into_iter()
+            .chain(std::iter::from_fn(|| rx.try_recv().ok()))
+        {
+            session.on_event(event, &mut host);
+            if session.should_quit() {
+                break;
+            }
         }
 
         if session.should_quit() {

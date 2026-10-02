@@ -86,10 +86,15 @@ fn event_loop(
     loop {
         terminal.draw(|frame| ui::render(frame, &mut session.app))?;
 
+        // Handle everything already queued before the next draw: a burst of
+        // keys costs one frame, not one frame each.
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => session.on_event(event),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+        while let Ok(event) = rx.try_recv() {
+            session.on_event(event);
         }
         session.tick();
 

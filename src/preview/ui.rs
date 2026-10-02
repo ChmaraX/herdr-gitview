@@ -113,7 +113,7 @@ fn render_body(frame: &mut Frame, area: Rect, app: &PreviewApp) {
             frame.render_widget(Paragraph::new(line), area);
         }
         State::Diff => {
-            let para = Paragraph::new(app.wrapped_text()).scroll((app.scroll, 0));
+            let para = Paragraph::new(app.visible_text(area.height as usize));
             frame.render_widget(para, area);
         }
     }

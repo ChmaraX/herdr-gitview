@@ -7,9 +7,16 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use herdr_gitview::config::Theme;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use herdr_gitview::config::{Config, Theme};
+use herdr_gitview::git::{ChangeKind, Repo, Scope};
+use herdr_gitview::keymap::Keymap;
+use herdr_gitview::preview::app::{PreviewApp, ShowReq};
 use herdr_gitview::preview::highlight::Highlighter;
 use herdr_gitview::preview::render;
+use herdr_gitview::preview::ui;
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 fn median(mut v: Vec<Duration>) -> Duration {
     v.sort();
@@ -61,5 +68,32 @@ fn main() {
             "{} ({lines} lines): highlight whole file {whole:>7.1?}  plain build {plain:>7.1?}  build {build:>7.1?}",
             path.display(),
         );
+
+        // The whole file as one added side: no folds, every line on screen.
+        let mut app = PreviewApp::new(
+            Config::default(),
+            Repo { root: ".".into() },
+            Keymap::build(&Default::default()).unwrap(),
+        );
+        let req = ShowReq {
+            file: path.clone(),
+            orig_path: None,
+            scope: Scope::Worktree,
+            cached: false,
+            kind: ChangeKind::Untracked,
+            commit: None,
+        };
+        app.begin_show(req.clone());
+        app.apply_diff(
+            &req,
+            Ok(render::build(&path, "", &new, &hl, Theme::Dark, 3)),
+        );
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let frame = time(runs * 4, || {
+            term.draw(|f| ui::render(f, &mut app)).unwrap();
+        });
+        let j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        let step = time(runs * 4, || app.on_key(j));
+        println!("  all-added view: draw a frame {frame:>7.1?}  cursor step {step:>7.1?}");
     }
 }
