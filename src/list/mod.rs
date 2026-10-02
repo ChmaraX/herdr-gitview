@@ -78,6 +78,9 @@ pub fn run() -> Result<()> {
     result
 }
 
+/// Queued events handled before a frame is drawn.
+const MAX_EVENTS_PER_FRAME: usize = 64;
+
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     session: &mut Session,
@@ -93,7 +96,8 @@ fn event_loop(
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
-        while let Ok(event) = rx.try_recv() {
+        // Capped, so a steady stream (a mouse drag) can't starve the draw.
+        for event in rx.try_iter().take(MAX_EVENTS_PER_FRAME) {
             session.on_event(event);
         }
         session.tick();

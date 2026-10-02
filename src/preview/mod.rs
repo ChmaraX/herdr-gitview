@@ -87,6 +87,9 @@ pub fn run() -> Result<()> {
     result
 }
 
+/// Queued events handled before a frame is drawn.
+const MAX_EVENTS_PER_FRAME: usize = 64;
+
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     session: &mut Session,
@@ -110,10 +113,9 @@ fn event_loop(
             terminal,
             input_paused,
         };
-        for event in first
-            .into_iter()
-            .chain(std::iter::from_fn(|| rx.try_recv().ok()))
-        {
+        // Capped, so a steady stream (a mouse drag) can't starve the draw.
+        let queued = std::iter::from_fn(|| rx.try_recv().ok()).take(MAX_EVENTS_PER_FRAME);
+        for event in first.into_iter().chain(queued) {
             session.on_event(event, &mut host);
             if session.should_quit() {
                 break;
