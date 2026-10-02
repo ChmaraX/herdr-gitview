@@ -974,6 +974,7 @@ fn highlights_for_an_older_build_are_not_applied_to_a_newer_one() {
             &hl,
             herdr_gitview::config::Theme::Dark,
             3,
+            4,
         )
     };
     let older = build("let old_text = 1;\n");

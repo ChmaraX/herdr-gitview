@@ -235,9 +235,7 @@ impl PreviewApp {
 
     /// Lines on screen are still waiting for syntax colors.
     pub fn highlight_pending(&self) -> bool {
-        self.built
-            .as_ref()
-            .is_some_and(|b| b.highlight_job().is_some())
+        self.built.as_ref().is_some_and(|b| b.highlight_pending())
     }
 
     /// The coloring an unfold made necessary, for the worker to run.

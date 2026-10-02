@@ -87,7 +87,7 @@ fn main() {
         app.begin_show(req.clone());
         app.apply_diff(
             &req,
-            Ok(render::build(&path, "", &new, &hl, Theme::Dark, 3)),
+            Ok(render::build(&path, "", &new, &hl, Theme::Dark, 3, 4)),
         );
         let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let frame = time(runs * 4, || {

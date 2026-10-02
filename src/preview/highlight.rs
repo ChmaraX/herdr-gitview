@@ -57,6 +57,11 @@ impl Highlighter {
         Highlighter { theme, default_fg }
     }
 
+    /// Do we know the language of files with this extension?
+    pub fn knows(extension: Option<&str>) -> bool {
+        Self::syntax_for(extension).is_some()
+    }
+
     /// The grammar for a file extension, if we know the language.
     fn syntax_for(extension: Option<&str>) -> Option<&'static SyntaxReference> {
         let syntaxes = syntaxes();
@@ -151,15 +156,7 @@ impl Highlighter {
     /// Unknown language → one plain run per line.
     pub fn highlight(&self, content: &str, extension: Option<&str>) -> Vec<Vec<Run>> {
         let Some(syntax) = Self::syntax_for(extension) else {
-            return content
-                .lines()
-                .map(|l| {
-                    vec![Run {
-                        text: l.to_string(),
-                        color: self.default_fg,
-                    }]
-                })
-                .collect();
+            return content.lines().map(|l| self.plain(l)).collect();
         };
         let mut h = HighlightLines::new(syntax, &self.theme);
         LinesWithEndings::from(content)
