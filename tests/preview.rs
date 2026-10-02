@@ -977,7 +977,11 @@ fn highlights_for_an_older_build_are_not_applied_to_a_newer_one() {
         )
     };
     let older = build("let old_text = 1;\n");
-    let stale = older.highlight_job().unwrap().run(&hl, &|| false).unwrap();
+    let stale = older
+        .highlight_job()
+        .unwrap()
+        .run(&hl, &mut || true)
+        .unwrap();
 
     let mut a = app();
     let r = req("a.rs");

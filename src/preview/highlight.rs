@@ -79,14 +79,15 @@ impl Highlighter {
     /// (each with its `\n`). Each run of wanted lines is parsed from up to
     /// `LEAD_IN` lines above it, so the cost follows the diff, not the file;
     /// a string or comment opened further up than that may mis-color, the
-    /// same trade-off delta makes. Returns `None` once `cancelled` says so
-    /// (checked between runs and every 32 lines).
+    /// same trade-off delta makes. `keep_going` is the caller's checkpoint
+    /// between runs and every 32 lines: returning false abandons the work
+    /// (`None`).
     pub fn highlight_lines(
         &self,
         lines: &[&str],
         extension: Option<&str>,
         wanted: &[usize],
-        cancelled: &dyn Fn() -> bool,
+        keep_going: &mut dyn FnMut() -> bool,
     ) -> Option<Vec<(usize, Vec<Run>)>> {
         let mut out = Vec::with_capacity(wanted.len());
         let Some(syntax) = Self::syntax_for(extension) else {
@@ -101,7 +102,7 @@ impl Highlighter {
             .filter(|&i| i < lines.len())
             .peekable();
         while let Some(first) = rest.next() {
-            if cancelled() {
+            if !keep_going() {
                 return None;
             }
             // Extend the run while the next wanted line is close enough that
@@ -119,7 +120,7 @@ impl Highlighter {
             let mut want = want.into_iter().peekable();
             let start = first.saturating_sub(LEAD_IN);
             for (i, line) in lines.iter().enumerate().take(last + 1).skip(start) {
-                if i % 32 == 0 && cancelled() {
+                if i % 32 == 0 && !keep_going() {
                     return None;
                 }
                 let runs = self.highlight_one(&mut h, line);

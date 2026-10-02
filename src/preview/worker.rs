@@ -110,7 +110,7 @@ fn run(rx: Receiver<Job>, events: Sender<Event>, repo: Repo, cfg: Config, curren
                     req,
                     job,
                     generation,
-                } => match job.run(&w.hl, &|| stale(generation)) {
+                } => match job.run(&w.hl, &mut || !stale(generation)) {
                     Some(highlights) => emit(&w.events, Event::Highlights { req, highlights }),
                     None => Ok(()),
                 },
@@ -133,45 +133,42 @@ struct State {
     docs: DocCache,
 }
 
+/// How a build ended.
+enum Built {
+    /// Served from the cache, colored.
+    Cached(render::DiffDoc),
+    /// Built now; `highlights` were applied (None: nothing to color).
+    Fresh {
+        doc: render::DiffDoc,
+        highlights: Option<render::Highlights>,
+    },
+    /// A newer request arrived first.
+    Cancelled,
+}
+
 impl State {
-    /// Build `req` into the cache only — nothing is sent but a note of the
-    /// time it took. Skipped when already cached; dropped on `cancelled`.
-    fn prefetch(&mut self, req: ShowReq, cancelled: &dyn Fn() -> bool) -> Result<(), Gone> {
-        let started = Instant::now();
-        let Ok(fetched) = fetch(&self.repo, &req) else {
-            return Ok(());
-        };
-        let Some((old, new)) = fetched.stamps.clone() else {
-            return Ok(()); // uncacheable — nothing to gain
-        };
-        let key = Key {
+    /// The steps a Show and a prefetch share: fetch both sides, reuse a
+    /// cached doc for unchanged content, else diff, color, and cache.
+    /// `checkpoint` runs between bits of coloring work with the doc still
+    /// uncolored (a Show uses it to paint early); `cancelled` stops it all.
+    fn build(
+        &mut self,
+        req: &ShowReq,
+        cancelled: &dyn Fn() -> bool,
+        checkpoint: &mut dyn FnMut(&render::DiffDoc),
+    ) -> Result<Built, String> {
+        let fetched = fetch(&self.repo, req)?;
+        let key = fetched.stamps.map(|(old, new)| Key {
             req: req.clone(),
             old,
             new,
-        };
-        if cancelled() || self.docs.contains(&key) {
-            return Ok(());
+        });
+        if let Some(doc) = key.as_ref().and_then(|k| self.docs.get(k)) {
+            return Ok(Built::Cached(doc));
         }
-        let Some(doc) = self.build_colored(&req, &fetched, cancelled) else {
-            return Ok(());
-        };
-        self.docs.put(key, doc);
-        emit(
-            &self.events,
-            Event::Prefetched {
-                file: req.file,
-                took: started.elapsed(),
-            },
-        )
-    }
-
-    /// Diff and fully color `fetched`, or `None` once `cancelled`.
-    fn build_colored(
-        &self,
-        req: &ShowReq,
-        fetched: &Fetched,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Option<render::DiffDoc> {
+        if cancelled() {
+            return Ok(Built::Cancelled);
+        }
         let cfg = &self.cfg;
         let mut doc = render::build_plain(
             &req.file,
@@ -180,17 +177,30 @@ impl State {
             &self.hl,
             cfg.theme,
             cfg.context_lines,
+            cfg.tab_width,
         );
-        if let Some(job) = doc.highlight_job() {
-            doc.apply_highlights(&job.run(&self.hl, cancelled)?);
+        let highlights = match doc.highlight_job() {
+            None => None,
+            Some(job) => {
+                let ran = job.run(&self.hl, &mut || {
+                    checkpoint(&doc);
+                    !cancelled()
+                });
+                let Some(highlights) = ran else {
+                    return Ok(Built::Cancelled);
+                };
+                doc.apply_highlights(&highlights);
+                Some(highlights)
+            }
+        };
+        if let Some(key) = key {
+            self.docs.put(key, doc.clone());
         }
-        Some(doc)
+        Ok(Built::Fresh { doc, highlights })
     }
 
-    /// Fetch, diff, and deliver one request: from the cache when its
-    /// content is unchanged, else uncolored first if coloring runs past the
-    /// budget and colored once it is done. Stops early once `cancelled`
-    /// says a newer request has arrived.
+    /// Deliver one request: a cached doc in one paint; a fresh one
+    /// uncolored first once coloring runs past the budget, then its colors.
     fn show(&mut self, req: ShowReq, cancelled: &dyn Fn() -> bool) -> Result<(), Gone> {
         let budget = if self.last_file.as_ref() == Some(&req.file) {
             REFRESH_BUDGET
@@ -198,72 +208,49 @@ impl State {
             Duration::ZERO
         };
         self.last_file = Some(req.file.clone());
-        let fetched = match fetch(&self.repo, &req) {
-            Ok(fetched) => fetched,
-            Err(msg) => {
-                return emit(
-                    &self.events,
-                    Event::Diff {
-                        req,
-                        result: Err(msg),
-                    },
-                );
-            }
-        };
-        let key = fetched.stamps.map(|(old, new)| Key {
-            req: req.clone(),
-            old,
-            new,
-        });
-        if let Some(doc) = key.as_ref().and_then(|k| self.docs.get(k)) {
-            return send_doc(&self.events, req, doc);
-        }
-        if cancelled() {
-            return Ok(());
-        }
-        let (hl, cfg, events) = (&self.hl, &self.cfg, &self.events);
-        let mut doc = render::build_plain(
-            &req.file,
-            &fetched.old,
-            &fetched.new,
-            hl,
-            cfg.theme,
-            cfg.context_lines,
-            cfg.tab_width,
-        );
-        let Some(job) = doc.highlight_job() else {
-            if let Some(key) = key {
-                self.docs.put(key, doc.clone());
-            }
-            return send_doc(events, req, doc);
-        };
-
-        // Highlight against the budget: the first check past it sends the
-        // plain doc, so a slow grammar costs colors, never the first paint.
+        let events = self.events.clone();
         let started = Instant::now();
-        let plain_sent = std::cell::RefCell::new(None);
-        let highlights = job.run(hl, &|| {
-            let mut sent = plain_sent.borrow_mut();
-            if sent.is_none() && started.elapsed() >= budget && !cancelled() {
-                *sent = Some(send_doc(events, req.clone(), doc.clone()));
+        // The early paint: the first checkpoint past the budget sends the
+        // uncolored doc, so a slow grammar costs colors, never the paint.
+        let mut early: Option<Result<(), Gone>> = None;
+        let built = self.build(&req, cancelled, &mut |doc| {
+            if early.is_none() && started.elapsed() >= budget && !cancelled() {
+                early = Some(send_doc(&events, req.clone(), doc.clone()));
             }
-            cancelled()
         });
-        let plain_sent = plain_sent.into_inner();
-        if let Some(Err(err)) = plain_sent {
-            return Err(err);
+        if let Some(Err(gone)) = early {
+            return Err(gone);
         }
-        let Some(highlights) = highlights else {
-            return Ok(()); // superseded mid-highlight
-        };
-        doc.apply_highlights(&highlights);
-        if let Some(key) = key {
-            self.docs.put(key, doc.clone());
+        match built {
+            Err(msg) => emit(
+                &events,
+                Event::Diff {
+                    req,
+                    result: Err(msg),
+                },
+            ),
+            Ok(Built::Cancelled) => Ok(()),
+            Ok(Built::Fresh {
+                highlights: Some(highlights),
+                ..
+            }) if early.is_some() => emit(&events, Event::Highlights { req, highlights }),
+            Ok(Built::Cached(doc) | Built::Fresh { doc, .. }) => send_doc(&events, req, doc),
         }
-        if plain_sent.is_some() {
-            emit(&self.events, Event::Highlights { req, highlights })
-        } else {
-            send_doc(&self.events, req, doc)
+    }
+
+    /// Build `req` into the cache only — nothing is sent but a note of the
+    /// time it took (when it wasn't cached already).
+    fn prefetch(&mut self, req: ShowReq, cancelled: &dyn Fn() -> bool) -> Result<(), Gone> {
+        let started = Instant::now();
+        match self.build(&req, cancelled, &mut |_| {}) {
+            Ok(Built::Fresh { .. }) => emit(
+                &self.events,
+                Event::Prefetched {
+                    file: req.file,
+                    took: started.elapsed(),
+                },
+            ),
+            _ => Ok(()),
         }
     }
 }
@@ -295,10 +282,6 @@ struct DocCache {
 }
 
 impl DocCache {
-    fn contains(&self, key: &Key) -> bool {
-        self.entries.iter().any(|(k, _)| k == key)
-    }
-
     fn get(&mut self, key: &Key) -> Option<render::DiffDoc> {
         let at = self.entries.iter().position(|(k, _)| k == key)?;
         let entry = self.entries.remove(at);

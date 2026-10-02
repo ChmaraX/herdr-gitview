@@ -240,15 +240,20 @@ pub struct HighlightJob {
 }
 
 impl HighlightJob {
-    /// Color the job's lines; `None` if `cancelled` fired part-way.
-    pub fn run(&self, hl: &Highlighter, cancelled: &dyn Fn() -> bool) -> Option<Highlights> {
+    /// Color the job's lines, calling `keep_going` along the way (see
+    /// `Highlighter::highlight_lines`); `None` if it said stop.
+    pub fn run(
+        &self,
+        hl: &Highlighter,
+        keep_going: &mut dyn FnMut() -> bool,
+    ) -> Option<Highlights> {
         let ext = self.ext.as_deref();
-        let side = |text: &str, wanted: &[usize]| {
+        let mut side = |text: &str, wanted: &[usize]| {
             if wanted.is_empty() {
                 return Some(Vec::new());
             }
             let lines: Vec<&str> = LinesWithEndings::from(text).collect();
-            hl.highlight_lines(&lines, ext, wanted, cancelled)
+            hl.highlight_lines(&lines, ext, wanted, keep_going)
         };
         Some(Highlights {
             old_text: Arc::clone(&self.old_text),
@@ -353,7 +358,10 @@ pub fn build(
     tab_width: usize,
 ) -> DiffDoc {
     let mut doc = build_plain(path, old, new, hl, theme, context_lines, tab_width);
-    if let Some(h) = doc.highlight_job().and_then(|job| job.run(hl, &|| false)) {
+    if let Some(h) = doc
+        .highlight_job()
+        .and_then(|job| job.run(hl, &mut || true))
+    {
         doc.apply_highlights(&h);
     }
     doc
