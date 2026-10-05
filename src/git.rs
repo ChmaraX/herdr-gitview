@@ -135,6 +135,13 @@ impl Repo {
         Command::new("git")
             .arg("-C")
             .arg(&self.root)
+            // Reads never take the index lock to refresh stat info: a poll
+            // holding it made the user's own merge/commit fail ("Unable to
+            // write index"). Status honors GIT_OPTIONAL_LOCKS; diff ignores
+            // it and needs its auto-refresh off instead (see branch_changes
+            // for what that costs). Writes (add, restore) still lock.
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .args(["-c", "diff.autoRefreshIndex=false"])
             .args(args)
             .output()
             .with_context(|| format!("spawning git {args:?}"))
@@ -454,6 +461,10 @@ impl Repo {
         for (path, stat) in parse_numstat(&numstat) {
             merge_stat(&mut stats, path, stat);
         }
+        // Without the index auto-refresh, name-status also lists files
+        // whose stat info is stale but whose content is unchanged; numstat
+        // compares content and leaves them out, so it decides membership.
+        entries.retain(|entry| stats.contains_key(&entry.path));
         for entry in &mut entries {
             if let Some(stat) = stats.get(&entry.path) {
                 (entry.adds, entry.dels) = match stat {
@@ -494,6 +505,7 @@ impl Repo {
             .arg("-C")
             .arg(&self.root)
             .args(["cat-file", "--batch"])
+            .env("GIT_OPTIONAL_LOCKS", "0")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
