@@ -54,6 +54,9 @@ struct World {
     herdr: FakeHerdr,
     list: list::Session,
     list_rx: Receiver<list::Event>,
+    list_tx: mpsc::Sender<list::Event>,
+    /// What the scenario saw, written to `target/<name>` by `write_log`.
+    log: String,
     preview: preview::Session,
     preview_rx: Receiver<preview::Event>,
     editor: RecordingEditor,
@@ -62,6 +65,10 @@ struct World {
 
 impl World {
     fn new(repo: TempRepo) -> World {
+        World::with_config(repo, Config::default())
+    }
+
+    fn with_config(repo: TempRepo, cfg: Config) -> World {
         let host_dir = repo.dir.parent().unwrap().join(format!(
             "{}-host",
             repo.dir.file_name().unwrap().to_string_lossy()
@@ -76,7 +83,6 @@ impl World {
             socket: Some(socket_base.clone()),
         };
 
-        let cfg = Config::default();
         let keys = Keymap::build(&HashMap::new()).unwrap();
         let list_app = list::App::new(
             Repo {
@@ -87,7 +93,12 @@ impl World {
         )
         .unwrap();
         let (list_tx, list_rx) = mpsc::channel();
-        let mut list = list::Session::new(list_app, env("w:pLIST", Some("w:pPREV")), list_tx, true);
+        let mut list = list::Session::new(
+            list_app,
+            env("w:pLIST", Some("w:pPREV")),
+            list_tx.clone(),
+            true,
+        );
         list.show_debounce = Duration::ZERO;
         list.set_popup_liveness(Duration::ZERO);
 
@@ -112,6 +123,8 @@ impl World {
             herdr,
             list,
             list_rx,
+            list_tx,
+            log: String::new(),
             preview,
             preview_rx,
             editor: RecordingEditor::default(),
@@ -152,6 +165,61 @@ impl World {
         }
     }
 
+    /// Feed the preview whatever its worker delivers for `dur`, without
+    /// waiting for quiet — for measuring latency while keys keep coming.
+    fn drain_preview_for(&mut self, dur: Duration) {
+        let until = Instant::now() + dur;
+        loop {
+            while let Ok(ev) = self.preview_rx.try_recv() {
+                self.preview.on_event(ev, &mut self.editor);
+            }
+            self.preview.tick();
+            if Instant::now() >= until {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Wait until every line on the preview's screen carries its colors.
+    fn wait_colored(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while self.preview.app.highlight_pending() {
+            assert!(Instant::now() < deadline, "highlighting never finished");
+            self.drain_preview_for(Duration::from_millis(2));
+        }
+    }
+
+    /// Wait until the preview has had `shows` Shows and the newest is on
+    /// screen with all its colors.
+    fn wait_landed(&mut self, shows: usize) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while self.preview.telemetry.shows().len() < shows
+            || self
+                .preview
+                .telemetry
+                .shows()
+                .back()
+                .is_none_or(|t| t.colored.is_none())
+        {
+            assert!(Instant::now() < deadline, "the last Show never landed");
+            self.drain_preview_for(Duration::from_millis(2));
+        }
+    }
+
+    /// Distinct foreground colors in the preview's rendered doc.
+    fn diff_colors(&self) -> usize {
+        let colors: std::collections::HashSet<_> = self
+            .preview
+            .app
+            .doc
+            .lines
+            .iter()
+            .flat_map(|l| l.spans.iter().filter_map(|s| s.style.fg))
+            .collect();
+        colors.len()
+    }
+
     fn press(&mut self, key: &str) {
         let (code, mods) = parse_key(key).unwrap();
         self.list
@@ -177,6 +245,34 @@ impl World {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect()
+    }
+
+    /// Note a step in the scenario's artifact.
+    fn note(&mut self, text: impl AsRef<str>) {
+        self.log.push_str(text.as_ref());
+        self.log.push('\n');
+    }
+
+    /// Note a step plus the diff the preview shows, one line per row.
+    fn note_diff(&mut self, step: impl AsRef<str>) {
+        let lines: Vec<String> = self
+            .preview
+            .app
+            .doc
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        self.note(format!("## {}\n{}", step.as_ref(), lines.join("\n")));
+    }
+
+    /// Write the artifact to `target/<name>` (checkable after a run).
+    fn write_log(&self, name: &str) {
+        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .parent()
+            .unwrap()
+            .join(name);
+        std::fs::write(&path, &self.log).unwrap();
     }
 
     /// Answer file path for a popup entrypoint (mirrors `Popups::open`).
@@ -531,4 +627,490 @@ fn quit_hands_shakes_both_panes_down() {
 
     assert!(w.list.should_quit());
     assert!(w.preview.should_quit(), "preview received Quit over IPC");
+}
+
+/// Holding `j` through a stack of large TypeScript files must not queue up
+/// a full rebuild per file: the diff for the file the cursor stops on lands
+/// promptly, and every Show's latency is written to `target/gitview-perf.txt`
+/// so a regression is visible as numbers, not as a vague "feels laggy".
+#[test]
+fn rapid_browsing_through_large_files_lands_the_final_diff() {
+    const FILES: usize = 11;
+    let big = include_str!("fixtures/large.ts");
+    let repo = fixture("rapid-browse");
+    let name = |i: usize| format!("big{i:02}.ts");
+    // One more file below the last one browsed to: only a prefetch ever
+    // builds it.
+    for i in 0..=FILES {
+        write(&repo.dir, &name(i), big);
+    }
+    common::git(&repo.dir, &["add", "."]);
+    common::git(&repo.dir, &["commit", "-q", "-m", "big files"]);
+    // Three scattered edits per file, each carrying its file's marker.
+    for i in 0..=FILES {
+        let mut lines: Vec<String> = big.lines().map(str::to_string).collect();
+        let n = lines.len();
+        for at in [n / 4, n / 2, 3 * n / 4] {
+            lines[at].push_str(&format!(" // edit in file {i}"));
+        }
+        write(&repo.dir, &name(i), &(lines.join("\n") + "\n"));
+    }
+    let mut w = World::new(repo);
+    assert_eq!(w.shown_file().as_deref(), Some("big00.ts"));
+
+    // Ten presses at key-repeat speed, the preview draining as it goes.
+    for _ in 0..FILES - 1 {
+        w.list.on_event(list::Event::Key(key('j')));
+        w.list.tick();
+        w.drain_preview_for(Duration::from_millis(30));
+    }
+    let last_press = Instant::now();
+    let marker = format!("edit in file {}", FILES - 1);
+    while !(w.shown_file() == Some(name(FILES - 1))
+        && matches!(w.preview.app.state, State::Diff)
+        && w.diff_text().contains(&marker))
+    {
+        assert!(
+            last_press.elapsed() < Duration::from_secs(60),
+            "the final file's diff never landed"
+        );
+        w.drain_preview_for(Duration::from_millis(2));
+    }
+    let landed = last_press.elapsed();
+    w.wait_colored();
+    let colored = last_press.elapsed();
+    // Before the rework a full rebuild per file queued up: 3.3 s (release)
+    // and 37 s (debug) until the final diff landed. Now it's milliseconds.
+    assert!(
+        colored < Duration::from_secs(2),
+        "the final diff took {landed:?} to land, {colored:?} to color"
+    );
+    assert!(
+        w.diff_colors() > 3,
+        "the landed diff carries syntax colors, not one plain color"
+    );
+
+    // Expanding the leading fold reveals uncolored lines; they get colored
+    // too, without rebuilding the doc (the cursor stays put).
+    let before = w.preview.app.doc.lines.len();
+    w.preview.app.on_mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        1,
+    );
+    assert!(w.preview.app.doc.lines.len() > before, "the fold expanded");
+    assert!(
+        w.preview.app.highlight_pending(),
+        "revealed lines start plain"
+    );
+    w.wait_colored();
+
+    // Step back and forth: the file already built comes back colored in
+    // one paint, from the worker's cache.
+    for k in ['k', 'j'] {
+        let shows = w.preview.telemetry.shows().len();
+        w.list.on_event(list::Event::Key(key(k)));
+        w.list.tick();
+        w.wait_landed(shows + 1);
+    }
+    let revisit = w.preview.telemetry.shows().back().unwrap();
+    assert_eq!(revisit.file, PathBuf::from(name(FILES - 1)));
+    assert!(
+        revisit.first_paint.is_some() && revisit.first_paint == revisit.colored,
+        "a revisited file paints colored at once: {revisit:?}"
+    );
+
+    // Resting on big10 has its never-visited neighbor big11 built in the
+    // background, so stepping onto it paints colored at once too.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !w
+        .preview
+        .telemetry
+        .prefetches()
+        .iter()
+        .any(|(f, _)| f.as_os_str() == name(FILES).as_str())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the neighbor was never prefetched"
+        );
+        w.list.tick(); // the settle timer runs in the list's tick
+        w.drain_preview_for(Duration::from_millis(5));
+    }
+    let shows = w.preview.telemetry.shows().len();
+    w.list.on_event(list::Event::Key(key('j')));
+    w.list.tick();
+    w.wait_landed(shows + 1);
+    let stepped = w.preview.telemetry.shows().back().unwrap();
+    assert_eq!(stepped.file, PathBuf::from(name(FILES)));
+    assert!(
+        stepped.first_paint == stepped.colored,
+        "a prefetched neighbor paints colored at once: {stepped:?}"
+    );
+
+    let mut report = format!(
+        "rapid browse: {} files x {} lines, {} j presses\nfinal diff landed {landed:?} after the last press, colored after {colored:?}\n",
+        FILES,
+        big.lines().count(),
+        FILES - 1
+    );
+    for t in w.preview.telemetry.shows() {
+        let paint = t
+            .first_paint
+            .map_or("superseded".to_string(), |d| format!("{d:?}"));
+        let colored = t.colored.map_or("-".to_string(), |d| format!("{d:?}"));
+        report.push_str(&format!(
+            "{}\tfirst paint {paint}\tcolored {colored}\n",
+            t.file.display()
+        ));
+    }
+    for (file, took) in w.preview.telemetry.prefetches() {
+        report.push_str(&format!("{}\tprefetched in {took:?}\n", file.display()));
+    }
+    let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .parent()
+        .unwrap()
+        .join("gitview-perf.txt");
+    std::fs::write(&artifact, &report).unwrap();
+    eprintln!("{report}(written to {})", artifact.display());
+}
+
+/// Every kind of change diffs the right pair of sides, and a doc served
+/// again from the worker's cache never outlives an edit to its file.
+#[test]
+fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
+    use herdr_gitview::git::ChangeKind;
+    use herdr_gitview::ipc::ToPreview;
+
+    let repo = fixture("sides");
+    let dir = repo.dir.clone();
+    let commit = |msg: &str| {
+        common::git(&dir, &["add", "-A"]);
+        common::git(&dir, &["commit", "-q", "-m", msg]);
+    };
+    // A conflict: main and feature both rewrite c.txt.
+    write(&dir, "c.txt", "base line\n");
+    write(&dir, "staged.txt", "staged before\n");
+    write(&dir, "r.txt", "rename me\nkeep\n");
+    write(&dir, "d.txt", "doomed\n");
+    commit("seed");
+    common::git(&dir, &["checkout", "-q", "-b", "feature"]);
+    write(&dir, "c.txt", "theirs line\n");
+    commit("theirs");
+    let theirs_sha = {
+        let out = std::process::Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    common::git(&dir, &["checkout", "-q", "main"]);
+    write(&dir, "c.txt", "ours line\n");
+    commit("ours");
+    common::git_lenient(&dir, &["merge", "-q", "feature"]);
+    // The rest, on top of the conflicted merge.
+    write(&dir, "base.txt", "one\ntwo unstaged\n");
+    write(&dir, "staged.txt", "staged after\n");
+    common::git(&dir, &["add", "staged.txt"]);
+    common::git(&dir, &["mv", "r.txt", "r2.txt"]);
+    write(&dir, "r2.txt", "renamed\nkeep\n");
+    common::git(&dir, &["add", "r2.txt"]);
+    write(&dir, "r2.txt", "renamed\nkeep\nthen edited\n"); // RM: more after staging
+    std::fs::remove_file(dir.join("d.txt")).unwrap();
+    write(&dir, "u.txt", "brand new\n");
+    let mut w = World::new(repo);
+
+    let show = |w: &mut World,
+                file: &str,
+                orig: Option<&str>,
+                cached,
+                kind,
+                commit: Option<&str>| {
+        let msg = ToPreview::Show(herdr_gitview::ipc::ShowReq {
+            commit: commit.map(str::to_string),
+            ..herdr_gitview::ipc::ShowReq::worktree(file.into(), orig.map(Into::into), cached, kind)
+        });
+        w.preview.on_event(preview::Event::Ipc(msg), &mut w.editor);
+        w.wait_colored();
+        w.pump();
+        w.note_diff(format!(
+            "{file} (from {orig:?}) cached={cached} kind={kind:?} commit={commit:?}"
+        ));
+        w.diff_text()
+    };
+    let has = |text: &str, want: &[&str], not: &[&str]| {
+        for s in want {
+            assert!(text.contains(s), "missing {s:?} in {text:?}");
+        }
+        for s in not {
+            assert!(!text.contains(s), "unexpected {s:?} in {text:?}");
+        }
+    };
+
+    // Unstaged: index -> worktree.
+    let t = show(&mut w, "base.txt", None, false, ChangeKind::Modified, None);
+    has(&t, &["two", "two unstaged"], &[]);
+    // Staged: HEAD -> index.
+    let t = show(&mut w, "staged.txt", None, true, ChangeKind::Modified, None);
+    has(&t, &["staged before", "staged after"], &[]);
+    // Staged rename: HEAD:old path -> index:new path.
+    let t = show(
+        &mut w,
+        "r2.txt",
+        Some("r.txt"),
+        true,
+        ChangeKind::Renamed,
+        None,
+    );
+    has(&t, &["rename me", "renamed", "keep"], &["then edited"]);
+    // Unstaged side of that rename: index (new path) -> worktree, so only
+    // the later edit is a change — not the whole file against nothing.
+    let t = show(
+        &mut w,
+        "r2.txt",
+        Some("r.txt"),
+        false,
+        ChangeKind::Renamed,
+        None,
+    );
+    has(&t, &["then edited"], &["rename me"]);
+    assert_eq!(
+        w.preview.app.first_change,
+        Some(3),
+        "lines 1-2 are unchanged context, not insertions: {t:?}"
+    );
+    // Deleted: everything removed, nothing added.
+    let t = show(&mut w, "d.txt", None, false, ChangeKind::Deleted, None);
+    has(&t, &["doomed"], &[]);
+    assert!(matches!(w.preview.app.state, State::Diff));
+    // Untracked: all added against nothing.
+    let t = show(&mut w, "u.txt", None, false, ChangeKind::Untracked, None);
+    has(&t, &["brand new"], &[]);
+    // Conflicted: ours (stage 2) -> the worktree's conflict markers.
+    let t = show(&mut w, "c.txt", None, false, ChangeKind::Conflicted, None);
+    has(&t, &["ours line", "<<<<<<<", "theirs line"], &["base line"]);
+    // A commit: its parent -> it.
+    let t = show(
+        &mut w,
+        "c.txt",
+        None,
+        false,
+        ChangeKind::Modified,
+        Some(&theirs_sha),
+    );
+    has(&t, &["base line", "theirs line"], &["ours line", "<<<<<<<"]);
+
+    // Back to base.txt (a cache hit), then a same-size edit: the edit wins.
+    let t = show(&mut w, "base.txt", None, false, ChangeKind::Modified, None);
+    has(&t, &["two unstaged"], &[]);
+    write(&dir, "base.txt", "one\ntwo UNSTAGED\n");
+    let t = show(&mut w, "u.txt", None, false, ChangeKind::Untracked, None);
+    has(&t, &["brand new"], &[]);
+    let t = show(&mut w, "base.txt", None, false, ChangeKind::Modified, None);
+    has(&t, &["two UNSTAGED"], &["two unstaged"]);
+    w.write_log("gitview-sides.txt");
+}
+
+/// A pinned `base` is what both panes compare against and name — the diff
+/// pane used to auto-detect its own base for the header and ignore the pin.
+/// Resolving it doesn't block the list: `w` returns at once and the scope
+/// switches when the resolution lands.
+#[test]
+fn a_pinned_base_is_resolved_off_the_ui_thread_and_named_by_both_panes() {
+    let repo = fixture("pinned-base");
+    let dir = repo.dir.clone();
+    // feature is stacked on release, so auto-detection would pick release;
+    // the pin says main, which brings release's own commit into the diff.
+    common::git(&dir, &["checkout", "-q", "-b", "release"]);
+    write(&dir, "r.txt", "from release\n");
+    common::git(&dir, &["add", "."]);
+    common::git(&dir, &["commit", "-q", "-m", "release work"]);
+    common::git(&dir, &["checkout", "-q", "-b", "feature"]);
+    write(&dir, "f.txt", "from feature\n");
+    common::git(&dir, &["add", "."]);
+    common::git(&dir, &["commit", "-q", "-m", "feature work"]);
+    let cfg = Config {
+        base: "main".to_string(),
+        ..Config::default()
+    };
+    let mut w = World::with_config(repo, cfg);
+
+    w.list.on_event(list::Event::Key(key('w')));
+    w.list.tick();
+    assert_eq!(
+        w.list.app.scope,
+        herdr_gitview::git::Scope::Worktree,
+        "the key returns before the base is resolved"
+    );
+    assert!(
+        matches!(w.list.app.base_job, list::app::BaseJob::Running { .. }),
+        "resolving on the session's thread"
+    );
+    w.pump();
+    assert_eq!(w.list.app.scope, herdr_gitview::git::Scope::Branch);
+    assert_eq!(w.list.app.base, "main");
+    let files: Vec<String> = w
+        .list
+        .app
+        .entries
+        .iter()
+        .map(|e| e.path.display().to_string())
+        .collect();
+    assert_eq!(files, vec!["f.txt", "r.txt"], "diffed against the pin");
+
+    // The diff pane names the same base, and diffs against its merge-base.
+    let shown = w.shown_file().unwrap();
+    let req = w.preview.app.current.clone().unwrap();
+    assert_eq!(req.base.map(|b| b.label).as_deref(), Some("main"));
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 10)).unwrap();
+    term.draw(|f| preview::ui::render(f, &mut w.preview.app))
+        .unwrap();
+    let header: String = (0..80)
+        .map(|x| term.backend().buffer()[(x, 0)].symbol().to_string())
+        .collect();
+    w.note(format!(
+        "pinned base = main\nlist: scope {:?}, base {}, files {files:?}\npreview header: {}",
+        w.list.app.scope,
+        w.list.app.base,
+        header.trim_end()
+    ));
+    assert!(header.contains("[vs main]"), "header: {header:?}");
+    assert_eq!(shown, "f.txt");
+    assert!(w.diff_text().contains("from feature"), "{}", w.diff_text());
+    // release's file is new relative to main's merge-base.
+    w.press("j");
+    assert_eq!(w.shown_file().as_deref(), Some("r.txt"));
+    w.note_diff("r.txt vs main's merge-base");
+    w.write_log("gitview-base.txt");
+    assert!(w.diff_text().contains("from release"), "{}", w.diff_text());
+}
+
+/// HEAD moving (here: merging the base in) moves the merge-base. Both panes
+/// must follow — diffing against the merge-base resolved before the move
+/// lists the base's own new commits as this branch's changes.
+#[test]
+fn branch_scope_follows_the_merge_base_when_head_moves() {
+    let repo = fixture("head-moves");
+    let dir = repo.dir.clone();
+    let rev = |what: &str| {
+        let out = std::process::Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "rev-parse", what])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    common::git(&dir, &["checkout", "-q", "-b", "feature"]);
+    write(&dir, "f.txt", "feature work\n");
+    common::git(&dir, &["add", "."]);
+    common::git(&dir, &["commit", "-q", "-m", "feature work"]);
+    common::git(&dir, &["checkout", "-q", "main"]);
+    write(&dir, "m.txt", "main moved on\n");
+    common::git(&dir, &["add", "."]);
+    common::git(&dir, &["commit", "-q", "-m", "main work"]);
+    common::git(&dir, &["checkout", "-q", "feature"]);
+    let cfg = Config {
+        base: "main".to_string(),
+        ..Config::default()
+    };
+    let mut w = World::with_config(repo, cfg);
+    list::spawn_poll_thread(
+        w.list_tx.clone(),
+        w.list.shared_handle(),
+        Repo { root: dir.clone() },
+        20,
+    );
+    let files = |w: &World| -> Vec<String> {
+        w.list
+            .app
+            .entries
+            .iter()
+            .map(|e| e.path.display().to_string())
+            .collect()
+    };
+    w.press("w");
+    assert_eq!(files(&w), vec!["f.txt"]);
+    let before = w.list.app.merge_base.clone();
+
+    // No retry: polling never holds the index lock (GIT_OPTIONAL_LOCKS=0).
+    common::git(&dir, &["merge", "-q", "--no-edit", "main"]);
+    let main = rev("main");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while w.list.app.merge_base.as_deref() != Some(main.as_str()) {
+        assert!(Instant::now() < deadline, "the merge-base never moved");
+        w.pump();
+    }
+    assert_ne!(w.list.app.merge_base, before);
+    assert_eq!(
+        files(&w),
+        vec!["f.txt"],
+        "main's own file is not a branch change"
+    );
+    let shown = w.preview.app.current.clone().unwrap();
+    assert_eq!(
+        shown.base.map(|b| b.merge_base).as_deref(),
+        Some(main.as_str()),
+        "the diff pane follows"
+    );
+    w.note(format!(
+        "merge-base before merging main: {before:?}\nafter: {:?} (main = {main})\nbranch files: {:?}",
+        w.list.app.merge_base,
+        files(&w)
+    ));
+    w.write_log("gitview-head-moves.txt");
+}
+
+/// Tab-indented code through the whole new pipeline — uncolored first
+/// paint, hunk-only coloring, the cache, and unfold coloring — reaches the
+/// screen with its tabs expanded (ratatui draws a literal `\t` as one
+/// garbage cell) and its colors lined up with the expanded text.
+#[test]
+fn tab_indented_files_render_expanded_through_every_phase() {
+    let repo = fixture("tabs");
+    let dir = repo.dir.clone();
+    let body: String = (0..60)
+        .map(|i| format!("func f{i}() int {{\n\tif x := {i}; x > 0 {{\n\t\treturn x\t// tab-aligned\n\t}}\n\treturn 0\n}}\n"))
+        .collect();
+    write(&dir, "main.go", &format!("package main\n\n{body}"));
+    common::git(&dir, &["add", "."]);
+    common::git(&dir, &["commit", "-q", "-m", "go"]);
+    let edited = body.replacen(
+        "\t\treturn x\t// tab-aligned",
+        "\t\treturn x + 1\t// tab-aligned",
+        1,
+    );
+    write(&dir, "main.go", &format!("package main\n\n{edited}"));
+    let mut w = World::new(repo);
+    w.wait_colored();
+    w.pump();
+
+    let check = |w: &World, phase: &str| {
+        let text = w.diff_text();
+        assert!(
+            !text.contains('\t'),
+            "{phase}: a raw tab reached the screen"
+        );
+        assert!(
+            text.contains("        return x + 1    // tab-aligned"),
+            "{phase}: tabs not expanded to 4-column stops: {text:?}"
+        );
+    };
+    check(&w, "first paint");
+    assert!(w.diff_colors() > 3, "the hunk is colored");
+
+    // Unfold the trailing context: revealed lines come in plain, then
+    // colored by the worker — expanded either way.
+    let last = w.preview.app.doc.lines.len() as u16; // the trailing fold
+    w.preview.app.set_viewport(120, last + 5);
+    w.preview.app.on_mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        last,
+    );
+    assert!(w.preview.app.highlight_pending(), "the fold opened");
+    w.wait_colored();
+    check(&w, "after unfold");
+    assert!(
+        w.diff_text().contains("func f59() int {"),
+        "the fold's lines are on screen"
+    );
+    w.note_diff("main.go, trailing fold expanded");
+    w.write_log("gitview-tabs.txt");
 }

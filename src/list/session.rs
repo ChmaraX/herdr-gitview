@@ -16,7 +16,7 @@ use crossterm::event::{KeyEvent, MouseEvent};
 use super::app::{self, App};
 use crate::git::{FileEntry, Scope};
 use crate::hostenv::HostEnv;
-use crate::ipc::{Conn, ToList, ToPreview};
+use crate::ipc::{Conn, ShowReq, ToList, ToPreview};
 use crate::keymap::Action;
 use crate::popup::{Answer, Popups};
 
@@ -32,6 +32,11 @@ pub enum Event {
     Ipc(ToList),
     /// The preview pane went away (socket EOF).
     IpcClosed,
+    /// A requested base resolution finished on its thread.
+    BaseResolved(Result<app::ResolvedBase, String>),
+    /// The poll thread saw HEAD move away from the one the base was
+    /// resolved for.
+    HeadMoved,
     /// Background nvim probe finished. `unsaved: Some(false)` means the
     /// editor was clean and has already been told to quit; `Some(true)` means
     /// it holds unsaved buffers; `None` means it couldn't be asked.
@@ -45,6 +50,8 @@ pub enum Event {
 pub struct Shared {
     pub scope: Scope,
     pub merge_base: Option<String>,
+    /// HEAD the merge-base was resolved for (None = no base yet).
+    pub base_head: Option<String>,
     pub show_untracked: bool,
 }
 
@@ -69,6 +76,11 @@ pub struct Session {
     pub show_debounce: Duration,
     /// Budget for `r`-triggered reconnect attempts.
     pub reconnect_budget: Duration,
+    /// How long the cursor must rest after a Show before the neighbors'
+    /// diffs are prefetched.
+    pub prefetch_settle: Duration,
+    /// When the last Show went out, while its neighbors are still due.
+    prefetch_from: Option<Instant>,
     quit_sent: bool,
 }
 
@@ -78,6 +90,7 @@ impl Session {
         let shared = Arc::new(Mutex::new(Shared {
             scope: app.scope,
             merge_base: app.merge_base.clone(),
+            base_head: app.base_head.clone(),
             show_untracked: app.cfg.show_untracked,
         }));
         Session {
@@ -93,6 +106,8 @@ impl Session {
             dirty_since: Instant::now(),
             show_debounce: Duration::from_millis(40),
             reconnect_budget: Duration::from_secs(2),
+            prefetch_settle: Duration::from_millis(150),
+            prefetch_from: None,
             quit_sent: false,
         }
     }
@@ -146,6 +161,14 @@ impl Session {
             Event::Key(key) => self.on_key(key),
             Event::Mouse(m) => self.on_mouse(m),
             Event::EditorProbe { then, unsaved } => self.on_probe(then, unsaved),
+            Event::BaseResolved(result) => {
+                self.app.on_base_resolved(result);
+                self.sync_shared();
+                self.mark_dirty(); // the scope or the merge-base may have changed
+            }
+            // The poll repeats this (and holds off reloading against the
+            // stale merge-base) until the new base lands.
+            Event::HeadMoved => self.app.request_base(app::BaseThen::Refresh),
             Event::Refresh(entries) => {
                 self.app.apply_refresh(entries);
                 // Content may have changed under the cursor — re-show.
@@ -328,6 +351,7 @@ impl Session {
 
         self.open_requested_popups();
         self.poll_popups();
+        self.spawn_base_resolution();
 
         // `p`: hand off to the preview (it owns the notes + picker flow).
         if self.app.send_notes_request {
@@ -344,14 +368,17 @@ impl Session {
                 // Hovering a note: show its file's diff + scroll to the card.
                 if let Some(note) = self.app.selected_note() {
                     let id = note.id;
-                    if let Some(msg) = note_show(&self.app, id) {
-                        self.send(&msg);
+                    if let Some(req) = note_show(&self.app, id) {
+                        self.send(&ToPreview::Show(req));
                     }
                     self.send(&ToPreview::FocusNote { id });
                 }
             } else {
                 match current_show(&self.app) {
-                    Some(msg) => self.send(&msg),
+                    Some(req) => {
+                        self.send(&ToPreview::Show(req));
+                        self.prefetch_from = Some(Instant::now());
+                    }
                     // Cursor resting on a directory row: keep showing the
                     // last diff instead of blanking the preview.
                     None if self.app.selected_dir().is_some() => {}
@@ -361,6 +388,19 @@ impl Session {
                 }
             }
             self.show_dirty = false;
+        }
+
+        // Once the cursor has rested on a file, have its neighbors' diffs
+        // built so stepping onto them is instant.
+        if !self.show_dirty
+            && let Some(from) = self.prefetch_from
+            && from.elapsed() >= self.prefetch_settle
+        {
+            self.prefetch_from = None;
+            let shows = neighbor_shows(&self.app);
+            if !shows.is_empty() {
+                self.send(&ToPreview::Prefetch { shows });
+            }
         }
 
         if self.app.should_quit && !self.quit_sent {
@@ -382,9 +422,7 @@ impl Session {
             // window used to fail with "open that file's diff first".
             match current_show(&self.app) {
                 Some(show) => {
-                    self.hand_off(ToPreview::ComposeNote {
-                        show: Box::new(show),
-                    });
+                    self.hand_off(ToPreview::ComposeNote { show });
                     self.show_dirty = false; // the composer's Show is the current one
                 }
                 None => self.app.set_status("select a file to annotate"),
@@ -604,6 +642,24 @@ impl Session {
         });
     }
 
+    /// Resolve a base the app asked for on a thread (many git calls); the
+    /// result comes back as `Event::BaseResolved`. One at a time.
+    fn spawn_base_resolution(&mut self) {
+        let app::BaseJob::Wanted { then, since } = self.app.base_job else {
+            return;
+        };
+        self.app.base_job = app::BaseJob::Running { then, since };
+        let tx = self.tx.clone();
+        let repo = crate::git::Repo {
+            root: self.app.repo.root.clone(),
+        };
+        let cfg_base = self.app.cfg.base.clone();
+        thread::spawn(move || {
+            let result = app::resolve_base(&repo, &cfg_base);
+            let _ = tx.send(Event::BaseResolved(result));
+        });
+    }
+
     /// Send a composer request to the diff pane and give it the focus, which
     /// is where the keystrokes need to land.
     fn hand_off(&mut self, msg: ToPreview) {
@@ -641,6 +697,7 @@ impl Session {
         if let Ok(mut s) = self.shared.lock() {
             s.scope = self.app.scope;
             s.merge_base = self.app.merge_base.clone();
+            s.base_head = self.app.base_head.clone();
         }
     }
 }
@@ -663,15 +720,39 @@ pub fn spawn_connector(tx: &Sender<Event>, socket: Option<PathBuf>, budget: Dura
 
 // ---- pure message builders (unit-testable) --------------------------------
 
-/// The Show message for the current selection, or `None` when nothing
-/// diffable is selected (headers, commit rows, empty list).
-fn current_show(app: &App) -> Option<ToPreview> {
-    let (e, section) = app.selected_entry()?;
+/// The Show for the current selection, or `None` when nothing diffable is
+/// selected (headers, commit rows, empty list).
+fn current_show(app: &App) -> Option<ShowReq> {
+    show_for_row(app, app.cursor)
+}
+
+/// The Shows for the nearest file rows above and below the cursor.
+fn neighbor_shows(app: &App) -> Vec<ShowReq> {
+    if !matches!(app.mode, app::Mode::Files | app::Mode::CommitFiles) {
+        return Vec::new();
+    }
+    let is_file = |i: &usize| matches!(app.rows.get(*i), Some(app::ListRow::Entry { .. }));
+    let next = (app.cursor + 1..app.rows.len()).find(is_file);
+    let prev = (0..app.cursor).rev().find(is_file);
+    [next, prev]
+        .into_iter()
+        .flatten()
+        .filter_map(|i| show_for_row(app, i))
+        .collect()
+}
+
+/// The Show for the file on row `row`, if it is one.
+fn show_for_row(app: &App, row: usize) -> Option<ShowReq> {
+    let (e, section) = app.entry_at(row)?;
     let commit = match app.mode {
         app::Mode::CommitFiles => Some(app.commit.as_ref()?.sha.clone()),
         _ => None,
     };
-    Some(ToPreview::Show {
+    let base = match app.scope {
+        Scope::Branch if commit.is_none() => app.branch_base(),
+        _ => None,
+    };
+    Some(ShowReq {
         file: e.path.clone(),
         orig_path: e.orig_path.clone(),
         scope: app.scope,
@@ -680,6 +761,7 @@ fn current_show(app: &App) -> Option<ToPreview> {
         cached: section.cached(),
         kind: e.kind,
         commit,
+        base,
     })
 }
 
@@ -703,22 +785,20 @@ fn show_key(app: &App) -> Option<(PathBuf, Scope, bool, Option<String>)> {
 }
 
 /// The Show for a hovered note: its file's live worktree diff.
-fn note_show(app: &App, id: u64) -> Option<ToPreview> {
+fn note_show(app: &App, id: u64) -> Option<ShowReq> {
     let note = app.notes.iter().find(|n| n.id == id)?;
     let file = &note.file;
     // Prefer real entry metadata when the file is among the current entries;
     // otherwise synthesize (kind only affects rename pathspecs).
     let entry = app.entries.iter().find(|e| &e.path == file);
-    Some(ToPreview::Show {
-        file: file.clone(),
-        orig_path: entry.and_then(|e| e.orig_path.clone()),
-        scope: Scope::Worktree,
-        cached: note.cached,
-        kind: entry
+    Some(ShowReq::worktree(
+        file.clone(),
+        entry.and_then(|e| e.orig_path.clone()),
+        note.cached,
+        entry
             .map(|e| e.kind)
             .unwrap_or(crate::git::ChangeKind::Modified),
-        commit: None,
-    })
+    ))
 }
 
 /// Translate a diff scroll/page key into the message the preview

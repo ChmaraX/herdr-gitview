@@ -22,22 +22,60 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::{ChangeKind, Scope};
 
+/// One diff to show: which file, which pair of sides. Also what the preview
+/// compares results against — a worker result for any other request is
+/// stale and dropped — and part of its cache key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShowReq {
+    pub file: PathBuf,
+    pub orig_path: Option<PathBuf>,
+    pub scope: Scope,
+    pub cached: bool,
+    pub kind: ChangeKind,
+    /// History view: show this commit's change to the file instead of the
+    /// worktree/branch diff.
+    #[serde(default)]
+    pub commit: Option<String>,
+    /// Branch scope: the base the list resolved. The list is the only place
+    /// a base is resolved, so both panes always name the same one.
+    #[serde(default)]
+    pub base: Option<BranchBase>,
+}
+
+impl ShowReq {
+    /// A live worktree-scope diff (no commit, no branch base).
+    pub fn worktree(
+        file: PathBuf,
+        orig_path: Option<PathBuf>,
+        cached: bool,
+        kind: ChangeKind,
+    ) -> ShowReq {
+        ShowReq {
+            file,
+            orig_path,
+            scope: Scope::Worktree,
+            cached,
+            kind,
+            commit: None,
+            base: None,
+        }
+    }
+}
+
+/// A resolved branch base: the ref named in headers, and its merge-base
+/// with HEAD (the old side of every branch-scope diff).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchBase {
+    pub label: String,
+    pub merge_base: String,
+}
+
 /// Messages the list pane sends to the preview pane.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToPreview {
     /// Render the diff for this entry. Sent on every cursor move (debounced).
-    Show {
-        file: PathBuf,
-        orig_path: Option<PathBuf>,
-        scope: Scope,
-        cached: bool,
-        kind: ChangeKind,
-        /// History view: show this commit's change to the file instead of the
-        /// worktree/branch diff.
-        #[serde(default)]
-        commit: Option<String>,
-    },
+    Show(ShowReq),
     /// Scroll the diff without switching pane focus. delta in lines;
     /// `i32::MIN`/`MAX` = home/end.
     Scroll {
@@ -57,6 +95,11 @@ pub enum ToPreview {
     GitInPane {
         argv: Vec<String>,
     },
+    /// The cursor settled: build these `Show`s (the neighbors) in the
+    /// background so moving onto them paints at once. Never shown.
+    Prefetch {
+        shows: Vec<ShowReq>,
+    },
     /// Nothing is selected any more (list emptied) — drop the shown diff.
     Clear,
     /// The list asked for a whole-file note: the preview shows this diff and
@@ -64,7 +107,7 @@ pub enum ToPreview {
     /// same place. The `Show` rides along rather than being assumed already
     /// delivered — the list's own Show is debounced.
     ComposeNote {
-        show: Box<ToPreview>,
+        show: ShowReq,
     },
     /// The list's notes view asked to rewrite a note: same composer, prefilled.
     ComposeEditNote {
@@ -258,14 +301,18 @@ mod tests {
 
         // list -> preview: every ToPreview variant.
         let to_preview = vec![
-            ToPreview::Show {
+            ToPreview::Show(ShowReq {
                 file: "a.rs".into(),
                 orig_path: Some("old.rs".into()),
-                scope: Scope::Worktree,
+                scope: Scope::Branch,
                 cached: false,
                 kind: ChangeKind::Modified,
                 commit: Some("abc123".into()),
-            },
+                base: Some(BranchBase {
+                    label: "origin/main".into(),
+                    merge_base: "def456".into(),
+                }),
+            }),
             ToPreview::Scroll { delta: -3 },
             ToPreview::Page {
                 down: true,

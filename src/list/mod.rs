@@ -78,6 +78,9 @@ pub fn run() -> Result<()> {
     result
 }
 
+/// Queued events handled before a frame is drawn.
+const MAX_EVENTS_PER_FRAME: usize = 64;
+
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     session: &mut Session,
@@ -86,10 +89,16 @@ fn event_loop(
     loop {
         terminal.draw(|frame| ui::render(frame, &mut session.app))?;
 
+        // Handle everything already queued before the next draw: a burst of
+        // keys costs one frame, not one frame each.
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => session.on_event(event),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+        // Capped, so a steady stream (a mouse drag) can't starve the draw.
+        for event in rx.try_iter().take(MAX_EVENTS_PER_FRAME) {
+            session.on_event(event);
         }
         session.tick();
 
@@ -134,13 +143,29 @@ fn spawn_input_thread(tx: Sender<Event>) {
 }
 
 /// Every `poll_ms`, hash the status; on change reload the current scope and
-/// push a `Refresh`. Cheap fingerprint avoids redundant reloads.
-fn spawn_poll_thread(tx: Sender<Event>, shared: Arc<Mutex<Shared>>, repo: Repo, poll_ms: u64) {
+/// push a `Refresh`. Cheap fingerprint avoids redundant reloads. Once a base
+/// is resolved, HEAD moving off the one it was resolved for is reported
+/// first (`HeadMoved`): reloading against a stale merge-base would be wrong.
+pub fn spawn_poll_thread(tx: Sender<Event>, shared: Arc<Mutex<Shared>>, repo: Repo, poll_ms: u64) {
     thread::spawn(move || {
         let show_untracked = shared.lock().map(|s| s.show_untracked).unwrap_or(true);
         let mut last = repo.fingerprint(show_untracked);
         loop {
             thread::sleep(Duration::from_millis(poll_ms));
+            let base_head = match shared.lock() {
+                Ok(s) => s.base_head.clone(),
+                Err(_) => return,
+            };
+            // Reloading now would use the stale merge-base: report instead,
+            // every tick, until the list has re-resolved it.
+            if let Some(known) = base_head
+                && repo.head_sha().is_some_and(|head| head != known)
+            {
+                if tx.send(Event::HeadMoved).is_err() {
+                    break;
+                }
+                continue;
+            }
             let fp = repo.fingerprint(show_untracked);
             if fp == last {
                 continue;

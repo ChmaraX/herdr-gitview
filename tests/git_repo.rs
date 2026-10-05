@@ -772,3 +772,32 @@ fn the_file_list_starts_even_when_git_status_cannot_run() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Regression: polling must never take git's index lock. `git status`
+/// refreshes stale stat info by rewriting the index under `index.lock`; a
+/// user's `git merge` / `commit` landing in that window failed with "Unable
+/// to write index". Every call gitview makes reads only.
+#[test]
+fn polling_never_rewrites_the_index() {
+    let t = fixture("optional-locks");
+    // Same content, new mtime: the index's stat info for base.txt is stale,
+    // which is exactly what a refreshing `git status` would write back.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write(&t.dir, "base.txt", "one\ntwo\n");
+    let index = t.dir.join(".git/index");
+    let before = std::fs::read(&index).unwrap();
+
+    t.repo.fingerprint(true);
+    let worktree = t.repo.worktree_status(true).unwrap();
+    let mb = t.repo.merge_base("main").unwrap();
+    let branch = t.repo.branch_changes(&mb).unwrap();
+
+    assert_eq!(
+        std::fs::read(&index).unwrap(),
+        before,
+        "the index was rewritten (git took index.lock)"
+    );
+    // ...and the stale stat info doesn't pass for a change either.
+    assert!(worktree.is_empty(), "{worktree:?}");
+    assert!(branch.is_empty(), "touched but unchanged: {branch:?}");
+}

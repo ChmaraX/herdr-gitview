@@ -9,7 +9,9 @@ pub mod editor;
 pub mod highlight;
 pub mod render;
 pub mod session;
+pub mod telemetry;
 pub mod ui;
+pub mod worker;
 
 pub use app::{PreviewApp, ShowReq};
 pub use session::{EditorHost, Event, Session};
@@ -85,6 +87,9 @@ pub fn run() -> Result<()> {
     result
 }
 
+/// Queued events handled before a frame is drawn.
+const MAX_EVENTS_PER_FRAME: usize = 64;
+
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     session: &mut Session,
@@ -96,17 +101,25 @@ fn event_loop(
         session.tick();
         terminal.draw(|frame| ui::render(frame, &mut session.app))?;
 
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(event) => {
-                let mut host = TerminalHost {
-                    term,
-                    terminal,
-                    input_paused,
-                };
-                session.on_event(event, &mut host);
-            }
-            Err(RecvTimeoutError::Timeout) => {}
+        // Handle everything already queued before the next draw: a burst of
+        // keys or worker results costs one frame, not one frame each.
+        let first = match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(event) => Some(event),
+            Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        };
+        let mut host = TerminalHost {
+            term,
+            terminal,
+            input_paused,
+        };
+        // Capped, so a steady stream (a mouse drag) can't starve the draw.
+        let queued = std::iter::from_fn(|| rx.try_recv().ok()).take(MAX_EVENTS_PER_FRAME);
+        for event in first.into_iter().chain(queued) {
+            session.on_event(event, &mut host);
+            if session.should_quit() {
+                break;
+            }
         }
 
         if session.should_quit() {

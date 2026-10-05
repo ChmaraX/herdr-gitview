@@ -31,6 +31,8 @@ fn app_for(repo: &TempRepo) -> App {
 fn press(app: &mut App, spec: &str) {
     let (code, mods) = parse_key(spec).unwrap();
     app.on_key(KeyEvent::new(code, mods));
+    // A base the key asked for: the session resolves it on a thread.
+    app.resolve_pending_base();
 }
 
 /// Move the cursor onto the directory row whose full path is `path`, in

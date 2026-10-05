@@ -21,19 +21,7 @@ const MAX_LINES: usize = 20_000;
 use super::card::{self, Card, MIN_WIDTH as MIN_CARD_WIDTH};
 use super::compose::{Composer, Outcome};
 
-/// The fields of a `ToPreview::Show`, kept together so we can compare the
-/// request that produced a diff against the one currently selected (stale
-/// results from the worker are dropped when they differ).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShowReq {
-    pub file: PathBuf,
-    pub orig_path: Option<PathBuf>,
-    pub scope: Scope,
-    pub cached: bool,
-    pub kind: ChangeKind,
-    /// History view: show this commit's change instead of a live diff.
-    pub commit: Option<String>,
-}
+pub use crate::ipc::ShowReq;
 
 /// A batched review note, anchored to a file (and optionally a line range).
 #[derive(Debug, Clone)]
@@ -78,6 +66,8 @@ pub struct PreviewApp {
     pub current: Option<ShowReq>,
     /// The built diff (kept for click-to-unfold rebuilds).
     built: Option<super::render::DiffDoc>,
+    /// An unfold revealed uncolored lines; the session asks the worker.
+    highlight_wanted: bool,
     /// Styled, capped diff text (plus a truncation notice line when capped).
     pub doc: Text<'static>,
     /// `doc`, word-wrapped to `viewport_w`, plus the row<->line maps. Kept in
@@ -93,9 +83,6 @@ pub struct PreviewApp {
     pub viewport_h: u16,
     /// Body width of the last draw; note cards are boxed to it.
     pub viewport_w: u16,
-
-    /// Branch-scope base ref, resolved once for the header.
-    pub base: Option<String>,
 
     // ---- review notes / selection ----
     /// Cursor line in the rendered doc (drives selection).
@@ -150,13 +137,13 @@ impl PreviewApp {
             keys,
             current: None,
             built: None,
+            highlight_wanted: false,
             doc: Text::default(),
             wrapped: super::render::WrappedDoc::default(),
             first_change: None,
             scroll: 0,
             viewport_h: 0,
             viewport_w: 0,
-            base: None,
             cursor_line: 0,
             select_anchor: None,
             notes: Vec::new(),
@@ -215,9 +202,6 @@ impl PreviewApp {
         if !same_file {
             self.scroll = 0;
         }
-        if req.scope == Scope::Branch && self.base.is_none() {
-            self.base = Some(self.repo.detect_base());
-        }
         self.current = Some(req);
     }
 
@@ -231,6 +215,36 @@ impl PreviewApp {
             Ok(doc) => self.set_diff(doc),
             Err(msg) => self.state = State::Error(msg),
         }
+    }
+
+    /// Color lines of the shown doc, if `req` is still what is shown.
+    /// Returns whether they were applied.
+    pub fn apply_highlights(&mut self, req: &ShowReq, h: &super::render::Highlights) -> bool {
+        if self.current.as_ref() != Some(req) {
+            return false;
+        }
+        let Some(built) = self.built.as_mut() else {
+            return false;
+        };
+        if !built.apply_highlights(h) {
+            return false;
+        }
+        self.rebuild();
+        true
+    }
+
+    /// Lines on screen are still waiting for syntax colors.
+    pub fn highlight_pending(&self) -> bool {
+        self.built.as_ref().is_some_and(|b| b.highlight_pending())
+    }
+
+    /// The coloring an unfold made necessary, for the worker to run.
+    pub fn take_highlight_job(&mut self) -> Option<(ShowReq, super::render::HighlightJob)> {
+        if !std::mem::take(&mut self.highlight_wanted) {
+            return None;
+        }
+        let job = self.built.as_ref()?.highlight_job()?;
+        Some((self.current.clone()?, job))
     }
 
     fn set_diff(&mut self, built: super::render::DiffDoc) {
@@ -415,6 +429,7 @@ impl PreviewApp {
                 if let (Some(bl), Some(built)) = (to_built, self.built.as_mut())
                     && built.unfold_at(bl)
                 {
+                    self.highlight_wanted = true; // the revealed lines are plain
                     self.clamp_scroll();
                     self.rebuild();
                     return;
@@ -481,9 +496,12 @@ impl PreviewApp {
         self.wrapped = super::render::wrap_diff_text(&self.doc, self.viewport_w as usize);
     }
 
-    /// The wrapped text actually painted in the diff body.
-    pub fn wrapped_text(&self) -> Text<'static> {
-        self.wrapped.text.clone()
+    /// The wrapped rows painted in a body `height` rows tall at the current
+    /// scroll — only those, so a frame never copies the whole doc.
+    pub fn visible_text(&self, height: usize) -> Text<'static> {
+        let rows = &self.wrapped.text.lines;
+        let top = (self.scroll as usize).min(rows.len());
+        Text::from(rows[top..(top + height).min(rows.len())].to_vec())
     }
 
     /// Rendered rows currently in the document — the unit `scroll` and
@@ -701,6 +719,7 @@ impl PreviewApp {
     /// selection moves go through `restyle` alone.
     fn rebuild(&mut self) {
         self.sync_doc();
+        self.sync_wrapped();
         self.saved_tint.clear();
         // Cards have just moved (a note was added, edited, deleted, or the
         // pane was resized) and may now sit under the cursor.
@@ -714,12 +733,15 @@ impl PreviewApp {
     /// like an editor would).
     fn restyle(&mut self) {
         // Restore whatever was tinted before.
+        let mut touched = Vec::with_capacity(self.saved_tint.len() + 1);
         for (idx, line) in self.saved_tint.drain(..) {
             if let Some(slot) = self.doc.lines.get_mut(idx) {
                 *slot = line;
+                touched.push(idx);
             }
         }
         if !matches!(self.state, State::Diff) {
+            self.rewrap(&touched);
             return;
         }
         // The cursor line has to read as "you are here" against the diff's
@@ -760,12 +782,25 @@ impl PreviewApp {
             }
             None => tint(self.cursor_line, cursor_bg, &mut saved, &mut self.doc.lines),
         }
+        touched.extend(saved.iter().map(|(idx, _)| *idx));
         self.saved_tint = saved;
-        // `doc` just changed (tint applied/moved) — re-wrap so the rendered
-        // text (and the row<->line maps scroll/click math relies on) stays
-        // in lockstep. `restyle` is the one place every doc mutation ends up
-        // going through, content rebuilds included.
-        self.sync_wrapped();
+        self.rewrap(&touched);
+    }
+
+    /// Re-wrap just the doc lines a tint change touched. A tint never
+    /// changes a line's width, so its rows keep their count and every
+    /// row<->line map stays valid; anything else falls back to a full wrap.
+    fn rewrap(&mut self, lines: &[usize]) {
+        let width = self.viewport_w as usize;
+        for &idx in lines {
+            let Some(line) = self.doc.lines.get(idx) else {
+                continue;
+            };
+            if !self.wrapped.rewrap_line(idx, line, width) {
+                self.sync_wrapped();
+                return;
+            }
+        }
     }
 
     // ---- notes ------------------------------------------------------------
@@ -915,19 +950,17 @@ impl PreviewApp {
 
     /// The Show that puts a note's own file on screen, so the composer can
     /// open on it without the list having to say which file that is.
-    pub fn show_for_note(&self, id: u64) -> Option<crate::ipc::ToPreview> {
+    pub fn show_for_note(&self, id: u64) -> Option<ShowReq> {
         let note = self.notes.iter().find(|n| n.id == id)?;
         if self.current.as_ref().map(|r| &r.file) == Some(&note.file) {
             return None; // already showing it
         }
-        Some(crate::ipc::ToPreview::Show {
-            file: note.file.clone(),
-            orig_path: None,
-            scope: Scope::Worktree,
-            cached: note.cached,
-            kind: crate::git::ChangeKind::Modified,
-            commit: None,
-        })
+        Some(ShowReq::worktree(
+            note.file.clone(),
+            None,
+            note.cached,
+            ChangeKind::Modified,
+        ))
     }
 
     /// Scroll so the whole composer box is on screen, preferring to keep its
