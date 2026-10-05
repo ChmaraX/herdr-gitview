@@ -55,6 +55,8 @@ struct World {
     list: list::Session,
     list_rx: Receiver<list::Event>,
     list_tx: mpsc::Sender<list::Event>,
+    /// What the scenario saw, written to `target/<name>` by `write_log`.
+    log: String,
     preview: preview::Session,
     preview_rx: Receiver<preview::Event>,
     editor: RecordingEditor,
@@ -122,6 +124,7 @@ impl World {
             list,
             list_rx,
             list_tx,
+            log: String::new(),
             preview,
             preview_rx,
             editor: RecordingEditor::default(),
@@ -242,6 +245,34 @@ impl World {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect()
+    }
+
+    /// Note a step in the scenario's artifact.
+    fn note(&mut self, text: impl AsRef<str>) {
+        self.log.push_str(text.as_ref());
+        self.log.push('\n');
+    }
+
+    /// Note a step plus the diff the preview shows, one line per row.
+    fn note_diff(&mut self, step: impl AsRef<str>) {
+        let lines: Vec<String> = self
+            .preview
+            .app
+            .doc
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        self.note(format!("## {}\n{}", step.as_ref(), lines.join("\n")));
+    }
+
+    /// Write the artifact to `target/<name>` (checkable after a run).
+    fn write_log(&self, name: &str) {
+        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .parent()
+            .unwrap()
+            .join(name);
+        std::fs::write(&path, &self.log).unwrap();
     }
 
     /// Answer file path for a popup entrypoint (mirrors `Popups::open`).
@@ -648,6 +679,12 @@ fn rapid_browsing_through_large_files_lands_the_final_diff() {
     let landed = last_press.elapsed();
     w.wait_colored();
     let colored = last_press.elapsed();
+    // Before the rework a full rebuild per file queued up: 3.3 s (release)
+    // and 37 s (debug) until the final diff landed. Now it's milliseconds.
+    assert!(
+        colored < Duration::from_secs(2),
+        "the final diff took {landed:?} to land, {colored:?} to color"
+    );
     assert!(
         w.diff_colors() > 3,
         "the landed diff carries syntax colors, not one plain color"
@@ -795,6 +832,9 @@ fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
         w.preview.on_event(preview::Event::Ipc(msg), &mut w.editor);
         w.wait_colored();
         w.pump();
+        w.note_diff(format!(
+            "{file} (from {orig:?}) cached={cached} kind={kind:?} commit={commit:?}"
+        ));
         w.diff_text()
     };
     let has = |text: &str, want: &[&str], not: &[&str]| {
@@ -833,9 +873,10 @@ fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
         None,
     );
     has(&t, &["then edited"], &["rename me"]);
-    assert!(
-        !w.diff_text().contains("▌   1 renamed"),
-        "line 1 is unchanged context, not an insertion: {t:?}"
+    assert_eq!(
+        w.preview.app.first_change,
+        Some(3),
+        "lines 1-2 are unchanged context, not insertions: {t:?}"
     );
     // Deleted: everything removed, nothing added.
     let t = show(&mut w, "d.txt", None, false, ChangeKind::Deleted, None);
@@ -866,6 +907,7 @@ fn each_change_kind_previews_its_own_sides_and_edits_bypass_the_cache() {
     has(&t, &["brand new"], &[]);
     let t = show(&mut w, "base.txt", None, false, ChangeKind::Modified, None);
     has(&t, &["two UNSTAGED"], &["two unstaged"]);
+    w.write_log("gitview-sides.txt");
 }
 
 /// A pinned `base` is what both panes compare against and name — the diff
@@ -925,12 +967,20 @@ fn a_pinned_base_is_resolved_off_the_ui_thread_and_named_by_both_panes() {
     let header: String = (0..80)
         .map(|x| term.backend().buffer()[(x, 0)].symbol().to_string())
         .collect();
+    w.note(format!(
+        "pinned base = main\nlist: scope {:?}, base {}, files {files:?}\npreview header: {}",
+        w.list.app.scope,
+        w.list.app.base,
+        header.trim_end()
+    ));
     assert!(header.contains("[vs main]"), "header: {header:?}");
     assert_eq!(shown, "f.txt");
     assert!(w.diff_text().contains("from feature"), "{}", w.diff_text());
     // release's file is new relative to main's merge-base.
     w.press("j");
     assert_eq!(w.shown_file().as_deref(), Some("r.txt"));
+    w.note_diff("r.txt vs main's merge-base");
+    w.write_log("gitview-base.txt");
     assert!(w.diff_text().contains("from release"), "{}", w.diff_text());
 }
 
@@ -1018,8 +1068,14 @@ fn branch_scope_follows_the_merge_base_when_head_moves() {
     );
     let shown = w.preview.app.current.clone().unwrap();
     assert_eq!(
-        shown.base.map(|b| b.merge_base),
-        Some(main),
+        shown.base.map(|b| b.merge_base).as_deref(),
+        Some(main.as_str()),
         "the diff pane follows"
     );
+    w.note(format!(
+        "merge-base before merging main: {before:?}\nafter: {:?} (main = {main})\nbranch files: {:?}",
+        w.list.app.merge_base,
+        files(&w)
+    ));
+    w.write_log("gitview-head-moves.txt");
 }
