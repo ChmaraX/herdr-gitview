@@ -1079,3 +1079,60 @@ fn branch_scope_follows_the_merge_base_when_head_moves() {
     ));
     w.write_log("gitview-head-moves.txt");
 }
+
+/// Tab-indented code through the whole new pipeline — uncolored first
+/// paint, hunk-only coloring, the cache, and unfold coloring — reaches the
+/// screen with its tabs expanded (ratatui draws a literal `\t` as one
+/// garbage cell) and its colors lined up with the expanded text.
+#[test]
+fn tab_indented_files_render_expanded_through_every_phase() {
+    let repo = fixture("tabs");
+    let dir = repo.dir.clone();
+    let body: String = (0..60)
+        .map(|i| format!("func f{i}() int {{\n\tif x := {i}; x > 0 {{\n\t\treturn x\t// tab-aligned\n\t}}\n\treturn 0\n}}\n"))
+        .collect();
+    write(&dir, "main.go", &format!("package main\n\n{body}"));
+    common::git(&dir, &["add", "."]);
+    common::git(&dir, &["commit", "-q", "-m", "go"]);
+    let edited = body.replacen(
+        "\t\treturn x\t// tab-aligned",
+        "\t\treturn x + 1\t// tab-aligned",
+        1,
+    );
+    write(&dir, "main.go", &format!("package main\n\n{edited}"));
+    let mut w = World::new(repo);
+    w.wait_colored();
+    w.pump();
+
+    let check = |w: &World, phase: &str| {
+        let text = w.diff_text();
+        assert!(
+            !text.contains('\t'),
+            "{phase}: a raw tab reached the screen"
+        );
+        assert!(
+            text.contains("        return x + 1    // tab-aligned"),
+            "{phase}: tabs not expanded to 4-column stops: {text:?}"
+        );
+    };
+    check(&w, "first paint");
+    assert!(w.diff_colors() > 3, "the hunk is colored");
+
+    // Unfold the trailing context: revealed lines come in plain, then
+    // colored by the worker — expanded either way.
+    let last = w.preview.app.doc.lines.len() as u16; // the trailing fold
+    w.preview.app.set_viewport(120, last + 5);
+    w.preview.app.on_mouse(
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        last,
+    );
+    assert!(w.preview.app.highlight_pending(), "the fold opened");
+    w.wait_colored();
+    check(&w, "after unfold");
+    assert!(
+        w.diff_text().contains("func f59() int {"),
+        "the fold's lines are on screen"
+    );
+    w.note_diff("main.go, trailing fold expanded");
+    w.write_log("gitview-tabs.txt");
+}
