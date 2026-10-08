@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1](https://github.com/ChmaraX/herdr-gitview/compare/v0.3.0...v0.3.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* resolve repo from workspace worktree before focused pane ([#6](https://github.com/ChmaraX/herdr-gitview/issues/6)) ([#9](https://github.com/ChmaraX/herdr-gitview/issues/9)) ([f5d5fcf](https://github.com/ChmaraX/herdr-gitview/commit/f5d5fcf7f095196dffeee179d6fe69306b6d5dc0))
+* sidebar toggle inside the gitview tab closes it instead of nesting ([#11](https://github.com/ChmaraX/herdr-gitview/issues/11)) ([21e18cb](https://github.com/ChmaraX/herdr-gitview/commit/21e18cb2f4f404d338d1b3159611150b7965a173))
+
+
+### Performance Improvements
+
+* make browsing diffs instant ([#7](https://github.com/ChmaraX/herdr-gitview/issues/7)) ([aa7d2b6](https://github.com/ChmaraX/herdr-gitview/commit/aa7d2b6d08174a63d6ac702d2fe5392e3b66f29d))
+
 ## [0.3.0](https://github.com/ChmaraX/herdr-gitview/compare/v0.2.0...v0.3.0) (2026-09-05)
 
 
