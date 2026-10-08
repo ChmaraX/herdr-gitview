@@ -65,6 +65,11 @@ struct RecoverState {
 pub fn toggle() -> Result<()> {
     let repo = resolve_repo()?;
     let tab_id = current_tab_id()?;
+    // Pressed inside the dedicated gitview tab: close it instead of nesting
+    // a sidebar view into it (#10).
+    if let Some(state) = tab_view_in(&repo, &tab_id) {
+        return close_view(&repo, &state);
+    }
     match read_sidebar_state(&repo, &tab_id) {
         Some(state) if view_alive(&state) => close_view(&repo, &state),
         Some(state) => {
@@ -80,8 +85,11 @@ pub fn toggle() -> Result<()> {
 /// Pressing again from another tab focuses that view; from inside it closes.
 pub fn toggle_tab() -> Result<()> {
     let repo = resolve_repo()?;
+    // Same "which tab am I in" source as `toggle`/`open`. An unknown tab (no
+    // context, no HERDR_PANE_ID) counts as inside, so the key still closes.
+    let here = current_tab_id().ok();
     match read_tab_state(&repo) {
-        Some(state) if view_alive(&state) && !invoked_from(&state.tab_id) => {
+        Some(state) if view_alive(&state) && here.as_ref().is_some_and(|t| *t != state.tab_id) => {
             log(format!("focusing existing view tab {}", state.tab_id));
             herdr_json(&["tab", "focus", &state.tab_id])?;
             Ok(())
@@ -99,6 +107,9 @@ pub fn toggle_tab() -> Result<()> {
 pub fn open() -> Result<()> {
     let repo = resolve_repo()?;
     let tab_id = current_tab_id().unwrap_or_default();
+    if tab_view_in(&repo, &tab_id).is_some() {
+        return Ok(()); // this tab already *is* a gitview (#10)
+    }
     match read_sidebar_state(&repo, &tab_id) {
         Some(state) if view_alive(&state) => Ok(()), // already open here
         Some(state) => {
@@ -392,6 +403,11 @@ fn cleanup(repo: &Path, state: &ViewState) {
     }
 }
 
+/// The live dedicated-tab view for `repo`, if `tab_id` is that view's tab.
+fn tab_view_in(repo: &Path, tab_id: &str) -> Option<ViewState> {
+    read_tab_state(repo).filter(|state| state.tab_id == tab_id && view_alive(state))
+}
+
 /// The view is alive as long as either of its panes still exists.
 fn view_alive(state: &ViewState) -> bool {
     pane_alive(&state.preview_pane) || pane_alive(&state.list_pane)
@@ -534,21 +550,6 @@ fn context_candidates(ctx: &Value) -> Vec<PathBuf> {
     .filter_map(|key| ctx.pointer(key)?.as_str())
     .map(PathBuf::from)
     .collect()
-}
-
-/// Was the action invoked from inside the given tab? Falls back to `true`
-/// (→ close behavior) when no invocation context is available.
-fn invoked_from(tab_id: &str) -> bool {
-    let Ok(raw) = std::env::var("HERDR_PLUGIN_CONTEXT_JSON") else {
-        return true;
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
-        return true;
-    };
-    match find_str(&value, "tab_id") {
-        Some(ctx_tab) => ctx_tab == tab_id,
-        None => true,
-    }
 }
 
 fn git_toplevel(dir: &Path) -> Option<PathBuf> {
