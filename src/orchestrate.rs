@@ -490,8 +490,9 @@ fn open_pane(
 // ---- repo / state resolution ---------------------------------------------
 
 /// Where was the shortcut pressed? Priority: explicit GITVIEW_REPO (panes,
-/// tests) → cwd-ish paths inside HERDR_PLUGIN_CONTEXT_JSON (actions) → our
-/// own cwd. First candidate that is inside a git repo wins.
+/// tests) → paths inside HERDR_PLUGIN_CONTEXT_JSON (actions, see
+/// `context_candidates`) → our own cwd. First candidate that is inside a git
+/// repo wins.
 fn resolve_repo() -> Result<PathBuf> {
     if let Some(repo) = std::env::var_os("GITVIEW_REPO") {
         return Ok(PathBuf::from(repo));
@@ -500,7 +501,7 @@ fn resolve_repo() -> Result<PathBuf> {
     if let Ok(raw) = std::env::var("HERDR_PLUGIN_CONTEXT_JSON") {
         log(format!("context json: {raw}"));
         if let Ok(value) = serde_json::from_str::<Value>(&raw) {
-            collect_cwds(&value, &mut candidates);
+            candidates.extend(context_candidates(&value));
         }
     }
     if let Ok(cwd) = std::env::current_dir() {
@@ -517,21 +518,22 @@ fn resolve_repo() -> Result<PathBuf> {
     )
 }
 
-fn collect_cwds(value: &Value, out: &mut Vec<PathBuf>) {
-    match value {
-        Value::Object(map) => {
-            for (key, val) in map {
-                if (key.ends_with("cwd") || key == "repo_root")
-                    && let Some(s) = val.as_str()
-                {
-                    out.push(PathBuf::from(s));
-                }
-                collect_cwds(val, out);
-            }
-        }
-        Value::Array(items) => items.iter().for_each(|v| collect_cwds(v, out)),
-        _ => {}
-    }
+/// Repo candidates from an action's invocation context, best first. The
+/// workspace's own checkout beats the focused pane: a focused plugin pane
+/// (herdr-nvim, …) or a shell `cd`'d elsewhere must not redirect gitview to
+/// an unrelated repo. `worktree.repo_root` comes last: for a linked
+/// worktree it names the main checkout, not this one.
+fn context_candidates(ctx: &Value) -> Vec<PathBuf> {
+    [
+        "/worktree/checkout_path",
+        "/workspace_cwd",
+        "/focused_pane_cwd",
+        "/worktree/repo_root",
+    ]
+    .into_iter()
+    .filter_map(|key| ctx.pointer(key)?.as_str())
+    .map(PathBuf::from)
+    .collect()
 }
 
 /// Was the action invoked from inside the given tab? Falls back to `true`
@@ -909,8 +911,43 @@ mod tests {
     }
 
     #[test]
-    fn collect_cwds_matches_real_action_context_keys() {
-        // Real shape captured from herdr 0.7.3 (see debug.log / contracts doc).
+    fn context_candidates_prefer_workspace_worktree_over_focused_pane() {
+        // herdr 0.9.3 shape: a linked-worktree workspace whose focused pane is
+        // a plugin (herdr-nvim) running in its own checkout. Issue #6.
+        let ctx: Value = serde_json::from_str(
+            r#"{
+                "workspace_id": "wF",
+                "workspace_label": "feature-x",
+                "workspace_cwd": "/src/app-feature-x/packages/web",
+                "worktree": {
+                    "repo_key": "k",
+                    "repo_name": "app",
+                    "repo_root": "/src/app",
+                    "checkout_path": "/src/app-feature-x",
+                    "is_linked_worktree": true
+                },
+                "tab_id": "wF:t2",
+                "focused_pane_id": "wF:p3",
+                "focused_pane_cwd": "/plugins/herdr-nvim",
+                "invocation_source": "keybinding"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            context_candidates(&ctx),
+            vec![
+                PathBuf::from("/src/app-feature-x"),
+                PathBuf::from("/src/app-feature-x/packages/web"),
+                PathBuf::from("/plugins/herdr-nvim"),
+                // main checkout last: wrong repo for a linked worktree
+                PathBuf::from("/src/app"),
+            ]
+        );
+    }
+
+    #[test]
+    fn context_candidates_without_worktree_fall_back_to_workspace_then_pane() {
+        // Real shape captured from herdr 0.7.3: no `worktree` object.
         let ctx: Value = serde_json::from_str(
             r#"{
                 "workspace_id": "wF",
@@ -922,27 +959,13 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let mut out = Vec::new();
-        collect_cwds(&ctx, &mut out);
-        out.sort();
         assert_eq!(
-            out,
+            context_candidates(&ctx),
             vec![
-                PathBuf::from("/repo/from-pane"),
                 PathBuf::from("/repo/from-workspace"),
+                PathBuf::from("/repo/from-pane"),
             ]
         );
-    }
-
-    #[test]
-    fn collect_cwds_ignores_non_cwd_keys_and_recurses() {
-        let ctx: Value =
-            serde_json::from_str(r#"{"nested": [{"cwd": "/a", "label": "x"}], "repo_root": "/b"}"#)
-                .unwrap();
-        let mut out = Vec::new();
-        collect_cwds(&ctx, &mut out);
-        out.sort();
-        assert_eq!(out, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
     }
 
     #[test]
