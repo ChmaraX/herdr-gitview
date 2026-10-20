@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0](https://github.com/ChmaraX/herdr-gitview/compare/v0.3.1...v0.4.0) (2026-10-20)
+
+
+### Features
+
+* widen the file list to 29% by default ([#13](https://github.com/ChmaraX/herdr-gitview/issues/13)) ([d4007a2](https://github.com/ChmaraX/herdr-gitview/commit/d4007a2b6bfc018446d9e0c6a033bf793fd12d20))
+
+
+### Bug Fixes
+
+* cap debug.log and clean up stale view state ([#15](https://github.com/ChmaraX/herdr-gitview/issues/15)) ([e2c8c5f](https://github.com/ChmaraX/herdr-gitview/commit/e2c8c5ff5304f873a43207a414661a0c4e3f7580))
+* focus the gitview tab when it opens ([#12](https://github.com/ChmaraX/herdr-gitview/issues/12)) ([708c879](https://github.com/ChmaraX/herdr-gitview/commit/708c8797dec723324ae01497fe376874486f63e0))
+* show untracked files in branch scope ([#14](https://github.com/ChmaraX/herdr-gitview/issues/14)) ([04b9859](https://github.com/ChmaraX/herdr-gitview/commit/04b985987613e9e6451940875cf8a4b938bdf031))
+
 ## [0.3.1](https://github.com/ChmaraX/herdr-gitview/compare/v0.3.0...v0.3.1) (2026-10-08)
 
 
