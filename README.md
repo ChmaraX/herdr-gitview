@@ -230,7 +230,8 @@ herdr plugin link "$PWD"
 
 `cargo test` runs the full suite - parser units, fixture git repos, and
 ratatui render tests. `just release-dry` mirrors CI (fmt, clippy, tests,
-release build). `GITVIEW_DEBUG=1` writes a debug log to the plugin state dir.
+release build). A debug log is always written to `debug.log` in the plugin
+state dir; it rotates to `debug.log.1` at 5 MB.
 
 ## Attribution
 
