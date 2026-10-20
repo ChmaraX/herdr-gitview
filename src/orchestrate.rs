@@ -223,6 +223,10 @@ fn open_tab_view(repo: &Path) -> Result<()> {
         origin_tab,
     };
     write_state(repo, &state)?;
+    // The tab is created with --no-focus and `--focus` on the list split only
+    // focuses the pane inside that (background) tab: bring the tab forward.
+    let _ = herdr_json(&["tab", "focus", &state.tab_id]);
+    let _ = herdr_json(&["plugin", "pane", "focus", &state.list_pane]);
     log("tab view opened");
     Ok(())
 }
