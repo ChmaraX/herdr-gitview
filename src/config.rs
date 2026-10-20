@@ -90,7 +90,7 @@ impl Default for Config {
             tab_width: 4,
             keybindings: HashMap::new(),
             view_width_percent: 50,
-            list_width_percent: 25,
+            list_width_percent: 29,
             reuse_tab_nvim: true,
         }
     }
@@ -180,7 +180,7 @@ mod tests {
     fn width_percents_default_and_clamp() {
         let cfg = Config::parse("");
         assert_eq!(cfg.view_width_percent, 50);
-        assert_eq!(cfg.list_width_percent, 25);
+        assert_eq!(cfg.list_width_percent, 29);
         let cfg = Config::parse("view_width_percent = 5\nlist_width_percent = 99");
         assert_eq!(cfg.view_width_percent, 20);
         assert_eq!(cfg.list_width_percent, 80);
