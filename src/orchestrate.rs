@@ -1,6 +1,7 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -157,6 +158,7 @@ fn open_tab_view(repo: &Path) -> Result<()> {
     let cfg = crate::config::Config::load();
     let views = views_dir();
     std::fs::create_dir_all(&views)?;
+    sweep_views_dir_best_effort(&tab_state_path(repo));
     let socket = tab_socket_path(repo);
     let _ = std::fs::remove_file(&socket);
 
@@ -242,6 +244,7 @@ fn open_sidebar_view(repo: &Path) -> Result<()> {
     let cfg = crate::config::Config::load();
     let views = views_dir();
     std::fs::create_dir_all(&views)?;
+    sweep_views_dir_best_effort(&sidebar_state_path(repo, &ctx.tab));
     let socket = sidebar_socket_path(repo, &ctx.tab);
     let _ = std::fs::remove_file(&socket);
 
@@ -670,6 +673,94 @@ fn find_state_by_socket(repo: &Path, socket: &Path) -> Option<ViewState> {
     all_states(repo).into_iter().find(|s| s.socket == socket)
 }
 
+// ---- stale view sweep -----------------------------------------------------
+
+/// Anything younger than this is left alone:
+/// - an open may still be in flight;
+/// - a recover file still has to undo an interrupted evacuation on the next
+///   toggle;
+/// - `pane list` only sees this herdr server, so a view that is open in
+///   another herdr session looks dead.
+const SWEEP_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Best-effort: sweep `views_dir()` for every repo's leftovers, using an
+/// already-fetched `pane list` as the one source of truth for "alive".
+/// Skipped entirely if that list can't be fetched (never delete on
+/// uncertainty). `keep` is the state file about to be written for the view
+/// currently being opened, so the sweep can't race its own write.
+fn sweep_views_dir_best_effort(keep: &Path) {
+    let Ok(ids) = pane_ids() else {
+        log("pane list failed, skipping stale view sweep");
+        return;
+    };
+    let live: HashSet<String> = ids.into_iter().collect();
+    let mut keep_set = HashSet::new();
+    keep_set.insert(keep.to_path_buf());
+    sweep_stale_views(&views_dir(), &live, &keep_set);
+}
+
+/// Remove state left behind by views whose panes died outside gitview's
+/// control (herdr restart, repo deleted, ...), across every repo under
+/// `views`. `live` is the full current set of pane ids; `keep` is a set of
+/// paths never to touch regardless of what they look like.
+fn sweep_stale_views(views: &Path, live: &HashSet<String>, keep: &HashSet<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(views) else {
+        return;
+    };
+    for ent in entries.flatten() {
+        let path = ent.path();
+        if keep.contains(&path) {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+
+        if !older_than(&path, SWEEP_GRACE) {
+            continue;
+        }
+        if name.ends_with(".recover.json") {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        if !name.ends_with(".json") {
+            // A view's socket, nvim server socket or popup answer file
+            // whose state file is gone.
+            if !has_owner_state(views, name) {
+                let _ = std::fs::remove_file(&path);
+            }
+            continue;
+        }
+        let Some(state) = read_state_file(&path) else {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        };
+        if live.contains(&state.preview_pane) || live.contains(&state.list_pane) {
+            continue; // at least one pane still exists, view is alive
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&state.socket);
+        let _ = std::fs::remove_file(state.socket.with_extension("nvim"));
+    }
+}
+
+/// Whether a state file exists for a view's side file. Side files are named
+/// `{repo}.{tab_key|tab}.{ext…}`, or `{repo}.{ext…}` for legacy views.
+fn has_owner_state(views: &Path, name: &str) -> bool {
+    let mut parts = name.split('.');
+    let repo = parts.next().unwrap_or_default();
+    let key = parts.next().unwrap_or_default();
+    views.join(format!("{repo}.{key}.json")).exists() || views.join(format!("{repo}.json")).exists()
+}
+
+fn older_than(path: &Path, min_age: Duration) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age >= min_age)
+}
+
 fn current_tab_id() -> Result<String> {
     Ok(view_context()?.tab)
 }
@@ -816,6 +907,24 @@ fn pane_ids() -> Result<Vec<String>> {
     Ok(ids)
 }
 
+/// Cap on logged command output. `pane list` replies alone run many KB and
+/// dwarf everything else `herdr_json` ever logs — keep the args + exit
+/// status in full, but cut the body down to something a human can skim.
+const LOG_BODY_LIMIT: usize = 300;
+
+/// Truncate `s` to at most `LOG_BODY_LIMIT` bytes for logging, cutting on a
+/// char boundary and noting how much was dropped.
+fn truncate_for_log(s: &str) -> String {
+    if s.len() <= LOG_BODY_LIMIT {
+        return s.to_string();
+    }
+    let mut end = LOG_BODY_LIMIT;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…(+{} bytes)", &s[..end], s.len() - end)
+}
+
 /// Run a herdr CLI command and parse its JSON-envelope reply
 /// (`{"id":"cli:…","result":{…}}`). Logs every invocation.
 fn herdr_json(args: &[&str]) -> Result<Value> {
@@ -825,17 +934,15 @@ fn herdr_json(args: &[&str]) -> Result<Value> {
         .output()
         .with_context(|| format!("spawning {} {args:?}", bin.to_string_lossy()))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     log(format!(
         "herdr {args:?} -> {} | out: {} | err: {}",
         out.status,
-        stdout.trim(),
-        String::from_utf8_lossy(&out.stderr).trim()
+        truncate_for_log(stdout.trim()),
+        truncate_for_log(stderr.trim())
     ));
     if !out.status.success() {
-        bail!(
-            "herdr {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+        bail!("herdr {args:?} failed: {}", stderr.trim());
     }
     Ok(serde_json::from_str(stdout.trim()).unwrap_or(Value::Null))
 }
@@ -1094,5 +1201,114 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         drop(listener);
         let _ = std::fs::remove_file(&sock);
+    }
+
+    #[test]
+    fn truncate_for_log_leaves_short_strings_untouched() {
+        assert_eq!(truncate_for_log("ok"), "ok");
+    }
+
+    #[test]
+    fn truncate_for_log_cuts_on_a_char_boundary() {
+        // Pad the multibyte character right up against the limit so a naive
+        // byte-index cut would land mid-character and panic.
+        let padding = "a".repeat(LOG_BODY_LIMIT - 1);
+        let s = format!("{padding}éééééééééé"); // multibyte chars straddling the cut
+        let out = truncate_for_log(&s);
+        assert!(out.starts_with(&padding));
+        assert!(out.contains("…(+"));
+        assert!(out.ends_with("bytes)"));
+    }
+
+    /// Backdate `path` past the sweep's grace period.
+    fn age(path: &Path) {
+        let old = SystemTime::now() - SWEEP_GRACE - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+
+    /// A sidebar view for `tab` with its socket and nvim socket on disk.
+    fn sidebar_on_disk(repo: &Path, tab: &str) -> (ViewState, Vec<PathBuf>) {
+        let socket = sidebar_socket_path(repo, tab);
+        let mut state = sample_state(repo, tab, ViewMode::Sidebar, socket.clone());
+        state.preview_pane = format!("{tab}:preview");
+        state.list_pane = format!("{tab}:list");
+        write_state(repo, &state).unwrap();
+        let nvim = socket.with_extension("nvim");
+        std::fs::write(&socket, b"").unwrap();
+        std::fs::write(&nvim, b"").unwrap();
+        (state, vec![sidebar_state_path(repo, tab), socket, nvim])
+    }
+
+    #[test]
+    fn sweep_removes_old_dead_views_and_keeps_the_rest() {
+        with_temp_state_dir(|_| {
+            let repo = Path::new("/repo");
+            let (_, dead) = sidebar_on_disk(repo, "dead");
+            let (alive_state, alive) = sidebar_on_disk(repo, "alive");
+            // Dead here, but young: may be a view open in another herdr session.
+            let (_, young) = sidebar_on_disk(repo, "young");
+            let (_, kept) = sidebar_on_disk(repo, "kept");
+            for path in dead.iter().chain(&alive).chain(&kept) {
+                age(path);
+            }
+
+            let live = HashSet::from([alive_state.list_pane.clone()]);
+            let keep = HashSet::from([kept[0].clone()]);
+            sweep_stale_views(&views_dir(), &live, &keep);
+
+            for path in &dead {
+                assert!(
+                    !path.exists(),
+                    "dead view file survived: {}",
+                    path.display()
+                );
+            }
+            for path in alive.iter().chain(&young).chain(&kept[..1]) {
+                assert!(
+                    path.exists(),
+                    "live/young/kept file removed: {}",
+                    path.display()
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn sweep_removes_old_orphans_and_keeps_a_young_recover_file() {
+        with_temp_state_dir(|_| {
+            let repo = Path::new("/repo");
+            let views = views_dir();
+            let orphan_sock = sidebar_socket_path(repo, "gone");
+            let orphan_nvim = orphan_sock.with_extension("nvim");
+            let orphan_answer = orphan_sock.with_extension("ask.answer");
+            let garbage = views.join("deadbeef.tab.json");
+            let old_recover = recover_path(repo, "old");
+            let young_recover = recover_path(repo, "young");
+            for path in [&orphan_sock, &orphan_nvim, &orphan_answer, &old_recover] {
+                std::fs::write(path, b"").unwrap();
+                age(path);
+            }
+            std::fs::write(&garbage, b"not json").unwrap();
+            age(&garbage);
+            std::fs::write(&young_recover, b"{}").unwrap();
+
+            sweep_stale_views(&views, &HashSet::new(), &HashSet::new());
+
+            for path in [
+                &orphan_sock,
+                &orphan_nvim,
+                &orphan_answer,
+                &garbage,
+                &old_recover,
+            ] {
+                assert!(!path.exists(), "orphan survived: {}", path.display());
+            }
+            assert!(young_recover.exists(), "young recover file was swept");
+        });
     }
 }
