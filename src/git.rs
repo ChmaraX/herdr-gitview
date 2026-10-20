@@ -452,7 +452,7 @@ impl Repo {
 
     // ---- branch scope -----------------------------------------------------
 
-    pub fn branch_changes(&self, merge_base: &str) -> Result<Vec<FileEntry>> {
+    pub fn branch_changes(&self, merge_base: &str, show_untracked: bool) -> Result<Vec<FileEntry>> {
         let raw = self.git(&["diff", merge_base, "--name-status", "-z", "-M"])?;
         let mut entries = parse_name_status(&raw)?;
 
@@ -473,6 +473,34 @@ impl Repo {
                 };
             }
         }
+
+        // `git diff <rev>` never reports untracked files, but branch scope
+        // is documented as merge-base -> working tree, so they belong here
+        // too — same as worktree scope, gated by the same setting.
+        if show_untracked {
+            let seen: std::collections::HashSet<PathBuf> =
+                entries.iter().map(|e| e.path.clone()).collect();
+            let raw = self.git(&["ls-files", "--others", "--exclude-standard", "-z"])?;
+            for path in String::from_utf8_lossy(&raw)
+                .split('\0')
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+            {
+                if seen.contains(&path) {
+                    continue;
+                }
+                let (adds, dels) = untracked_stats(&self.root.join(&path));
+                entries.push(FileEntry {
+                    path,
+                    orig_path: None,
+                    kind: ChangeKind::Untracked,
+                    stage: StageState::NA,
+                    adds,
+                    dels,
+                });
+            }
+        }
+
         sort_entries(&mut entries);
         Ok(entries)
     }

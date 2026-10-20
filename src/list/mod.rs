@@ -178,7 +178,9 @@ pub fn spawn_poll_thread(tx: Sender<Event>, shared: Arc<Mutex<Shared>>, repo: Re
             };
             let entries = match scope {
                 Scope::Worktree => repo.worktree_status(show_untracked),
-                Scope::Branch => repo.branch_changes(merge_base.as_deref().unwrap_or("HEAD")),
+                Scope::Branch => {
+                    repo.branch_changes(merge_base.as_deref().unwrap_or("HEAD"), show_untracked)
+                }
             };
             if let Ok(entries) = entries
                 && tx.send(Event::Refresh(entries)).is_err()
