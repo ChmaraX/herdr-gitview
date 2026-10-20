@@ -921,7 +921,7 @@ impl App {
             Scope::Worktree => self.repo.worktree_status(self.cfg.show_untracked),
             Scope::Branch => {
                 let mb = self.merge_base.as_deref().unwrap_or("HEAD");
-                self.repo.branch_changes(mb)
+                self.repo.branch_changes(mb, self.cfg.show_untracked)
             }
         }
     }

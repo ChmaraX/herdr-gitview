@@ -159,7 +159,7 @@ fn branch_scope_changes_vs_main() {
     assert_eq!(t.repo.head_branch().as_deref(), Some("feature"));
     assert_eq!(t.repo.detect_base(), "main");
     let mb = t.repo.merge_base("main").unwrap();
-    let entries = t.repo.branch_changes(&mb).unwrap();
+    let entries = t.repo.branch_changes(&mb, true).unwrap();
 
     assert_eq!(entries.len(), 2);
     let by_path = |p: &str| entries.iter().find(|e| e.path == *p).unwrap();
@@ -169,6 +169,51 @@ fn branch_scope_changes_vs_main() {
     let base = by_path("base.txt");
     assert_eq!(base.kind, ChangeKind::Modified);
     assert_eq!((base.adds, base.dels), (Some(1), Some(0))); // appended one line
+}
+
+/// Branch scope is documented as merge-base -> working tree, including
+/// uncommitted changes, so an untracked file must show up too — `git diff
+/// <rev>` alone never lists one.
+#[test]
+fn branch_scope_includes_untracked_file() {
+    let t = fixture("branch-untracked");
+    git(&t.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&t.dir, "feat.txt", "f1\nf2\n");
+    git(&t.dir, &["add", "."]);
+    git(&t.dir, &["commit", "-q", "-m", "feat 1"]);
+    // modified tracked file, uncommitted
+    write(&t.dir, "base.txt", "one\ntwo\nchanged\n");
+    // untracked new file, uncommitted
+    write(&t.dir, "loose.txt", "u1\nu2\nu3\n");
+    // ignored file, must never show up
+    write(&t.dir, ".gitignore", "ignored.log\n");
+    write(&t.dir, "ignored.log", "noise\n");
+
+    let mb = t.repo.merge_base("main").unwrap();
+
+    let entries = t.repo.branch_changes(&mb, true).unwrap();
+    let paths: Vec<_> = entries
+        .iter()
+        .map(|e| e.path.to_string_lossy().to_string())
+        .collect();
+    assert!(paths.contains(&"feat.txt".to_string()));
+    assert!(paths.contains(&"base.txt".to_string()));
+    assert!(paths.contains(&"loose.txt".to_string()));
+    assert!(!paths.contains(&"ignored.log".to_string()));
+
+    let loose = entries
+        .iter()
+        .find(|e| e.path == Path::new("loose.txt"))
+        .unwrap();
+    assert_eq!(loose.kind, ChangeKind::Untracked);
+    assert_eq!(loose.stage, StageState::NA);
+    assert_eq!((loose.adds, loose.dels), (Some(3), Some(0)));
+
+    let hidden = t.repo.branch_changes(&mb, false).unwrap();
+    assert!(
+        !hidden.iter().any(|e| e.path == Path::new("loose.txt")),
+        "show_untracked=false must hide it"
+    );
 }
 
 #[test]
@@ -459,7 +504,7 @@ fn base_is_the_branch_this_one_was_cut_from() {
     let (_, mb) = t.repo.resolve_base("").unwrap();
     let paths: Vec<String> = t
         .repo
-        .branch_changes(&mb)
+        .branch_changes(&mb, true)
         .unwrap()
         .iter()
         .map(|e| e.path.display().to_string())
@@ -568,7 +613,7 @@ fn the_branchs_own_remote_ref_is_not_its_base() {
     let (_, mb) = t.repo.resolve_base("").unwrap();
     let paths: Vec<String> = t
         .repo
-        .branch_changes(&mb)
+        .branch_changes(&mb, true)
         .unwrap()
         .iter()
         .map(|e| e.path.display().to_string())
@@ -656,7 +701,7 @@ fn a_stacked_branch_diffs_against_the_branch_below_it() {
     let (_, mb) = t.repo.resolve_base("").unwrap();
     let paths: Vec<String> = t
         .repo
-        .branch_changes(&mb)
+        .branch_changes(&mb, true)
         .unwrap()
         .iter()
         .map(|e| e.path.display().to_string())
@@ -790,7 +835,7 @@ fn polling_never_rewrites_the_index() {
     t.repo.fingerprint(true);
     let worktree = t.repo.worktree_status(true).unwrap();
     let mb = t.repo.merge_base("main").unwrap();
-    let branch = t.repo.branch_changes(&mb).unwrap();
+    let branch = t.repo.branch_changes(&mb, true).unwrap();
 
     assert_eq!(
         std::fs::read(&index).unwrap(),
