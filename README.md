@@ -13,11 +13,7 @@ syntax-highlighted diff on the other. Press `Enter` and the diff pane
 *becomes* your real nvim - opened at the first changed line. You never leave
 the terminal.
 
-Inspired by [herdr-reviewr](https://github.com/persiyanov/herdr-reviewr),
-rebuilt around a real editor - edit diffs in place with full nvim + LSP
-support, not just view them.
-
-https://github.com/user-attachments/assets/1cfdf22a-fc5a-40e2-af6c-546156d05c3b
+https://github.com/user-attachments/assets/793f2e82-17cc-484f-b7e1-75a32e6ee9de
 
 ## Features
 
