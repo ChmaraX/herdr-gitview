@@ -117,6 +117,23 @@ herdr-gitview list
 
 Editing, commits, history diffs, and notes need the second pane, i.e. herdr.
 
+### Herdr desktop app
+
+For the Herdr desktop app (herdr-app ≥ 0.1.11) gitview is a native mod that
+takes the place of the **Changes** panel, plus keys for a full-height sidebar
+and its own tab. With the app open:
+
+```bash
+herdr-app/install.sh               # builds, installs the mods, adds the keys
+herdr-app/install.sh --uninstall   # the stock Changes panel comes back
+```
+
+`cmd-shift-g` sidebar, `cmd-g` tab, `cmd-alt-shift-g` / `cmd-alt-g` the TUI
+below as terminal panes. It reads the same `config.toml` as the plugin
+(`$XDG_CONFIG_HOME/herdr/plugins/config/chmarax.gitview/`). What it looks
+like and how it's built: [herdr-app/RECIPE.md](herdr-app/RECIPE.md);
+`herdr-app/e2e/run.sh` checks it end to end in a private app.
+
 ## Quick start
 
 1. **Open it.** `cmd+g` in any repo. Changed files on the right, the

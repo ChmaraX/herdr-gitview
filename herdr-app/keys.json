@@ -1,0 +1,8 @@
+{
+  "global": {
+    "cmd-shift-g": "mod.open:gitview-sidebar",
+    "cmd-g": "mod.open:gitview-tab",
+    "cmd-alt-shift-g": "mod.open:gitview-tui-sidebar",
+    "cmd-alt-g": "mod.open:gitview-tui-tab"
+  }
+}
