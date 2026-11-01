@@ -220,6 +220,21 @@ impl Palette {
     }
 }
 
+/// The palette's tints by role, for hosts that paint diffs in their own
+/// theme's colors (the Herdr app's native panel) instead of these.
+pub fn tint_roles(theme: crate::config::Theme) -> [(Rgb, &'static str); 7] {
+    let p = Palette::new(theme);
+    [
+        (p.ins_bg, "ins"),
+        (p.del_bg, "del"),
+        (p.ins_emph_bg, "ins_emph"),
+        (p.del_emph_bg, "del_emph"),
+        (p.gutter, "gutter"),
+        (p.fold_fg, "fold_fg"),
+        (p.fold_bg, "fold"),
+    ]
+}
+
 /// Expand `\t` to spaces using tab stops of `width` columns. ratatui draws to
 /// a cell grid and never interprets tabs, so we expand them before highlight
 /// and diff. Returns the input borrowed unchanged when it contains no tab, so

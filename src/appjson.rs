@@ -10,12 +10,19 @@
 //!
 //! - `status --repo DIR [--scope worktree|branch]`
 //! - `diff --repo DIR --path P --kind K [--orig P] [--cached] [--theme dark|light]
-//!   [--merge-base SHA --base LABEL] [--unfold]`
+//!   [--merge-base SHA --base LABEL] [--unfold]`: rows as the TUI
+//!   renders them; the palette's tints come as roles (`@ins`, `@del`,
+//!   `@ins_emph`, `@del_emph`, `@gutter`, `@fold`, `@fold_fg`) so the panel
+//!   paints them in the app's theme.
+//! - `commit --repo DIR [--all] MESSAGE` (`--all`: stage everything first)
+//! - `sidebar --tab T --mod NAME [--props JSON]`: a mod pane spanning the
+//!   tab's full height on the right, at `view_width_percent`
 //! - `stage|unstage --repo DIR PATH...`
 //! - `discard --repo DIR PATH` (as the file list shows it now)
 //! - `notes NOTES_JSON` (`[{file, start, end, text, snippet}]` → the message)
 //! - `nvim --repo DIR --path P --line N [--tab T] [--shown t1,t2]` (open it
-//!   in an nvim already running there; `{"terminal": null}` when none)
+//!   in herdr-nvim's or an already running nvim; `{"terminal": null}` when
+//!   there is none: `"herdr-nvim"` or the terminal it went to otherwise)
 //! - `send --terminal T [--submit] TEXT` (place in / submit to an agent)
 
 use std::path::{Path, PathBuf};
@@ -73,6 +80,21 @@ fn dispatch(args: &[String]) -> Result<Value> {
                 crate::apphost::open_in_running_nvim(a.value("tab"), &shown, &file, line);
             Ok(json!({ "terminal": terminal }))
         }
+        "commit" => commit(&a),
+        "sidebar" => {
+            let cfg = crate::config::Config::load();
+            let props: Value = match a.value("props") {
+                Some(raw) => serde_json::from_str(raw).context("--props")?,
+                None => Value::Null,
+            };
+            let pane = crate::apphost::open_mod_sidebar(
+                a.value("tab").context("--tab")?,
+                a.value("mod").context("--mod")?,
+                props,
+                cfg.view_width_percent,
+            )?;
+            Ok(json!({ "pane": pane }))
+        }
         "send" => {
             let terminal = a.value("terminal").context("send: --terminal")?;
             let text = a.positional.first().context("send: no text")?;
@@ -91,7 +113,7 @@ struct Args {
 
 impl Args {
     fn parse(args: &[String]) -> Args {
-        const FLAGS: [&str; 3] = ["cached", "submit", "unfold"];
+        const FLAGS: [&str; 4] = ["cached", "submit", "unfold", "all"];
         let mut pairs = Vec::new();
         let mut positional = Vec::new();
         let mut it = args.iter();
@@ -251,6 +273,8 @@ fn diff(a: &Args) -> Result<Value> {
         });
     }
     let doc = crate::preview::worker::load_doc(&repo, &cfg, &req).map_err(anyhow::Error::msg)?;
+    let roles = crate::preview::render::tint_roles(cfg.theme);
+    let hex = |c| hex(c, &roles);
     let mut rows = Vec::new();
     for (i, line) in doc.text.lines.iter().enumerate().take(MAX_ROWS) {
         let marker = doc.marker_text_of_line(i).unwrap_or_default();
@@ -280,10 +304,13 @@ fn diff(a: &Args) -> Result<Value> {
     }))
 }
 
-fn hex(color: Option<ratatui::style::Color>) -> Value {
+fn hex(color: Option<ratatui::style::Color>, roles: &[((u8, u8, u8), &str)]) -> Value {
     use ratatui::style::Color;
     match color {
-        Some(Color::Rgb(r, g, b)) => json!(format!("#{r:02x}{g:02x}{b:02x}")),
+        Some(Color::Rgb(r, g, b)) => match roles.iter().find(|(rgb, _)| *rgb == (r, g, b)) {
+            Some((_, role)) => json!(format!("@{role}")),
+            None => json!(format!("#{r:02x}{g:02x}{b:02x}")),
+        },
         Some(Color::Red) => json!("red"),
         Some(Color::Green) => json!("green"),
         _ => Value::Null,
@@ -317,6 +344,27 @@ fn discard(a: &Args) -> Result<Value> {
         .with_context(|| format!("{} has no changes", path.display()))?;
     repo.discard(&entry)?;
     Ok(json!({ "ok": true }))
+}
+
+fn commit(a: &Args) -> Result<Value> {
+    let repo = a.repo()?;
+    let message = a.positional.first().context("commit: no message")?;
+    let git = |args: &[&str]| -> Result<()> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo.root)
+            .args(args)
+            .output()?;
+        if !out.status.success() {
+            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(())
+    };
+    if a.flag("all") {
+        git(&["add", "-A"])?;
+    }
+    git(&["commit", "-m", message])?;
+    Ok(json!({ "ok": true, "summary": repo.last_commit_summary() }))
 }
 
 #[derive(Deserialize)]

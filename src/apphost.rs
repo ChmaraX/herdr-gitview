@@ -226,15 +226,21 @@ pub fn find_nvim(candidates: Vec<Value>, exclude: &[&str]) -> Option<crate::herd
     None
 }
 
-/// Open `file` at `line` in an nvim already running in `tab` or in one of
-/// the `shown` terminals (layout blocks: an nvim panel such as herdr-nvim's).
-/// Returns that terminal, or `None` when there is none to reuse.
+/// Open `file` at `line` in this tab's nvim: the herdr-nvim mod's when it
+/// takes the request, else an nvim already running in `tab` or in one of the
+/// `shown` terminals (layout blocks). Returns how it went, `None` when there
+/// is no nvim to reuse (the caller starts a plain one).
 pub fn open_in_running_nvim(
     tab: Option<&str>,
     shown: &[String],
     file: &Path,
     line: u32,
 ) -> Option<String> {
+    if let Some(tab) = tab
+        && open_in_herdr_nvim(tab, file, line)
+    {
+        return Some("herdr-nvim".to_string());
+    }
     let mut candidates = Vec::new();
     if let Some(tab) = tab {
         candidates.extend(terminals_with(json!({ "herdr.tab": tab })));
@@ -247,6 +253,37 @@ pub fn open_in_running_nvim(
     );
     let out = crate::nvim::remote("nvim", Some(&nvim.socket), &["--remote-send", &keys])?;
     out.status.success().then_some(nvim.pane_id)
+}
+
+/// The herdr-nvim link-up, in one place. herdr-nvim's contract:
+/// `<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> <file>:<line>`
+/// opens the file in that tab's nvim (starting its pane and daemon when
+/// needed), focuses it, prints `{"terminal":"tN"}` and exits 0; nonzero with
+/// the reason on stderr. No binary there: herdr-nvim isn't installed, and the
+/// caller falls back to plain nvim.
+fn open_in_herdr_nvim(tab: &str, file: &Path, line: u32) -> bool {
+    let home = std::env::var_os("HERDR_APP_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::logx::xdg_dir("XDG_CONFIG_HOME", ".config").join("herdr-app"));
+    let bin = home.join("mods/herdr-nvim/bin/herdr-nvim");
+    if !bin.exists() {
+        return false;
+    }
+    let target = format!("{}:{line}", file.display());
+    let Ok(out) = Command::new(&bin)
+        .args(["open", "--tab", tab, &target])
+        .env_remove("HC_SCOPE") // a scope that isn't ours gets its hc calls ended
+        .output()
+    else {
+        return false;
+    };
+    log(format!(
+        "herdr-nvim open {target} -> {} {}{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout).trim(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    ));
+    out.status.success()
 }
 
 // ---- agents -----------------------------------------------------------------
@@ -371,6 +408,23 @@ pub fn open_popup(
         .to_string();
     app_do("mod.open", json!({ "name": POPUP_MOD }))?;
     Ok(address)
+}
+
+/// Run `herdr-gitview <mode>` in a hidden terminal that outlives ours,
+/// passing our host env and the `keep` variables on.
+pub fn run_detached(mode: &str, keep: &[&str]) -> Result<()> {
+    let exe = std::env::current_exe()?;
+    let mut argv: Vec<String> = vec!["/usr/bin/env".into()];
+    argv.extend(passthrough_env());
+    argv.extend(
+        keep.iter()
+            .filter_map(|k| std::env::var(k).ok().map(|v| format!("{k}={v}"))),
+    );
+    argv.push(exe.display().to_string());
+    argv.push(mode.to_string());
+    let mut args = vec!["run", "--bg", "--no-parent", "--no-notify", "--rm", "--"];
+    args.extend(argv.iter().map(String::as_str));
+    hc_json(&args).map(|_| ())
 }
 
 // ---- views: orchestration primitives ---------------------------------------
@@ -627,6 +681,30 @@ fn wait_for<T>(mut f: impl FnMut() -> Result<T>) -> Result<T> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     Err(last.unwrap())
+}
+
+/// A mod pane (`pane.split {mod}`) split off the tab's root: full height on
+/// the right, `width_percent` of the tab. Returns its pane id.
+pub fn open_mod_sidebar(
+    tab: &str,
+    module: &str,
+    props: Value,
+    width_percent: u8,
+) -> Result<String> {
+    let root = tab_root(tab)?;
+    let mut args = json!({ "direction": "right", "pane": root, "mod": module });
+    if !props.is_null() {
+        args["props"] = props;
+    }
+    let reply = app_do("pane.split", args)?;
+    let pane = reply
+        .get("pane")
+        .and_then(Value::as_str)
+        .context("no pane in pane.split reply")?
+        .to_string();
+    let f = f64::from(width_percent) / 100.0;
+    weigh(&pane, f / (1.0 - f));
+    Ok(pane)
 }
 
 pub fn select_tab(tab: &str) -> Result<()> {

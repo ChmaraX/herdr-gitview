@@ -76,8 +76,9 @@ fn diff_rows_carry_markers_numbers_and_the_tui_colors() {
     assert_eq!(rows[1]["o"], 2);
     assert_eq!(rows[2]["m"], "+2");
     assert_eq!(rows[2]["n"], 2);
-    // The dark palette's deletion tint, as the TUI paints it.
-    assert_eq!(rows[1]["bg"], "#45232f");
+    // The TUI's tints come as roles, for the panel to paint in the app's theme.
+    assert_eq!(rows[1]["bg"], "@del");
+    assert_eq!(rows[2]["bg"], "@ins");
     assert_eq!(diff["first_change"], 2);
 }
 

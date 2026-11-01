@@ -143,6 +143,15 @@ pub fn close() -> Result<()> {
 /// Fire-and-forget `herdr-gitview close`, used by a pane to tear down the
 /// whole view from inside (a pane can't close its own tab and keep running).
 pub fn spawn_close() {
+    if host() == Host::App {
+        // Our terminal ends right after this, and the core ends what runs in
+        // it: the close runs in a hidden terminal of its own instead.
+        if let Err(err) = crate::apphost::run_detached("close", &["GITVIEW_REPO", "GITVIEW_SOCKET"])
+        {
+            log(format!("close: {err}"));
+        }
+        return;
+    }
     if let Ok(exe) = std::env::current_exe() {
         let _ = Command::new(exe).arg("close").spawn();
     }
@@ -421,13 +430,14 @@ fn close_view(repo: &Path, state: &ViewState) -> Result<()> {
     log(format!("closing view (tab {})", state.tab_id));
     if host() == Host::App {
         // Ending a terminal closes its pane (and a tab with no panes left).
-        if state.mode == ViewMode::Tab && crate::apphost::close_tab(&state.tab_id).is_ok() {
+        crate::apphost::kill(&state.list_pane);
+        crate::apphost::kill(&state.preview_pane);
+        if state.mode == ViewMode::Tab {
+            // Gone already when its panes were the last ones in it.
+            let _ = crate::apphost::close_tab(&state.tab_id);
             if let Some(origin) = &state.origin_tab {
                 let _ = crate::apphost::select_tab(origin);
             }
-        } else {
-            crate::apphost::kill(&state.list_pane);
-            crate::apphost::kill(&state.preview_pane);
         }
         cleanup(repo, state);
         return Ok(());
