@@ -37,6 +37,9 @@ pub fn run() -> Result<()> {
     let poll_ms = cfg.poll_ms;
     let root = repo.root.clone();
     let env = HostEnv::from_process();
+    if env.host == crate::hostenv::Host::App {
+        crate::apphost::set_title("gitview: files");
+    }
 
     let mut app = App::new(repo, cfg, keys)?;
     if let Some(err) = keymap_err {

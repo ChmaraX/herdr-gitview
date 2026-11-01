@@ -129,7 +129,19 @@ impl Config {
     }
 }
 
+/// The herdr plugin's config dir; under the Herdr desktop app
+/// `GITVIEW_CONFIG_DIR`, else the TUI plugin's own config dir, so both
+/// versions share one `config.toml`.
 fn config_path() -> Option<PathBuf> {
+    if crate::hostenv::Host::from_process() == crate::hostenv::Host::App {
+        let dir = std::env::var_os("GITVIEW_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                crate::logx::xdg_dir("XDG_CONFIG_HOME", ".config")
+                    .join("herdr/plugins/config/chmarax.gitview")
+            });
+        return Some(dir.join("config.toml"));
+    }
     std::env::var_os("HERDR_PLUGIN_CONFIG_DIR").map(|dir| PathBuf::from(dir).join("config.toml"))
 }
 

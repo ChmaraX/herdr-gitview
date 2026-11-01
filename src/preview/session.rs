@@ -275,7 +275,7 @@ impl Session {
                     self.app.popup_request = Some(app::PopupReq::PickAgent);
                 }
                 app::PopupReq::PickAgent => {
-                    let agents = crate::popup::workspace_agents();
+                    let agents = self.env.agents();
                     if agents.is_empty() {
                         self.app.flash("no agent panes in this workspace");
                     } else {
@@ -405,40 +405,11 @@ impl Session {
     /// Compose the batched notes and type them into the agent pane's input
     /// (submit optionally presses enter). Returns the agent name on success.
     fn deliver_notes(&self, pane: &str, submit: bool) -> Result<String> {
-        let mut msg = String::new();
-        for note in &self.app.notes {
-            // Multi-line notes keep their line breaks, but continuation
-            // lines are indented so the anchor stays readable in the batch.
-            let text = indent_continuations(&note.text);
-            if note.end == 0 {
-                msg.push_str(&format!("{} — {text}\n", note.file.display()));
-            } else {
-                msg.push_str(&format!(
-                    "{}:{}-{} — {text}\n",
-                    note.file.display(),
-                    note.start,
-                    note.end,
-                ));
-            }
-            if !note.snippet.is_empty() {
-                msg.push_str("```diff\n");
-                msg.push_str(&note.snippet);
-                msg.push_str("```\n");
-            }
-        }
-
-        let out = std::process::Command::new(&self.env.herdr_bin)
-            .args(["pane", "send-text", pane, &msg])
-            .output()?;
-        if !out.status.success() {
-            anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-        }
-        if submit {
-            let _ = std::process::Command::new(&self.env.herdr_bin)
-                .args(["pane", "send-keys", pane, "enter"])
-                .output();
-        }
-        let agent = crate::popup::workspace_agents()
+        let msg = notes_message(&self.app.notes);
+        self.env.send_text(pane, &msg, submit)?;
+        let agent = self
+            .env
+            .agents()
             .into_iter()
             .find(|(id, _, _, _, _)| id == pane)
             .map(|(_, name, _, _, _)| name)
@@ -454,6 +425,34 @@ impl Session {
             self.conn = None;
         }
     }
+}
+
+/// The message an agent gets for a batch of review notes: each note's
+/// anchor and text, then the diff lines it was written against.
+pub fn notes_message(notes: &[app::Note]) -> String {
+    let mut msg = String::new();
+    for note in notes {
+        // Multi-line notes keep their line breaks, but continuation
+        // lines are indented so the anchor stays readable in the batch.
+        let text = indent_continuations(&note.text);
+        if note.end == 0 {
+            msg.push_str(&format!("{} — {text}\n", note.file.display()));
+        } else {
+            msg.push_str(&format!(
+                "{}:{}-{} — {text}\n",
+                note.file.display(),
+                note.start,
+                note.end,
+            ));
+        }
+        if !note.snippet.is_empty() {
+            msg.push_str("```diff\n");
+            msg.push_str(&note.snippet);
+            msg.push_str("```\n");
+        }
+    }
+
+    msg
 }
 
 /// Keep a note's line breaks but indent everything after the first line, so

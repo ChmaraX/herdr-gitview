@@ -33,7 +33,9 @@ pub fn run_pick_agent() -> Result<()> {
     let mut terminal = ratatui::init();
     let _term = crate::term::TermGuard::enter(crate::term::Modes {
         mouse: true,
-        ..Default::default()
+        // The desktop app's terminals speak the kitty protocol when asked,
+        // which is what makes shift/ctrl+enter ("send now") distinguishable.
+        key_disambiguation: crate::hostenv::Host::from_process() == crate::hostenv::Host::App,
     });
     let answer = loop {
         terminal.draw(|frame| {

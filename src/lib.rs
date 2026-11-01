@@ -1,4 +1,6 @@
 pub mod annotate;
+pub mod apphost;
+pub mod appjson;
 pub mod ask;
 pub mod config;
 pub mod git;

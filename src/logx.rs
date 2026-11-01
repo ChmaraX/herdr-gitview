@@ -45,15 +45,35 @@ fn rotate_if_needed(path: &Path, cap: u64) {
 }
 
 /// Plugin state directory: herdr provides it when we run as a plugin;
-/// standalone runs fall back to ~/.local/state/herdr-gitview.
+/// standalone runs fall back to ~/.local/state/herdr-gitview. Under the
+/// Herdr desktop app (no plugin dirs) it's `GITVIEW_STATE_DIR`, else
+/// `$XDG_STATE_HOME/herdr-gitview/app` — apart from the TUI plugin's views,
+/// whose stale-view sweep only knows herdr's panes.
 pub fn state_dir() -> PathBuf {
+    if crate::hostenv::Host::from_process() == crate::hostenv::Host::App {
+        if let Some(dir) = std::env::var_os("GITVIEW_STATE_DIR") {
+            return PathBuf::from(dir);
+        }
+        return xdg_dir("XDG_STATE_HOME", ".local/state").join("herdr-gitview/app");
+    }
     match std::env::var_os("HERDR_PLUGIN_STATE_DIR") {
         Some(dir) => PathBuf::from(dir),
-        None => std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".local/state/herdr-gitview"),
+        None => home().join(".local/state/herdr-gitview"),
     }
+}
+
+fn home() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+/// `$<var>` when set and absolute, else `~/<fallback>`.
+pub fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home().join(fallback))
 }
 
 /// Restore the terminal before printing a panic, otherwise the message is

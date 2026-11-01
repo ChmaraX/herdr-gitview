@@ -43,6 +43,9 @@ pub fn run() -> Result<()> {
     });
     let repo = resolve_repo()?;
     let env = HostEnv::from_process();
+    if env.host == crate::hostenv::Host::App {
+        crate::apphost::set_title("gitview: diff");
+    }
     let in_herdr = env.in_herdr();
     let mut app = PreviewApp::new(cfg, repo, keys);
 

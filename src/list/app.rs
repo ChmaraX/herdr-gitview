@@ -423,7 +423,7 @@ impl App {
             // needs no link.
             Action::Edit if self.toggle_selected_dir() => {}
             Action::Edit | Action::Commit => {
-                if std::env::var_os("HERDR_PANE_ID").is_none() {
+                if !crate::hostenv::HostEnv::from_process().in_herdr() {
                     self.set_status("editing needs the preview pane (run inside herdr)")
                 } else {
                     self.set_status("preview not connected — press r to reconnect")

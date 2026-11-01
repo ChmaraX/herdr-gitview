@@ -374,6 +374,22 @@ fn sources(req: &ShowReq) -> Result<(Source, Source), String> {
     })
 }
 
+/// Build `req`'s diff in one go (fetch, diff, highlight) — the native app
+/// panel's route (`herdr-gitview json diff`), with no cache or worker.
+pub fn load_doc(repo: &Repo, cfg: &Config, req: &ShowReq) -> Result<render::DiffDoc, String> {
+    let fetched = fetch(repo, req)?;
+    let hl = crate::preview::highlight::Highlighter::new(cfg.theme);
+    Ok(render::build(
+        &req.file,
+        &fetched.old,
+        &fetched.new,
+        &hl,
+        cfg.theme,
+        cfg.context_lines,
+        cfg.tab_width,
+    ))
+}
+
 /// Read both sides of `req` — every git side in a single `cat-file` call —
 /// stamping each for the cache.
 fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
