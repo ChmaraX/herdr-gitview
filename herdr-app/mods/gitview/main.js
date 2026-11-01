@@ -458,7 +458,7 @@ export default class GitView extends View {
       .child(chrome.header(t, this.status, this.items.filter((i) => i.file).length, this.status ? this.repoNotes().length : 0, this.loading))
       .child(
         wide
-          ? h_flex().flex_1().min_h(0).child(files.w(Math.max(260, this.width * 0.32)).h_full().border_r(1).border_color(t.border)).child(diff)
+          ? h_flex().flex_1().min_h(0).child(files.w(Math.max(260, this.width * 0.32)).h_full().border_r(1).border_color(t.border)).child(diff.h_full())
           : v_flex().flex_1().min_h(0).child(files.h(Math.min(260, Math.max(48, this.items.length * list.ROW + 12))).border_b(1).border_color(t.border)).child(diff),
       )
       .when(Boolean(this.pendingNote), (e) => e.child(chrome.composer(t, this.pendingNote, this.composer)))
