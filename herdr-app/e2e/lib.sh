@@ -3,9 +3,21 @@
 # and the step/assert/screenshot helpers. Source it with the artifacts dir
 # as $1; it starts the app.
 #
-# The window only draws while it's visible, so each screenshot raises it for
-# a moment (that takes the keyboard from whatever you're typing in).
+# The person's own app, core, clipboard, keyboard focus and pointer are never
+# touched:
+# - every `hc` call runs with HC_SCOPE (and the other HC_/HERDR_ variables)
+#   unset, against this run's own core session;
+# - the private window is moved on screen once (macOS only draws visible
+#   windows; System Events, needs Accessibility) and never raised;
+#   screenshots are `herdr-app shot` (the app's last frame, no raise);
+# - keys go to the private app's process only (keys.py, CGEventPostToPid);
+# - no Cmd+Q: the app is ended with a signal at the end.
+#
+# The binary: $GITVIEW_BIN, else built once per commit from the repo's
+# committed HEAD in a scratch copy ($GITVIEW_BUILD_DIR, default
+# /tmp/gitview-e2e-build), so a half-edited tree never breaks a run.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+E2E="$REPO/herdr-app/e2e"
 ART="${1:-/tmp/gitview-e2e-$(date +%H%M%S)}"
 mkdir -p "$ART"
 ART="$(cd "$ART" && pwd)"
@@ -14,10 +26,12 @@ LOG="$ART/run.log"
 
 # --- a private instance --------------------------------------------------------
 BASE="$(mktemp -d /tmp/gve.XXXX)"
-unset HC_SOCKET HC_TERMINAL_ID HC_TERMINAL_SOCKET HC_SCOPE
-unset HERDR_ENV HERDR_TAB_ID HERDR_SOCKET_PATH HERDR_BIN_PATH HERDR_WORKSPACE_ID HERDR_PANE_ID
-export HERDR_APP_HOME="$BASE/home" HC_SESSION="gve$$" XDG_STATE_HOME="$BASE/state"
-export XDG_CONFIG_HOME="$BASE/config" XDG_DATA_HOME="$BASE/data" HERDR_APP_NO_SOUND=1 HERDR_TELEMETRY=0
+for v in $(env | grep -oE '^(HERDR_[A-Z_]+|HC_[A-Z_]+)=' | tr -d =); do unset "$v"; done
+[ -z "${HERDR_APP_BIN_E2E:-}" ] || HERDR_APP_BIN="$HERDR_APP_BIN_E2E"
+export HERDR_APP_HOME="$BASE/home" HC_SESSION="gve$(printf %s "${BASE: -4}" | tr A-Z a-z)$$" XDG_STATE_HOME="$BASE/state"
+export XDG_CONFIG_HOME="$BASE/config" XDG_DATA_HOME="$BASE/data" HERDR_APP_NO_SOUND=1 HERDR_TELEMETRY=0 DO_NOT_TRACK=1
+export HERDR_RELEASES_URL=http://127.0.0.1:9 # never update the installed app or core
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 mkdir -p "$HERDR_APP_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 echo '{"frame.welcomed": true, "layout": "main"}' >"$HERDR_APP_HOME/shared.json"
 echo '{"zoom": 1, "theme": "graphite", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
@@ -31,28 +45,46 @@ find_app() {
   done
 }
 APP="$(find_app)"
-export HERDR_APP_BIN="$APP"
 [ -n "$APP" ] || { echo "no herdr-app" >&2; exit 1; }
+export HERDR_APP_BIN="$APP"
+version=$(plutil -extract CFBundleShortVersionString raw "${APP%/MacOS/*}/Info.plist" 2>/dev/null || true)
+echo "{\"last_run\": \"$version\", \"presented\": []}" >"$HERDR_APP_HOME/update-notes.json" # no "Updated" toast
+
+PY=
+for c in python3 /usr/bin/python3 /opt/homebrew/bin/python3 /opt/homebrew/anaconda3/bin/python3; do
+  if "$c" -c 'import Quartz' 2>/dev/null; then PY=$(command -v "$c"); break; fi
+done
+[ -n "$PY" ] || { echo "no python3 with pyobjc (Quartz) for key presses" >&2; exit 1; }
 
 APP_PID=""
 cleanup() {
   set +e
   [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null && wait "$APP_PID" 2>/dev/null
-  for t in $(hc ls --json 2>/dev/null | python3 -c 'import json,sys; print(" ".join(t["address"] for t in json.load(sys.stdin)["terminals"]))' 2>/dev/null); do
+  for t in $(hc ls --json 2>/dev/null | python3 -c 'import json,sys; print(" ".join(t["address"] for t in json.load(sys.stdin)["terminals"] if "/" not in t["address"]))' 2>/dev/null); do
     hc kill "$t" >/dev/null 2>&1
   done
+  hc machine rm fake >/dev/null 2>&1
+  HC_SESSION="${HC_SESSION}r" hc server stop >/dev/null 2>&1
   hc server stop >/dev/null 2>&1
+  # A stopped core's holder keeps running, and any hc call restarts a core:
+  # end this run's own cores and holders (matched by this run's state dir).
+  for p in $(pgrep -f '(hc|herdr-core) (serve|hold)'); do
+    ps eww -o command= -p "$p" 2>/dev/null | grep -q "XDG_STATE_HOME=$BASE/state " && kill "$p"
+  done
   rm -rf "$BASE"
   echo "artifacts: $ART"
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 # --- helpers ---------------------------------------------------------------------
+PASSES=0
 step() { printf '\n== %s\n' "$*" | tee -a "$LOG"; }
-ok() { printf 'PASS %s\n' "$*" | tee -a "$LOG"; }
+ok() { PASSES=$((PASSES + 1)); printf 'PASS %s\n' "$*" | tee -a "$LOG"; }
 fail() {
   printf 'FAIL %s\n' "$*" | tee -a "$LOG"
-  { echo "--- terminals"; terms; echo "--- status"; "$APP" status
+  { echo "--- terminals"; terms; echo "--- status"; "$APP" status; echo "--- mod panes"; mod_panes
+    echo "--- shared"; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({k:v for k,v in d.items() if k.startswith("gitview")}, indent=1)[:4000])' "$HERDR_APP_HOME/shared.json"
     for t in $(terms | awk '{print $1}'); do echo "--- screen $t"; screen "$t" | head -40; done
     echo "--- gitview log"; tail -40 "$XDG_STATE_HOME/herdr-gitview/app/debug.log"; echo "--- app log"; tail -20 "$BASE/app.log"
   } >>"$LOG" 2>&1 || true
@@ -60,6 +92,7 @@ fail() {
   [ -z "${E2E_KEEP:-}" ] || { echo "kept: source $BASE/env.sh" | tee -a "$LOG"; trap - EXIT; }
   exit 1
 }
+passed() { step "all passed: $PASSES checks"; }
 do_() { "$APP" do "$@" >>"$LOG" 2>&1 || fail "herdr-app do $*"; }
 # Poll a condition (a shell snippet) for up to $2 seconds (default 10).
 until_() {
@@ -71,12 +104,15 @@ until_() {
 }
 expect() { until_ "$1" "${3:-10}" && ok "$2" || fail "$2"; }
 screen() { hc read "$1" --lines 0 2>/dev/null; }
+# Keys to the private app's process only (keys.py: keycodes, names, text:).
+keys() { "$PY" "$E2E/keys.py" "$APP_PID" "$@"; }
 # The dummy agent's input line / submitted messages (its own record).
 agent_input() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["input"])' "$BASE/dummy.log.json"; }
 agent_submitted() { python3 -c 'import json,sys; print("\n----\n".join(json.load(open(sys.argv[1]))["submitted"]))' "$BASE/dummy.log.json"; }
 terms() { hc ls --json | python3 -c 'import json,sys; [print(t["address"], t.get("agent",""), t.get("parent") or "-") for t in json.load(sys.stdin)["terminals"]]'; }
 fg_name() { hc get "$1" --json | python3 -c 'import json,sys; print((json.load(sys.stdin).get("foreground") or {}).get("name",""))'; }
 overlay_open() { "$APP" status | python3 -c 'import json,sys; sys.exit(0 if sys.argv[1] in json.load(sys.stdin)["overlays"] else 1)' "$1"; }
+app_status() { "$APP" status | python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
 # Mod panes (the app's `ls` lists terminals only): "<tab> <pane> <mod>" lines.
 mod_panes() {
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"hello","params":{"generation":1}}' \
@@ -90,12 +126,16 @@ for s in doc.get("spaces", []):
     for t in s["tabs"]: walk(t["id"], t["root"])'
 }
 tab_active() { "$APP" ls | python3 -c "import json,sys; d=json.load(sys.stdin); print([t['name'] for s in d['spaces'] for t in s['tabs'] if t['active'] and s['active']][0])"; }
-# The file an nvim terminal shows, asked of nvim itself (its screen in a
-# hidden window can lag), over its server socket.
+tab_id() { "$APP" ls | python3 -c "import json,sys; d=json.load(sys.stdin); print([t['id'] for s in d['spaces'] for t in s['tabs'] if t['active'] and s['active']][0])"; }
+# gitview's shared state (shared.json, saved in the background): a python
+# expression over `s` (the shared dict), e.g. shared 's["gitview.views"]'.
+shared() { python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); v=eval(sys.argv[2]); print(v if isinstance(v,str) else json.dumps(v))' "$HERDR_APP_HOME/shared.json" "$1" 2>/dev/null; }
+# The diff pane's view of a tab: a field of shared gitview.views[<tab>].
+view_of() { shared "s.get('gitview.views',{}).get('$1',{}).get('$2')"; }
+# The file an nvim terminal shows, asked of nvim itself over its socket.
 nvim_buf() {
   local fg sock pid
   fg=$(hc get "$1" --json)
-  # A remote UI (herdr-nvim) names its server; a plain nvim's is its pid's.
   sock=$(python3 -c 'import json,sys; a=json.loads(sys.argv[1])["foreground"]["argv"]; print(a[a.index("--server")+1] if "--server" in a else "")' "$fg")
   if [ -z "$sock" ]; then
     pid=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["foreground"]["pid"])' "$fg")
@@ -107,41 +147,75 @@ nvim_buf() {
   [ -n "$sock" ] && nvim --server "$sock" --remote-expr 'bufname("%")'
 }
 status_has() { "$APP" status | grep -q "$1"; }
-raise() {
-  python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendall(b'{\"raise\": true}\n'); s.recv(64)" \
-    "$HERDR_APP_HOME/herdr-app.sock"
-}
-shot() { # $1 file name; raise, let a frame (and any resize) land, save
-  raise
-  sleep 1.5
+shot() { # $1 file name: the app's last frame (no raise); give it a moment to draw
+  sleep "${2:-0.8}"
   "$APP" shot "$ART/$1.png" >/dev/null && echo "shot $1.png" >>"$LOG"
 }
-# For a program that just started: its terminal gets its real size only once
-# the window lays it out, then it redraws.
-shot_settled() {
-  raise
-  sleep 2
-  shot "$1"
-}
-panel_shows() { # the gitview panel is the shown child of the open panel
-  "$APP" status >/dev/null && python3 - "$HERDR_APP_HOME" "$("$APP" status)" <<'EOF'
+# The node of the shown layout by id, as JSON.
+layout_node() {
+  python3 - "$HERDR_APP_HOME" "$(app_status layout)" "$1" <<'EOF'
 import json, sys
-home = sys.argv[1]
-name = json.loads(sys.argv[2])["layout"]
-def find(n, i):
-    if n.get("id") == i: return n
+home, name, want = sys.argv[1:]
+def find(n):
+    if n.get("id") == want: return n
     for c in n.get("children", []):
-        r = find(c, i)
+        r = find(c)
         if r: return r
-doc = json.load(open(f"{home}/layouts/{name}.json"))
-assert find(doc, "changes")["content"] == {"mod": "gitview", "props": {"replaces": {"mod": "changes"}}}, "changes slot"
+print(json.dumps(find(json.load(open(f"{home}/layouts/{name}.json")))))
 EOF
 }
+panel_slot() { layout_node changes | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["content"], sort_keys=True))'; }
+panel_shows() { [ "$(panel_slot)" = '{"mod": "gitview", "props": {"replaces": {"mod": "changes"}}}' ]; }
+# The side panel's clicks (shown/hidden, the stack's child), as the app
+# keeps them in layouts/.state: "open changes", "hidden files", ...
+panel_state() {
+  python3 - "$HERDR_APP_HOME" "$(app_status layout)" <<'EOF'
+import json, sys
+home, name = sys.argv[1:]
+try:
+    n = json.load(open(f"{home}/layouts/.state/{name}.json")).get("nodes", {})
+except FileNotFoundError:
+    n = {}
+def find(node, i):
+    if node.get("id") == i: return node
+    for c in node.get("children", []):
+        r = find(c, i)
+        if r: return r
+    return {}
+# A click equal to the file's own value isn't kept: the file decides then.
+doc = json.load(open(f"{home}/layouts/{name}.json"))
+hidden = n.get("panel", {}).get("hidden", find(doc, "panel").get("hidden", False))
+active = n.get("panel-body", {}).get("active", find(doc, "panel-body").get("active"))
+print("hidden" if hidden else "open", active)
+EOF
+}
+changes_button() { # exactly what the tab bar's Changes button runs
+  do_ layout.select '{"stack":"panel-body","child":"changes"}'
+  do_ layout.show --id panel
+}
 
+# --- the binary, from committed HEAD ---------------------------------------------
+if [ -z "${GITVIEW_BIN:-}" ]; then
+  sha=$(git -C "$REPO" rev-parse --short HEAD)
+  build="${GITVIEW_BUILD_DIR:-/tmp/gitview-e2e-build}"
+  if [ ! -x "$build/bin-$sha" ]; then
+    echo "building herdr-gitview from HEAD ($sha) in $build" | tee -a "$LOG"
+    rm -rf "$build/src-tree" && mkdir -p "$build/src-tree"
+    git -C "$REPO" archive HEAD | tar -x -C "$build/src-tree"
+    (cd "$build/src-tree" && CARGO_TARGET_DIR="$build/target" cargo build --release --quiet) >>"$LOG" 2>&1 || { echo "build failed" >&2; exit 1; }
+    cp "$build/target/release/herdr-gitview" "$build/bin-$sha"
+  fi
+  export GITVIEW_BIN="$build/bin-$sha"
+fi
 
 # --- start -------------------------------------------------------------------------
-step "private app + core (HERDR_APP_HOME=$HERDR_APP_HOME, HC_SESSION=$HC_SESSION)"
+step "private app + core (HERDR_APP_HOME=$HERDR_APP_HOME, HC_SESSION=$HC_SESSION, binary $GITVIEW_BIN)"
 hc server start >>"$LOG" 2>&1
 "$APP" >"$BASE/app.log" 2>&1 &
 APP_PID=$!
 expect '"$APP" status' "the private app answers" 30
+place_window() {
+  osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to set position of window 1 to {40, 60}" \
+    -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to set size of window 1 to {1280, 820}"
+}
+until_ place_window 15 || echo "note: could not move the window (Accessibility); screenshots may be stale" | tee -a "$LOG"
