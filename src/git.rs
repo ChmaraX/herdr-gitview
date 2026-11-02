@@ -98,6 +98,25 @@ pub fn remote_command(
     cmd
 }
 
+/// What went wrong in a remote call, in one line: hc's own errors come as
+/// JSON (`{"error": {"message", "hint"}}`), the program's as plain text.
+fn remote_error(stderr: &str) -> String {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(stderr.trim()).ok();
+    let message = parsed.as_ref().and_then(|v| {
+        let err = v.get("error")?;
+        let message = err.get("message")?.as_str()?;
+        Some(match err.get("hint").and_then(|h| h.as_str()) {
+            Some(hint) => format!("{message} ({hint})"),
+            None => message.to_string(),
+        })
+    });
+    match message {
+        Some(m) => m,
+        None if stderr.trim().is_empty() => "not a git repository there".to_string(),
+        None => first_line(stderr),
+    }
+}
+
 /// Line counts for untracked files on another machine, in one `hc exec`: a
 /// POSIX `sh` loop printing, per file, its line count or `x` where
 /// [`untracked_stats`] gives none (missing, over 1 MiB, binary).
@@ -197,9 +216,9 @@ impl Repo {
             match &on {
                 None => bail!("{} is not inside a git repository", dir.display()),
                 Some(m) => bail!(
-                    "{} on {m} is not inside a git repository ({})",
+                    "{} on {m}: {}",
                     dir.display(),
-                    first_line(&String::from_utf8_lossy(&out.stderr))
+                    remote_error(&String::from_utf8_lossy(&out.stderr))
                 ),
             }
         }
@@ -1196,6 +1215,33 @@ fn sort_entries(entries: &mut [FileEntry]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_errors_read_hcs_json_or_the_programs_text() {
+        assert_eq!(
+            remote_error(
+                r#"{"error":{"hint":"hc machine add <ssh-target>","kind":"machine_unknown","message":"unknown machine \"x\""}}"#
+            ),
+            "unknown machine \"x\" (hc machine add <ssh-target>)"
+        );
+        assert_eq!(
+            remote_error("fatal: not a git repository (or any parent)\nmore"),
+            "fatal: not a git repository (or any parent)"
+        );
+    }
+
+    #[test]
+    fn remote_stats_read_one_line_per_file() {
+        assert_eq!(
+            parse_remote_stats("3\nx\n0\n", 4),
+            [
+                (Some(3), Some(0)),
+                (None, None),
+                (Some(0), Some(0)),
+                (None, None)
+            ]
+        );
+    }
 
     #[test]
     fn porcelain_ordinary_records() {
