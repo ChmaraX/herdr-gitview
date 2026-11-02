@@ -651,6 +651,7 @@ impl Session {
         let tx = self.tx.clone();
         let repo = crate::git::Repo {
             root: self.app.repo.root.clone(),
+            on: self.app.repo.on.clone(),
         };
         let cfg_base = self.app.cfg.base.clone();
         thread::spawn(move || {

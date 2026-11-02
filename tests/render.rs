@@ -33,9 +33,7 @@ fn entry(path: &str, kind: ChangeKind, stage: StageState, adds: u32, dels: u32) 
 fn app_with(entries: Vec<FileEntry>) -> App {
     let cfg = Config::default();
     let keys = Keymap::build(&HashMap::new()).unwrap();
-    let repo = Repo {
-        root: PathBuf::from("."),
-    };
+    let repo = Repo::local(PathBuf::from("."));
     App::from_entries(repo, cfg, keys, entries)
 }
 

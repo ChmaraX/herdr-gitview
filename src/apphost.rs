@@ -32,9 +32,7 @@ fn app_bin() -> std::ffi::OsString {
     std::env::var_os("GITVIEW_HERDR_APP").unwrap_or_else(|| "herdr-app".into())
 }
 
-pub fn hc_bin() -> std::ffi::OsString {
-    std::env::var_os("GITVIEW_HC").unwrap_or_else(|| "hc".into())
-}
+pub use crate::git::hc_bin;
 
 /// `herdr-app do <command> <json args>`; the reply object, or its error.
 pub fn app_do(command: &str, args: Value) -> Result<Value> {
@@ -232,12 +230,13 @@ pub fn find_nvim(candidates: Vec<Value>, exclude: &[&str]) -> Option<crate::herd
 /// is no nvim to reuse (the caller starts a plain one).
 pub fn open_in_running_nvim(
     tab: Option<&str>,
+    space: Option<&str>,
     shown: &[String],
     file: &Path,
     line: u32,
 ) -> Option<String> {
     if let Some(tab) = tab
-        && open_in_herdr_nvim(tab, file, line)
+        && open_in_herdr_nvim(tab, space, file, line)
     {
         return Some("herdr-nvim".to_string());
     }
@@ -256,12 +255,13 @@ pub fn open_in_running_nvim(
 }
 
 /// The herdr-nvim link-up, in one place. herdr-nvim's contract:
-/// `<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> <file>:<line>`
+/// `<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab <tab id> [--space <id>]
+/// <file>:<line>`
 /// opens the file in that tab's nvim (starting its pane and daemon when
 /// needed), focuses it, prints `{"terminal":"tN"}` and exits 0; nonzero with
 /// the reason on stderr. No binary there: herdr-nvim isn't installed, and the
 /// caller falls back to plain nvim.
-fn open_in_herdr_nvim(tab: &str, file: &Path, line: u32) -> bool {
+pub fn open_in_herdr_nvim(tab: &str, space: Option<&str>, file: &Path, line: u32) -> bool {
     let home = std::env::var_os("HERDR_APP_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::logx::xdg_dir("XDG_CONFIG_HOME", ".config").join("herdr-app"));
@@ -270,8 +270,13 @@ fn open_in_herdr_nvim(tab: &str, file: &Path, line: u32) -> bool {
         return false;
     }
     let target = format!("{}:{line}", file.display());
-    let Ok(out) = Command::new(&bin)
-        .args(["open", "--tab", tab, &target])
+    let mut cmd = Command::new(&bin);
+    cmd.args(["open", "--tab", tab]);
+    if let Some(space) = space.filter(|s| !s.is_empty()) {
+        cmd.args(["--space", space]);
+    }
+    let Ok(out) = cmd
+        .arg(&target)
         .env_remove("HC_SCOPE") // a scope that isn't ours gets its hc calls ended
         .output()
     else {

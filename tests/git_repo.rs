@@ -802,7 +802,7 @@ fn the_file_list_starts_even_when_git_status_cannot_run() {
     let dir = std::env::temp_dir().join(format!("gitview-not-a-repo-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let repo = Repo { root: dir.clone() };
+    let repo = Repo::local(dir.clone());
     let app = herdr_gitview::list::App::new(
         repo,
         herdr_gitview::config::Config::default(),

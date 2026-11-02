@@ -85,14 +85,7 @@ impl World {
         };
 
         let keys = Keymap::build(&HashMap::new()).unwrap();
-        let list_app = list::App::new(
-            Repo {
-                root: repo.dir.clone(),
-            },
-            cfg.clone(),
-            keys,
-        )
-        .unwrap();
+        let list_app = list::App::new(Repo::local(repo.dir.clone()), cfg.clone(), keys).unwrap();
         let (list_tx, list_rx) = mpsc::channel();
         let mut list = list::Session::new(
             list_app,
@@ -104,13 +97,8 @@ impl World {
         list.set_popup_liveness(Duration::ZERO);
 
         let keys = Keymap::build(&HashMap::new()).unwrap();
-        let preview_app = herdr_gitview::preview::PreviewApp::new(
-            cfg,
-            Repo {
-                root: repo.dir.clone(),
-            },
-            keys,
-        );
+        let preview_app =
+            herdr_gitview::preview::PreviewApp::new(cfg, Repo::local(repo.dir.clone()), keys);
         let (preview_tx, preview_rx) = mpsc::channel();
         let mut preview = preview::Session::new(preview_app, env("w:pPREV", None), preview_tx);
         preview.set_popup_liveness(Duration::ZERO);
@@ -1016,7 +1004,7 @@ fn branch_scope_follows_the_merge_base_when_head_moves() {
     list::spawn_poll_thread(
         w.list_tx.clone(),
         w.list.shared_handle(),
-        Repo { root: dir.clone() },
+        Repo::local(dir.clone()),
         20,
     );
     let files = |w: &World| -> Vec<String> {

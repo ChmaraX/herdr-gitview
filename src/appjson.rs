@@ -6,7 +6,10 @@
 //! TUI panes run.
 //!
 //! Every op prints one JSON object on stdout (`{"error": "..."}` and exit 1
-//! on failure). Ops:
+//! on failure). Repo ops take `--on MACHINE` for a repo on another machine
+//! (`hc machine ls`): `--repo` is then a path there, and every git command
+//! and file read runs there through `hc exec --on MACHINE` (`GITVIEW_HC`,
+//! else `hc`); nothing is read here. Ops:
 //!
 //! - `status --repo DIR [--scope worktree|branch]`
 //! - `diff --repo DIR --path P --kind K [--orig P] [--cached] [--theme dark|light]
@@ -69,6 +72,19 @@ fn dispatch(args: &[String]) -> Result<Value> {
             let repo = a.repo()?;
             let file = repo.root.join(a.value("path").context("--path")?);
             let line = a.value("line").and_then(|l| l.parse().ok()).unwrap_or(1);
+            let (tab, space) = (a.value("tab"), a.value("space"));
+            if repo.on.is_some() {
+                // A remote repo's file only exists there: herdr-nvim with the
+                // space (whose machine it is), never an nvim of this machine.
+                let terminal = match (tab, space) {
+                    (Some(tab), Some(space)) => {
+                        crate::apphost::open_in_herdr_nvim(tab, Some(space), &file, line)
+                            .then_some("herdr-nvim")
+                    }
+                    _ => None,
+                };
+                return Ok(json!({ "terminal": terminal }));
+            }
             let shown: Vec<String> = a
                 .value("shown")
                 .map(|s| {
@@ -78,8 +94,7 @@ fn dispatch(args: &[String]) -> Result<Value> {
                         .collect()
                 })
                 .unwrap_or_default();
-            let terminal =
-                crate::apphost::open_in_running_nvim(a.value("tab"), &shown, &file, line);
+            let terminal = crate::apphost::open_in_running_nvim(tab, space, &shown, &file, line);
             Ok(json!({ "terminal": terminal }))
         }
         "commit" => commit(&a),
@@ -140,8 +155,12 @@ impl Args {
         self.pairs.iter().any(|(k, _)| k == key)
     }
 
+    /// `--repo DIR`, on `--on MACHINE` when given.
     fn repo(&self) -> Result<Repo> {
-        Repo::discover(Path::new(self.value("repo").context("--repo")?))
+        Repo::discover_on(
+            Path::new(self.value("repo").context("--repo")?),
+            self.value("on"),
+        )
     }
 }
 
@@ -191,13 +210,9 @@ fn git_editor(repo: &Repo, cfg: &crate::config::Config) -> Option<String> {
     if std::env::var_os("GIT_EDITOR").is_some() {
         return None;
     }
-    let set = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo.root)
-        .args(["config", "--get", "core.editor"])
-        .output()
-        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty());
-    (!set).then(|| cfg.editor.join(" "))
+    repo.config_get("core.editor")
+        .is_none()
+        .then(|| cfg.editor.join(" "))
 }
 
 fn section_json(section: Section, title: &str, files: &[FileEntry]) -> Value {
@@ -351,21 +366,7 @@ fn discard(a: &Args) -> Result<Value> {
 fn commit(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
     let message = a.positional.first().context("commit: no message")?;
-    let git = |args: &[&str]| -> Result<()> {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo.root)
-            .args(args)
-            .output()?;
-        if !out.status.success() {
-            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-        }
-        Ok(())
-    };
-    if a.flag("all") {
-        git(&["add", "-A"])?;
-    }
-    git(&["commit", "-m", message])?;
+    repo.commit(message, a.flag("all"))?;
     Ok(json!({ "ok": true, "summary": repo.last_commit_summary() }))
 }
 

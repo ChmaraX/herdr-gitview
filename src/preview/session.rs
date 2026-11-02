@@ -79,6 +79,7 @@ impl Session {
             tx.clone(),
             Repo {
                 root: app.repo.root.clone(),
+                on: app.repo.on.clone(),
             },
             app.cfg.clone(),
         );
