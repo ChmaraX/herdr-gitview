@@ -126,6 +126,30 @@ export function onScreen(tab) {
   return Boolean(panelState()?.shown);
 }
 
+// Work that render() asks for runs here, in a task of the copy's own (from
+// init), never in a task started from a render: returns kick(), which wakes
+// it. Several kicks before it runs are one.
+export function pump(cx, work) {
+  let wake = null;
+  let pending = false;
+  cx.spawn(async (cx) => {
+    for (;;) {
+      if (!pending) await new Promise((resolve) => (wake = resolve));
+      wake = null;
+      pending = false;
+      try {
+        work(cx);
+      } catch (e) {
+        console.error(`gitview: ${e?.message ?? e}`);
+      }
+    }
+  });
+  return () => {
+    pending = true;
+    if (wake) wake();
+  };
+}
+
 // Take the keyboard and make sure it stays: the app may hand it over a
 // moment later than it draws the focus (a "focus" from pane.go, a click).
 // Checks for a second, stops once held twice or when focus went elsewhere.

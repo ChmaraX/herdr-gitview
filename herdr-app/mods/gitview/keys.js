@@ -60,6 +60,7 @@ export function handleKey(view, e, cx) {
 }
 
 // One `gitview.<command>` (keys.json, a script, the confirm dialog, the app).
+// The same commands reach every gitview list on screen.
 export function runCommand(view, command, cx) {
   if (command === "focus") view.takeKeyboard(cx);
   else if (command === "focus:panel") {
@@ -69,6 +70,17 @@ export function runCommand(view, command, cx) {
     const k = command.slice(4);
     view.key({ key: k.length === 1 ? k.toLowerCase() : k, modifiers: { shift: k.length === 1 && k !== k.toLowerCase() } }, cx);
   } else if (command.startsWith("file:")) view.selectPath(command.slice(5), cx);
+  // The mouse, for scripts: `click:<path>` / `dblclick:<path>` a file row,
+  // `button:<stage|unstage|discard>:<path | folder/ | section:<id>>` a row's button.
+  else if (command.startsWith("click:") || command.startsWith("dblclick:")) {
+    const [what, ...rest] = command.split(":");
+    const row = view.findRow(rest.join(":"));
+    if (row) view.clickRow(row, { click_count: what === "dblclick" ? 2 : 1 }, cx);
+  } else if (command.startsWith("button:")) {
+    const [, op, ...rest] = command.split(":");
+    const row = view.findRow(rest.join(":"));
+    if (row) view.rowAction(op, row, cx);
+  }
   else if (command.startsWith("commit:")) {
     view.commitInput.set_value(command.slice(7));
     view.commit(cx);

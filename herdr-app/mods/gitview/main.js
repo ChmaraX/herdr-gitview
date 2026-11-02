@@ -12,10 +12,10 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, InputState } from "gpui-base";
-import { agents, nextCommand, notify, openOverlay, props, setShared, shared, theme, watchFolder } from "herdr";
+import { agents, focused, nextCommand, notify, openOverlay, panes, props, run, setShared, shared, theme, watchFolder } from "herdr";
 import { gv, location, message, onArgs } from "./engine.js";
 import { diffArgs, entryOf, fileOrder, isDark, listRows, parentDirs, sameFile, viewOf } from "./model.js";
-import { diffPane, notesKey, notesOf, onScreen, removeNotes, setView, takeKeyboard, viewIn } from "./shared.js";
+import { diffPane, notesKey, notesOf, onScreen, pump, removeNotes, setView, takeKeyboard, viewIn } from "./shared.js";
 import { openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
 import * as chrome from "./chrome.js";
@@ -49,16 +49,37 @@ export default class GitList extends View {
     this.seen = { view: 0, dirty: shared("gitview.dirty")?.at ?? 0 };
     this.inflight = 0; // loads running; commands wait for them (see idle())
     this.waiters = [];
+    // What render() notices (another repo or space, the pane changed the
+    // repo) is refreshed from here.
+    this.kick = pump(cx, (cx) => {
+      if (this.context().key !== this.ctx?.key || this.dirty) {
+        this.dirty = false;
+        this.refresh(cx);
+      }
+    });
     this.refresh(cx);
     // Local repos: the folder watch, and every 10 s; remote ones: every 4 s.
     // Only while it's on screen.
     cx.timer.every(4000, (cx) => { if (this.ctx?.on && this.shown()) this.refresh(cx); });
     cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.shown()) this.refresh(cx); });
+    // A message in the footer goes after a few seconds.
+    cx.timer.every(2000, (cx) => {
+      if (this.flashText && Date.now() - this.flashAt > 5000) {
+        this.flashText = null;
+        cx.notify();
+      }
+    });
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
-        await this.idle(); // a command acts on what the one before it loaded
-        runCommand(this, command, cx);
+        try {
+          await this.idle(cx); // a command acts on what the one before it loaded
+          this.followPane(this.tab()); // the pane's J/K, before this draws again
+          runCommand(this, command, cx);
+        } catch (e) {
+          console.error(`gitview: ${command}: ${message(e)}\n${e?.stack ?? ""}`);
+          this.flash(message(e));
+        }
         cx.notify();
       }
     });
@@ -98,8 +119,10 @@ export default class GitList extends View {
     });
   }
 
-  idle() {
-    return this.inflight === 0 ? Promise.resolve() : new Promise((resolve) => this.waiters.push(resolve));
+  // Resolves once no load runs (at most 10 s: a lost task never blocks).
+  idle(cx) {
+    if (this.inflight === 0) return Promise.resolve();
+    return Promise.race([new Promise((resolve) => this.waiters.push(resolve)), cx.sleep(10000)]);
   }
 
   context() {
@@ -117,7 +140,7 @@ export default class GitList extends View {
     const ctx = this.context();
     if (ctx.key !== this.ctx?.key) this.ctx = ctx;
     else this.ctx = { ...this.ctx, tab: ctx.tab, space: ctx.space };
-    if (this.loading) {
+    if (this.loading && Date.now() - this.loadingSince < 30000) {
       this.again = true;
       return;
     }
@@ -128,6 +151,7 @@ export default class GitList extends View {
       return;
     }
     this.loading = true;
+    this.loadingSince = Date.now();
     this.load(cx, async (cx) => {
       try {
         const status = await gv(["status", "--repo", ctx.cwd, "--scope", this.scope, ...onArgs(ctx.on)]);
@@ -259,7 +283,17 @@ export default class GitList extends View {
     this.opening = tab;
     cx.spawn(async (cx) => {
       try {
-        await gv(["sidebar", "--tab", tab, "--mod", "gitview-diff", "--props", JSON.stringify({ tab })]);
+        try {
+          await gv(["sidebar", "--tab", tab, "--mod", "gitview-diff", "--props", JSON.stringify({ tab })]);
+        } catch (e) {
+          // The engine finds the tab's root only in this machine's layout: a
+          // remote space's tab gets the pane right of its focused pane.
+          if (!tab.includes("/")) throw e;
+          const f = focused();
+          const pane = (f?.tab === tab && f.pane) || panes().filter((p) => p.tab === tab).pop()?.pane;
+          if (!pane) throw e;
+          run("pane.split", { direction: "right", pane, mod: "gitview-diff", props: { tab } });
+        }
         this.takeKeyboard(cx); // the new pane took the app's focus; the list keeps the keys
       } catch (e) {
         this.flash(message(e));
@@ -276,6 +310,14 @@ export default class GitList extends View {
       ?? (this.tree() && this.expandTo(path));
     if (row) this.select(row.key, cx);
     else this.flash(`${path} has no changes`);
+  }
+
+  // A row by what a script names: a file path, "folder/", "section:<id>".
+  findRow(what) {
+    const list = this.list();
+    if (what.startsWith("section:")) return list.find((r) => r.kind === "header" && r.section.id === what.slice(8)) ?? null;
+    if (what.endsWith("/")) return list.find((r) => r.kind === "dir" && r.path === what) ?? null;
+    return list.find((r) => r.kind === "file" && r.file.path === what) ?? null;
   }
 
   // Unfold the folders above a file (tree mode); returns its row.
@@ -308,6 +350,7 @@ export default class GitList extends View {
 
   flash(text) {
     this.flashText = text;
+    this.flashAt = Date.now();
   }
 
   // The diff pane moved to another file (J/K there): select it here.
@@ -620,12 +663,15 @@ export default class GitList extends View {
 
   render(cx) {
     const ctx = this.context();
-    if (ctx.key !== this.ctx?.key) this.refresh(cx);
+    if (ctx.key !== this.ctx?.key) this.kick();
     else if (ctx.tab !== this.ctx.tab) this.ctx = { ...this.ctx, tab: ctx.tab, space: ctx.space };
     const dirty = shared("gitview.dirty");
     if (dirty && dirty.at > this.seen.dirty) {
       this.seen.dirty = dirty.at;
-      if (dirty.root === this.status?.root) this.refresh(cx);
+      if (dirty.root === this.status?.root) {
+        this.dirty = true;
+        this.kick();
+      }
     }
     this.followPane(this.tab());
     const t = theme();

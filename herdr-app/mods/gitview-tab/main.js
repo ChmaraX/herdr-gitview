@@ -5,7 +5,7 @@
 // "mod.open:gitview-tab"; draws nothing.
 
 import { View, div } from "gpui-kit";
-import { closeOverlay, focused, notify, props, run, setShared, shared, spaces } from "herdr";
+import { closeOverlay, focused, notify, panes, props, run, setShared, shared, spaces } from "herdr";
 import { gv, location, message } from "./engine.js"; // links to ../gitview (install copies them)
 import { ownTab, setOwnTab } from "./shared.js";
 
@@ -46,9 +46,17 @@ export default class GitviewTab extends View {
         }
         if (!tab) throw new Error("the gitview tab didn't open");
         setOwnTab(space.id, tab);
-        const { pane } = await gv(["sidebar", "--tab", tab, "--mod", "gitview", "--percent", String(LIST_PERCENT),
-          "--props", JSON.stringify({ cwd, on, space: space.id, tab, own: true })]);
-        run("pane.focus", { pane });
+        const listProps = { cwd, on, space: space.id, tab, own: true };
+        try {
+          const { pane } = await gv(["sidebar", "--tab", tab, "--mod", "gitview", "--percent", String(LIST_PERCENT), "--props", JSON.stringify(listProps)]);
+          run("pane.focus", { pane });
+        } catch (e) {
+          // The engine finds tabs only in this machine's layout: in a remote
+          // space, split the diff pane (the tab's only pane) in half.
+          const diff = tab.includes("/") && panes().find((p) => p.tab === tab && p.mod === "gitview-diff");
+          if (!diff) throw e;
+          run("pane.split", { direction: "right", pane: diff.pane, mod: "gitview", props: listProps });
+        }
       } catch (e) {
         notify({ title: "gitview", body: message(e), level: "error" });
       } finally {

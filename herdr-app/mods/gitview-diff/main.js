@@ -15,7 +15,7 @@ import { v_flex, TextareaState } from "gpui-base";
 import { agents, nextCommand, notify, openOverlay, props, run, setShared, settings, spaces, theme, watchFolder } from "herdr";
 import { gv, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile, scopeLabel, viewOf } from "./model.js";
-import { addNote, diffPane, notesKey, notesOf, onScreen, ownTab, removeNotes, setCursor, setView, takeKeyboard, viewIn } from "./shared.js";
+import { addNote, diffPane, notesKey, notesOf, onScreen, ownTab, pump, removeNotes, setCursor, setView, takeKeyboard, viewIn } from "./shared.js";
 import { openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
 import * as diffs from "./diffview.js";
@@ -37,12 +37,33 @@ export default class GitDiff extends View {
     this.dragging = false;
     this.unfold = false;
     this.dark = isDark(theme().background);
+    // What render() notices (a new view, a theme switch) loads from here.
+    this.kick = pump(cx, (cx) => {
+      if (this.retheme) {
+        this.retheme = false;
+        this.reload(cx);
+      }
+      this.sync(cx);
+    });
     cx.timer.every(4000, (cx) => { if (this.view?.on && onScreen(this.tab())) this.reload(cx); });
+    // A message in the footer goes after a few seconds.
+    cx.timer.every(2000, (cx) => {
+      if (this.flashText && Date.now() - this.flashAt > 5000) {
+        this.flashText = null;
+        cx.notify();
+      }
+    });
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
-        await this.idle();
-        this.command(command, cx);
+        try {
+          this.sync(cx); // a view the list just wrote, before this draws again
+          await this.idle(cx);
+          this.command(command, cx);
+        } catch (e) {
+          console.error(`gitview-diff: ${command}: ${message(e)}\n${e?.stack ?? ""}`);
+          this.flash(message(e));
+        }
         cx.notify();
       }
     });
@@ -53,12 +74,21 @@ export default class GitDiff extends View {
     return p.tab ?? (p.space ? ownTab(p.space) : null);
   }
 
-  idle() {
-    return this.loading ? new Promise((resolve) => (this.waiters ??= []).push(resolve)) : Promise.resolve();
+  // Resolves once no load runs (at most 10 s: a lost task never blocks).
+  idle(cx) {
+    if (!this.loading) return Promise.resolve();
+    return Promise.race([new Promise((resolve) => (this.waiters ??= []).push(resolve)), cx.sleep(10000)]);
+  }
+
+  // A load or an action finished: commands waiting for it go on.
+  settled() {
+    this.loading = false;
+    (this.waiters ?? []).splice(0).forEach((resolve) => resolve());
   }
 
   flash(text) {
     this.flashText = text;
+    this.flashAt = Date.now();
   }
 
   // ---- what to show -----------------------------------------------------------
@@ -111,8 +141,7 @@ export default class GitDiff extends View {
           this.flash(message(e));
         }
       } finally {
-        this.loading = false;
-        (this.waiters ?? []).splice(0).forEach((resolve) => resolve());
+        this.settled();
         cx.notify();
       }
     });
@@ -148,8 +177,8 @@ export default class GitDiff extends View {
     if (!v || !tab || !this.diff.rows.length) return;
     const line = this.lineAt(this.cursor);
     const was = this.published;
-    if (was && was.line === line && sameFile(was, v)) return;
-    this.published = { root: v.root, on: v.on, path: v.path, section: v.section, commit: v.commit, line, first: this.diff.first_change ?? 1 };
+    if (was && was.line === line && was.row === this.cursor && sameFile(was, v)) return;
+    this.published = { root: v.root, on: v.on, path: v.path, section: v.section, commit: v.commit, line, row: this.cursor, first: this.diff.first_change ?? 1 };
     setCursor(tab, this.published);
   }
 
@@ -239,13 +268,14 @@ export default class GitDiff extends View {
       } catch (e) {
         notify({ title: "gitview", body: message(e), level: "error" });
       } finally {
-        this.loading = false;
+        this.settled();
         cx.notify();
       }
     });
   }
 
-  close() {
+  // (Not `close`: the app calls that one when the pane goes.)
+  closePane() {
     const pane = diffPane(this.tab());
     if (pane) run("pane.close", { pane: pane.pane });
   }
@@ -343,6 +373,7 @@ export default class GitDiff extends View {
 
   command(command, cx) {
     if (command === "focus") takeKeyboard(this, cx);
+    else if (command === "close") this.closePane(); // the × button, for scripts
     else if (command === "discard") {
       const v = this.pendingDiscard;
       this.pendingDiscard = null;
@@ -351,6 +382,14 @@ export default class GitDiff extends View {
       const k = command.slice(4);
       const one = k.length === 1;
       this.key({ key: one ? k.toLowerCase() : k, modifiers: { shift: one && k !== k.toLowerCase() } }, cx);
+    } else if (command.startsWith("drag:")) {
+      // A mouse drag over new-side lines <a> to <b>, for scripts.
+      const [a, b] = command.slice(5).split(":").map(Number);
+      const row = (n) => this.diff.rows.findIndex((r) => r.n === n);
+      if (row(a) < 0 || row(b) < 0) return this.flash(`no lines ${a}-${b}`);
+      this.down(row(a), { click_count: 1, modifiers: {} }, cx);
+      this.over(row(b), cx);
+      this.up(cx);
     } else if (command.startsWith("note:")) {
       this.annotate();
       if (this.pendingNote) this.saveNote(command.slice(5), cx);
@@ -397,13 +436,19 @@ export default class GitDiff extends View {
 
   // ---- view -----------------------------------------------------------------
 
+  sync(cx) {
+    const view = viewIn(this.tab());
+    if ((view?.seq ?? 0) !== this.seq || (!view && this.view)) this.take(view, cx);
+  }
+
   render(cx) {
     const t = theme();
     const view = viewIn(this.tab());
-    if ((view?.seq ?? 0) !== this.seq || (!view && this.view)) this.take(view, cx);
+    if ((view?.seq ?? 0) !== this.seq || (!view && this.view)) this.kick();
     if (isDark(t.background) !== this.dark) {
       this.dark = isDark(t.background);
-      this.reload(cx);
+      this.retheme = true;
+      this.kick();
     }
     const focused = this.handle.is_focused();
     const key = this.notesKey();
@@ -456,7 +501,7 @@ export default class GitDiff extends View {
         cx.stop_propagation();
         cx.notify();
       })
-      .child(header(t, this.view, { loading: this.loading, notes: notes.length, onClose: props()?.own ? null : () => this.close() }))
+      .child(header(t, this.view, { loading: this.loading, onClose: props()?.own ? null : () => this.closePane() }))
       .child(body)
       .child(footer(t, this.flashText, Boolean(this.pendingNote)));
   }

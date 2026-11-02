@@ -9,7 +9,7 @@ import { LETTER_COLOR } from "./model.js";
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // view: model.js viewOf(); onClose: null hides ×.
-export function header(t, view, { loading, onClose, notes }) {
+export function header(t, view, { loading, onClose }) {
   const parts = (view?.path ?? "").split("/");
   const name = parts.pop();
   return h_flex()
@@ -34,7 +34,6 @@ export function header(t, view, { loading, onClose, notes }) {
         )
         .when(view.add > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi2).child(`+${view.add}`)))
         .when(view.del > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi1).child(`−${view.del}`)))
-        .when(notes > 0, (e) => e.child(div().flex_none().px(6).py(1).rounded(5).bg(t.accent).text_size(10.5).text_color(t.accent_foreground).child(`${notes} note${notes > 1 ? "s" : ""}`)))
         .child(div().flex_none().px(6).py(1).rounded(5).border_1().border_color(t.border).text_size(10.5).text_color(t.muted).child(view.scope)),
     )
     .when(loading, (e) => e.child(div().flex_none().w(10).text_color(t.dim).frames(SPINNER, 90).child(SPINNER[0])))
