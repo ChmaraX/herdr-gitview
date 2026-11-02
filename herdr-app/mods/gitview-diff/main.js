@@ -45,6 +45,9 @@ export default class GitDiff extends View {
       }
       this.sync(cx);
     });
+    // The list's writes are seen on the next draw; this also catches them
+    // while the window doesn't draw (covered): a cheap look, twice a second.
+    cx.timer.every(500, () => this.look());
     cx.timer.every(4000, (cx) => { if (this.view?.on && onScreen(this.tab())) this.reload(cx); });
     // A message in the footer goes after a few seconds.
     cx.timer.every(2000, (cx) => {
@@ -441,15 +444,20 @@ export default class GitDiff extends View {
     if ((view?.seq ?? 0) !== this.seq || (!view && this.view)) this.take(view, cx);
   }
 
-  render(cx) {
-    const t = theme();
+  // Anything new in shared state or the theme: loaded by the pump.
+  look() {
     const view = viewIn(this.tab());
     if ((view?.seq ?? 0) !== this.seq || (!view && this.view)) this.kick();
-    if (isDark(t.background) !== this.dark) {
-      this.dark = isDark(t.background);
+    if (isDark(theme().background) !== this.dark) {
+      this.dark = !this.dark;
       this.retheme = true;
       this.kick();
     }
+  }
+
+  render(cx) {
+    const t = theme();
+    this.look();
     const focused = this.handle.is_focused();
     const key = this.notesKey();
     const all = key ? notesOf(key) : [];

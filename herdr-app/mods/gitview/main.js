@@ -60,6 +60,8 @@ export default class GitList extends View {
     this.refresh(cx);
     // Local repos: the folder watch, and every 10 s; remote ones: every 4 s.
     // Only while it's on screen.
+    // What render() notices, also while the window doesn't draw (covered).
+    cx.timer.every(500, (cx) => { if (this.look()) cx.notify(); });
     cx.timer.every(4000, (cx) => { if (this.ctx?.on && this.shown()) this.refresh(cx); });
     cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.shown()) this.refresh(cx); });
     // A message in the footer goes after a few seconds.
@@ -661,7 +663,9 @@ export default class GitList extends View {
 
   // ---- view -----------------------------------------------------------------
 
-  render(cx) {
+  // Another repo or space, the pane changed the repo or moved (J/K): true
+  // when there's something to draw.
+  look() {
     const ctx = this.context();
     if (ctx.key !== this.ctx?.key) this.kick();
     else if (ctx.tab !== this.ctx.tab) this.ctx = { ...this.ctx, tab: ctx.tab, space: ctx.space };
@@ -673,7 +677,13 @@ export default class GitList extends View {
         this.kick();
       }
     }
+    const seen = this.seen.view;
     this.followPane(this.tab());
+    return this.seen.view !== seen;
+  }
+
+  render(cx) {
+    this.look();
     const t = theme();
     const focused = this.handle.is_focused();
     const notes = this.notes();
