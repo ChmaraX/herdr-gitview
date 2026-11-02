@@ -6,70 +6,48 @@
 #   herdr-app/install.sh --uninstall  undo all of it (the stock Changes panel
 #                                     comes back)
 #
-# The Herdr app must be running (it clones its layout and checks the mods).
+# The Herdr app must be running for the install (it may clone its layout and
+# checks the mods); the uninstall doesn't need it.
 # What it does, in <app home> ($HERDR_APP_HOME, else ~/.config/herdr-app):
 #   - builds herdr-gitview (cargo build --release; or uses $GITVIEW_BIN) and
 #     copies it to mods/gitview/bin/herdr-gitview
-#   - copies the mods: gitview (the panel), gitview-agents (send notes),
-#     gitview-sidebar / gitview-tab (the full TUI as panes), gitview-popup
+#   - copies every mod folder in herdr-app/mods (the gitview panel, its diff
+#     pane, send notes, the full TUI as panes, the popup)
 #   - writes mods/gitview/config.json: the binary, herdr-app and hc paths
-#   - adds the keys from keys.json (keys.linux.json on Linux) to keys.json's "global" section,
-#     never replacing a key that's already bound to something else
-#   - points the shown layout's `changes` block at the gitview mod, keeping
-#     what it showed in props.replaces (layout_slot.py, the same mechanism as
-#     herdr-nvim's: a shipped layout is cloned once as <name>-mods)
+#   - `herdr-gitview app-setup install`: adds the keys from keys.json
+#     (keys.linux.json on Linux) where they're free, and points the Changes
+#     slot of the person's personal layout at gitview (see src/appsetup.rs:
+#     on one of Herdr's own layouts, the person's copy of it is used, or it
+#     is cloned once as <name>-copy)
 #   - runs `herdr-app check` on each mod
+# The uninstall runs `app-setup uninstall` (our keys and our layout edits
+# only; no layout is deleted or switched) and removes our mod folders.
 #
 # The herdr TUI plugin (herdr-plugin.toml, herdr/) is separate and untouched.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOME_DIR="${HERDR_APP_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr-app}"
-MODS=(gitview gitview-agents gitview-sidebar gitview-tab gitview-tui-sidebar gitview-tui-tab gitview-popup)
 
 say() { printf 'gitview: %s\n' "$*"; }
 die() { printf 'gitview: %s\n' "$*" >&2; exit 1; }
 
 [ -d "$HOME_DIR" ] || die "no Herdr app home at $HOME_DIR (start the app once, or set HERDR_APP_HOME)"
-[ -f "$HOME_DIR/keys.json" ] || die "$HOME_DIR/keys.json is missing (start the app once first)"
 
 case "$(uname -s)" in
   Darwin) KEYS="$ROOT/herdr-app/keys.json" ;;
   *) KEYS="$ROOT/herdr-app/keys.linux.json" ;;
 esac
 
-# Add (or with --uninstall remove) our keys in keys.json's "global" section.
-merge_keys() { # $1 = add | remove
-  python3 - "$1" "$KEYS" "$HOME_DIR/keys.json" <<'EOF'
-import json, os, sys
-mode, ours_path, path = sys.argv[1:]
-ours = json.load(open(ours_path))["global"]
-keys = json.load(open(path))
-glob = keys.setdefault("global", {})
-changed = False
-for key, action in ours.items():
-    have = glob.get(key)
-    if mode == "remove":
-        if have == action:
-            del glob[key]; changed = True
-            print(f"gitview: removed key {key}")
-    elif have is None:
-        glob[key] = action; changed = True
-        print(f"gitview: bound {key} -> {action}")
-    elif have != action:
-        print(f"gitview: {key} is already bound to {have!r}; not replacing it. "
-              f"Bind {action!r} to a free key in {path} yourself.")
-if changed:
-    tmp = path + ".gitview-tmp"
-    with open(tmp, "w") as f:
-        json.dump(keys, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.replace(tmp, path)
-EOF
-}
+# The mods this checkout ships: every folder in herdr-app/mods.
+MODS=()
+for d in "$ROOT"/herdr-app/mods/*/; do
+  [ -f "$d/mod.json" ] && MODS+=("$(basename "$d")")
+done
+[ "${#MODS[@]}" -gt 0 ] || die "no mods in $ROOT/herdr-app/mods"
 
 # Only ever replace or remove our own folders.
-ours() { [ ! -e "$1" ] || grep -q '"title": "gitview' "$1/mod.json" 2>/dev/null; }
+ours() { [ ! -e "$1" ] || grep -Eq '"title"[[:space:]]*:[[:space:]]*"gitview' "$1/mod.json" 2>/dev/null; }
 
 # --- herdr-app and hc ----------------------------------------------------------
 is_herdr_app() { "$1" --version 2>/dev/null | grep -q '^herdr-app '; }
@@ -89,30 +67,42 @@ find_app_or_die() {
   HERDR_APP_HOME="$HOME_DIR" "$APP_BIN" status >/dev/null 2>&1 || die "start the Herdr app first (HERDR_APP_HOME=$HOME_DIR)"
 }
 
+# --- the binary --------------------------------------------------------------
+build() {
+  if [ -n "${GITVIEW_BIN:-}" ]; then
+    BIN_SRC="$GITVIEW_BIN"
+  else
+    command -v cargo >/dev/null 2>&1 || die "cargo not found (https://rustup.rs), or set GITVIEW_BIN"
+    say "building (cargo build --release)…"
+    (cd "$ROOT" && cargo build --release --quiet)
+    BIN_SRC="$ROOT/target/release/herdr-gitview"
+  fi
+  [ -x "$BIN_SRC" ] || die "no binary at $BIN_SRC"
+}
+
 if [ "${1:-}" = "--uninstall" ]; then
-  find_app_or_die
-  python3 "$ROOT/herdr-app/layout_slot.py" uninstall "$HOME_DIR" changes gitview "$APP_BIN"
   for m in "${MODS[@]}"; do
     ours "$HOME_DIR/mods/$m" || die "$HOME_DIR/mods/$m isn't gitview's; leaving it"
-    rm -rf "${HOME_DIR:?}/mods/$m"
   done
-  merge_keys remove
+  # This checkout's build undoes the setup; without cargo, the installed one.
+  if [ -z "${GITVIEW_BIN:-}" ] && ! command -v cargo >/dev/null 2>&1 \
+    && [ -x "$HOME_DIR/mods/gitview/bin/herdr-gitview" ]; then
+    BIN_SRC="$HOME_DIR/mods/gitview/bin/herdr-gitview"
+  else
+    build
+  fi
+  "$BIN_SRC" app-setup uninstall --home "$HOME_DIR" --keys "$KEYS"
+  # Our folders: the ones this checkout ships, plus gitview mods an older
+  # install left (any mods/gitview* whose mod.json says it's gitview's).
+  for d in "$HOME_DIR"/mods/gitview "$HOME_DIR"/mods/gitview-*; do
+    [ -d "$d" ] || continue
+    if ours "$d"; then rm -rf "${d:?}"; else say "left $d (not gitview's)"; fi
+  done
   say "uninstalled from $HOME_DIR"
   exit 0
 fi
 
-# --- the binary --------------------------------------------------------------
-if [ -n "${GITVIEW_BIN:-}" ]; then
-  BIN_SRC="$GITVIEW_BIN"
-else
-  command -v cargo >/dev/null 2>&1 || die "cargo not found (https://rustup.rs), or set GITVIEW_BIN"
-  say "building (cargo build --release)…"
-  (cd "$ROOT" && cargo build --release --quiet)
-  BIN_SRC="$ROOT/target/release/herdr-gitview"
-fi
-[ -x "$BIN_SRC" ] || die "no binary at $BIN_SRC"
-
-# --- herdr-app and hc ------------------------------------------------------------
+build
 find_app_or_die
 HC_BIN="$(command -v hc 2>/dev/null || true)"
 [ -n "$HC_BIN" ] || HC_BIN="$HOME/.local/bin/hc"
@@ -122,6 +112,8 @@ HC_BIN="$(command -v hc 2>/dev/null || true)"
 mkdir -p "$HOME_DIR/mods"
 for m in "${MODS[@]}"; do
   ours "$HOME_DIR/mods/$m" || die "$HOME_DIR/mods/$m exists and isn't gitview's; not overwriting it"
+done
+for m in "${MODS[@]}"; do
   rm -rf "${HOME_DIR:?}/mods/$m"
   cp -RL "$ROOT/herdr-app/mods/$m" "$HOME_DIR/mods/$m" # -L: shared files are links in the repo
 done
@@ -133,8 +125,9 @@ path, bin_, app, hc = sys.argv[1:]
 json.dump({"bin": bin_, "herdr_app": app, "hc": hc}, open(path, "w"), indent=2)
 EOF
 
-merge_keys add
-python3 "$ROOT/herdr-app/layout_slot.py" install "$HOME_DIR" changes gitview "$APP_BIN"
+# --- keys and layout -----------------------------------------------------------------
+"$HOME_DIR/mods/gitview/bin/herdr-gitview" app-setup install \
+  --home "$HOME_DIR" --app "$APP_BIN" --keys "$KEYS"
 
 for m in "${MODS[@]}"; do
   "$APP_BIN" check "$HOME_DIR/mods/$m" >/dev/null || die "herdr-app check failed for $m"
