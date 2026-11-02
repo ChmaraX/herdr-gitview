@@ -347,6 +347,43 @@ fn status_diff_stage_discard_and_commit_match_with_and_without_on() {
             .is_empty()
     );
 
+    // History, a commit's files and its diff.
+    let log = w.both(&["log"]);
+    let commits = log["commits"].as_array().unwrap();
+    assert_eq!(commits.len(), 4);
+    let sha = commits[0]["sha"].as_str().unwrap().to_string();
+    let mine = w.both(&["log", "--merge-base", &merge_base]);
+    assert_eq!(mine["commits"].as_array().unwrap().len(), 3);
+    let files = w.both(&["commit-files", "--sha", &sha]);
+    assert!(!files["files"].as_array().unwrap().is_empty());
+    w.both(&[
+        "diff",
+        "--path",
+        "dir/deep.txt",
+        "--kind",
+        "added",
+        "--commit",
+        &sha,
+    ]);
+
+    // Folders and many paths.
+    for (path, body) in [
+        ("dir/deep.txt", "changed\n"),
+        ("dir/more.txt", "more\n"),
+        ("base.txt", "x\n"),
+    ] {
+        write(&w.here, path, body.as_bytes());
+        write(&w.remote_real, path, body.as_bytes());
+    }
+    assert_eq!(w.both(&["stage", "dir/"])["count"], 2);
+    assert_eq!(w.both(&["discard", "dir", "base.txt"])["count"], 3);
+    assert!(
+        w.both(&["status"])["sections"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
     // The remote repo really changed, and only through the shim.
     assert!(!w.remote.exists(), "the remote path must not exist here");
     assert_eq!(w.trap_log(), "", "a local git ran");

@@ -20,6 +20,12 @@ pub struct CommitInfo {
     pub author: String,
     pub date: String,
     pub subject: String,
+    /// The author date relative to now (`3 days ago`).
+    pub relative: String,
+    /// The author date, Unix seconds.
+    pub time: i64,
+    /// Branch and tag names pointing at it (`HEAD -> main`, `tag: v1`).
+    pub refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -757,7 +763,7 @@ impl Repo {
         let n = limit.to_string();
         let mut args = vec![
             "log",
-            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00",
+            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00%ar%x00%at%x00%D%x00",
             "--date=short",
             "-n",
             &n,
@@ -767,25 +773,26 @@ impl Repo {
         }
         let raw = self.git(&args)?;
         let text = String::from_utf8_lossy(&raw);
-        let mut fields = text.split('\0');
+        let fields: Vec<&str> = text.split('\0').collect();
         let mut commits = Vec::new();
-        while let (Some(sha), Some(short), Some(author), Some(date), Some(subject)) = (
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-        ) {
-            let sha = sha.trim_start(); // leading \n from the previous record
+        for record in fields.chunks_exact(8) {
+            let sha = record[0].trim_start(); // leading \n from the previous record
             if sha.is_empty() {
                 break;
             }
             commits.push(CommitInfo {
                 sha: sha.to_string(),
-                short: short.to_string(),
-                author: author.to_string(),
-                date: date.to_string(),
-                subject: subject.to_string(),
+                short: record[1].to_string(),
+                author: record[2].to_string(),
+                date: record[3].to_string(),
+                subject: record[4].to_string(),
+                relative: record[5].to_string(),
+                time: record[6].parse().unwrap_or(0),
+                refs: record[7]
+                    .split(", ")
+                    .filter(|r| !r.is_empty())
+                    .map(str::to_string)
+                    .collect(),
             });
         }
         Ok(commits)

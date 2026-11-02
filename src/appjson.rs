@@ -1,34 +1,75 @@
 //! `herdr-gitview json <op>`: gitview's git engine as JSON, for the Herdr
-//! desktop app's native gitview panel (`herdr-app/mods/gitview`). The panel
-//! draws; everything about git — the grouped status, the highlighted diff
-//! with word emphasis and folds, stage/unstage/discard, the base a branch
-//! was cut from, the notes message an agent gets — is the same code the
-//! TUI panes run.
+//! desktop app's native gitview mods (`herdr-app/mods/gitview`, the file
+//! list, and `gitview-diff`, the diff pane). The mods draw; everything about
+//! git — the grouped status, the highlighted diff with word emphasis and
+//! folds, stage/unstage/discard, history, the base a branch was cut from,
+//! the notes message an agent gets — is the same code the TUI panes run.
 //!
-//! Every op prints one JSON object on stdout (`{"error": "..."}` and exit 1
-//! on failure). Repo ops take `--on MACHINE` for a repo on another machine
-//! (`hc machine ls`): `--repo` is then a path there, and every git command
-//! and file read runs there through `hc exec --on MACHINE` (`GITVIEW_HC`,
-//! else `hc`); nothing is read here. Ops:
+//! Every op prints one JSON object on stdout; on failure `{"error": "..."}`
+//! and exit 1.
 //!
-//! - `status --repo DIR [--scope worktree|branch]`
-//! - `diff --repo DIR --path P --kind K [--orig P] [--cached] [--theme dark|light]
-//!   [--merge-base SHA --base LABEL] [--unfold]`: rows as the TUI
-//!   renders them; the palette's tints come as roles (`@ins`, `@del`,
-//!   `@ins_emph`, `@del_emph`, `@gutter`, `@fold`, `@fold_fg`) so the panel
-//!   paints them in the app's theme.
-//! - `commit --repo DIR [--all] MESSAGE` (`--all`: stage everything first)
-//! - `sidebar --tab T --mod NAME [--props JSON]`: a mod pane spanning the
-//!   tab's full height on the right, at `view_width_percent`
-//! - `stage|unstage --repo DIR PATH...`
-//! - `discard --repo DIR PATH` (as the file list shows it now)
-//! - `notes NOTES_JSON` (`[{file, start, end, text, snippet}]` → the message)
-//! - `nvim --repo DIR --path P --line N [--tab T] [--shown t1,t2]` (open it
-//!   in herdr-nvim's or an already running nvim; `{"terminal": null}` when
-//!   there is none: `"herdr-nvim"` or the terminal it went to otherwise)
-//! - `send --terminal T [--submit] TEXT`: place in an agent's input (a
-//!   paste through a framed `terminal.attach`, no clipboard) or, with
-//!   `--submit`, send it (`hc send`)
+//! **Remote repos.** The ops marked *(on)* take `--on MACHINE` (a name from
+//! `hc machine ls`; `--on ""` = here): `--repo` is then a path on that
+//! machine, and every git command and file read runs there through
+//! `hc exec --on MACHINE --cwd DIR [-i] -- …` (`GITVIEW_HC`, else `hc`).
+//! Nothing of the repo is read on this machine, and the replies have the
+//! same shape as for a local repo.
+//!
+//! **Paths.** `PATH` arguments are relative to the repo's top level. For
+//! stage/unstage/discard a PATH may be a folder: `src`, `src/` or `.` (the
+//! whole repo) means every listed file under it (per path component) in
+//! the section the op acts on; end it in `/` to be sure it's taken as one.
+//!
+//! Ops (exact usage):
+//!
+//! - `status --repo DIR [--scope worktree|branch] [--on M]`
+//!   → `{root, branch, scope, sections: [{id, title, cached, files: [FILE]}],
+//!   editor, git_editor}`; branch scope adds `base: {label, merge_base}` and
+//!   `ahead`, and has one section (`id: "branch"`). Worktree sections:
+//!   `conflicts`, `staged`, `changes` (empty ones left out). FILE is
+//!   `{path, orig, kind, letter, stage, add, del}`.
+//! - `diff --repo DIR --path P --kind K [--orig P] [--cached]
+//!   [--merge-base SHA --base LABEL] [--commit SHA] [--theme dark|light]
+//!   [--unfold] [--on M]` → `{rows: [{k, o, n, m, bg, s}], truncated,
+//!   first_change, empty, binary}`: rows as the TUI renders them; the
+//!   palette's tints come as roles (`@ins`, `@del`, `@ins_emph`,
+//!   `@del_emph`, `@gutter`, `@fold`, `@fold_fg`) so the mod paints them in
+//!   the app's theme. `--cached`: HEAD vs index; `--merge-base`: that commit
+//!   vs the worktree; `--commit`: that commit's own change to the file (vs
+//!   its first parent).
+//! - `stage --repo DIR [--on M] PATH...` / `unstage --repo DIR [--on M]
+//!   PATH...` → `{ok, count}`; a folder stages what "changes" holds under
+//!   it, unstages what "staged changes" holds.
+//! - `discard --repo DIR [--section changes|staged] [--on M] PATH...` →
+//!   `{ok, count}`: throws away each file's changes (index and worktree),
+//!   stopping at the first failure; a folder covers what `--section` holds
+//!   under it (default: both sections). A file without changes is an error.
+//! - `commit --repo DIR [--all] [--on M] MESSAGE` → `{ok, summary}` (`--all`:
+//!   `git add -A` first; `summary`: `<short sha> <subject>`).
+//! - `log --repo DIR [--merge-base SHA] [--limit N] [--on M]` →
+//!   `{commits: [{sha, short, subject, author, when, date, time, refs}]}`,
+//!   newest first, at most N (200). `--merge-base`: only `SHA..HEAD`.
+//!   `when`: relative (`3 days ago`); `date`: `YYYY-MM-DD`; `time`: Unix
+//!   seconds; `refs`: decorations (`HEAD -> main`, `origin/main`, `tag: v1`).
+//! - `commit-files --repo DIR --sha SHA [--on M]` → `{files: [FILE]}` (the
+//!   commit vs its first parent; `stage` is `"na"`).
+//! - `nvim --repo DIR --path P --line N [--tab T] [--space S] [--shown
+//!   t1,t2] [--on M]` → `{terminal}`: opens the file at that line in
+//!   herdr-nvim (`<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab T
+//!   [--space S]`, then `terminal` is `"herdr-nvim"`), else in an nvim
+//!   already running in tab T or in one of the `shown` terminals (`terminal`
+//!   is that terminal); `null` when there is none. With `--on`: herdr-nvim
+//!   only (it needs `--tab` and `--space`), never an nvim of this machine.
+//! - `notes NOTES_JSON` (`[{file, start, end, text, snippet}]`) →
+//!   `{message}`: the text an agent gets.
+//! - `send --terminal T [--submit] TEXT` → `{ok}`: place TEXT in the
+//!   terminal's input without pressing Enter (a paste through a framed
+//!   `terminal.attach` over `hc connect`, bracketed when the program asks;
+//!   no clipboard) or, with `--submit`, send it (`hc send`, which presses
+//!   Enter).
+//! - `sidebar --tab T --mod NAME [--props JSON] [--percent N]` → `{pane}`: a
+//!   mod pane spanning the tab's full height at its right edge, N percent of
+//!   the tab wide (default: `view_width_percent`).
 
 use std::path::{Path, PathBuf};
 
@@ -42,6 +83,9 @@ use crate::list::rows::Section;
 
 /// Diff lines sent to the panel at most; longer diffs end in a note.
 const MAX_ROWS: usize = 5000;
+
+/// Commits `log` lists by default (as the TUI's history view).
+const LOG_LIMIT: usize = 200;
 
 pub fn run(args: &[String]) -> Result<()> {
     let result = dispatch(args);
@@ -65,6 +109,8 @@ fn dispatch(args: &[String]) -> Result<Value> {
         "diff" => diff(&a),
         "stage" | "unstage" => stage(&a, op == "stage"),
         "discard" => discard(&a),
+        "log" => log(&a),
+        "commit-files" => commit_files(&a),
         "notes" => {
             Ok(json!({ "message": notes(a.positional.first().context("notes: no JSON")?)? }))
         }
@@ -108,7 +154,10 @@ fn dispatch(args: &[String]) -> Result<Value> {
                 a.value("tab").context("--tab")?,
                 a.value("mod").context("--mod")?,
                 props,
-                cfg.view_width_percent,
+                match a.value("percent") {
+                    Some(n) => n.parse::<u8>().context("--percent")?.clamp(5, 95),
+                    None => cfg.view_width_percent,
+                },
             )?;
             Ok(json!({ "pane": pane }))
         }
@@ -225,19 +274,22 @@ fn section_json(section: Section, title: &str, files: &[FileEntry]) -> Value {
     let files: Vec<Value> = files
         .iter()
         .filter(|f| section.holds(f))
-        .map(|f| {
-            json!({
-                "path": f.path,
-                "orig": f.orig_path,
-                "kind": f.kind,
-                "letter": letter(f.kind),
-                "stage": stage_name(f.stage),
-                "add": f.adds,
-                "del": f.dels,
-            })
-        })
+        .map(file_json)
         .collect();
     json!({ "id": id, "title": title, "cached": section.cached(), "files": files })
+}
+
+/// One file of a list, as `status` and `commit-files` give it.
+fn file_json(f: &FileEntry) -> Value {
+    json!({
+        "path": f.path,
+        "orig": f.orig_path,
+        "kind": f.kind,
+        "letter": letter(f.kind),
+        "stage": stage_name(f.stage),
+        "add": f.adds,
+        "del": f.dels,
+    })
 }
 
 fn letter(kind: ChangeKind) -> &'static str {
@@ -282,6 +334,7 @@ fn diff(a: &Args) -> Result<Value> {
         a.flag("cached"),
         kind,
     );
+    req.commit = a.value("commit").map(str::to_string);
     if let (Some(merge_base), Some(label)) = (a.value("merge-base"), a.value("base")) {
         req.scope = Scope::Branch;
         req.base = Some(BranchBase {
@@ -336,31 +389,152 @@ fn hex(color: Option<ratatui::style::Color>, roles: &[((u8, u8, u8), &str)]) -> 
 
 // ---- actions ------------------------------------------------------------------
 
-fn stage(a: &Args, on: bool) -> Result<Value> {
-    let repo = a.repo()?;
-    let paths: Vec<PathBuf> = a.positional.iter().map(PathBuf::from).collect();
-    if paths.is_empty() {
-        bail!("no paths");
-    }
-    if on {
-        repo.stage_many(&paths)?;
-    } else {
-        repo.unstage_many(&paths)?;
-    }
-    Ok(json!({ "ok": true }))
+/// What one PATH argument of stage/unstage/discard names.
+#[derive(Debug, PartialEq)]
+enum Named<'a> {
+    /// A changed file (its status entry).
+    File(&'a FileEntry),
+    /// A folder (`src`, `src/`, `.`): the entries under it in the section.
+    Folder(Vec<&'a FileEntry>),
+    /// Neither: passed to git as given.
+    Other,
 }
 
+/// Resolve `raw` against the status `entries`: an exact path is that file;
+/// a path ending in `/`, `.` (the whole repo), or the parent of changed files
+/// is a folder, holding the entries under it that `holds` accepts. The match
+/// is per path component (`src` never reaches `src-old/`).
+fn name<'a>(entries: &'a [FileEntry], raw: &str, holds: impl Fn(&FileEntry) -> bool) -> Named<'a> {
+    let raw = raw.strip_prefix("./").unwrap_or(raw);
+    let trimmed = raw.trim_end_matches('/');
+    let whole = trimmed.is_empty() || trimmed == ".";
+    let folder_syntax = whole || raw.ends_with('/');
+    if !folder_syntax && let Some(e) = entries.iter().find(|e| e.path == Path::new(raw)) {
+        return Named::File(e);
+    }
+    let prefix = if whole {
+        String::new()
+    } else {
+        format!("{trimmed}/")
+    };
+    let under: Vec<&FileEntry> = entries
+        .iter()
+        .filter(|e| e.path.to_string_lossy().starts_with(&prefix) && holds(e))
+        .collect();
+    if folder_syntax || !under.is_empty() {
+        Named::Folder(under)
+    } else {
+        Named::Other
+    }
+}
+
+fn stage(a: &Args, on: bool) -> Result<Value> {
+    let repo = a.repo()?;
+    if a.positional.is_empty() {
+        bail!("no paths");
+    }
+    let cfg = crate::config::Config::load();
+    let entries = repo.worktree_status(cfg.show_untracked)?;
+    // A folder stages what "changes" holds under it, unstages what "staged
+    // changes" holds: as `s`/`u` on a folder row in the TUI.
+    let section = if on {
+        Section::Changes
+    } else {
+        Section::Staged
+    };
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for raw in &a.positional {
+        match name(&entries, raw, |e| section.holds(e)) {
+            Named::Folder(under) => paths.extend(under.iter().map(|e| e.path.clone())),
+            Named::File(e) => paths.push(e.path.clone()),
+            Named::Other => paths.push(PathBuf::from(raw)),
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|p| seen.insert(p.clone()));
+    if !paths.is_empty() {
+        if on {
+            repo.stage_many(&paths)?;
+        } else {
+            repo.unstage_many(&paths)?;
+        }
+    }
+    Ok(json!({ "ok": true, "count": paths.len() }))
+}
+
+/// Throw away every named file's changes (index and worktree), stopping at
+/// the first that fails. `--section changes|staged` limits folders to what
+/// that section holds (default: both).
 fn discard(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
-    let path = PathBuf::from(a.positional.first().context("discard: no path")?);
+    if a.positional.is_empty() {
+        bail!("discard: no path");
+    }
+    let section = match a.value("section") {
+        None => None,
+        Some("changes") => Some(Section::Changes),
+        Some("staged") => Some(Section::Staged),
+        Some(other) => bail!("--section {other}: changes or staged"),
+    };
     let cfg = crate::config::Config::load();
-    let entry = repo
-        .worktree_status(cfg.show_untracked)?
-        .into_iter()
-        .find(|e| e.path == path)
-        .with_context(|| format!("{} has no changes", path.display()))?;
-    repo.discard(&entry)?;
-    Ok(json!({ "ok": true }))
+    let entries = repo.worktree_status(cfg.show_untracked)?;
+    let holds = |e: &FileEntry| match section {
+        Some(s) => s.holds(e),
+        None => Section::Changes.holds(e) || Section::Staged.holds(e),
+    };
+    let mut targets: Vec<&FileEntry> = Vec::new();
+    for raw in &a.positional {
+        match name(&entries, raw, holds) {
+            Named::Folder(under) => targets.extend(under),
+            Named::File(e) => targets.push(e),
+            Named::Other => bail!("{raw} has no changes"),
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    targets.retain(|e| seen.insert(e.path.clone()));
+    for entry in &targets {
+        repo.discard(entry)
+            .with_context(|| format!("discarding {}", entry.path.display()))?;
+    }
+    Ok(json!({ "ok": true, "count": targets.len() }))
+}
+
+// ---- history ------------------------------------------------------------------
+
+/// Newest first; with `--merge-base`, only the commits on top of it.
+fn log(a: &Args) -> Result<Value> {
+    let repo = a.repo()?;
+    let limit = match a.value("limit") {
+        Some(n) => n.parse().context("--limit")?,
+        None => LOG_LIMIT,
+    };
+    let commits = match a.value("merge-base") {
+        Some(mb) => repo.log_branch_commits(mb, limit)?,
+        None => repo.log_commits(limit)?,
+    };
+    let commits: Vec<Value> = commits
+        .iter()
+        .map(|c| {
+            json!({
+                "sha": c.sha,
+                "short": c.short,
+                "subject": c.subject,
+                "author": c.author,
+                "when": c.relative,
+                "date": c.date,
+                "time": c.time,
+                "refs": c.refs,
+            })
+        })
+        .collect();
+    Ok(json!({ "commits": commits }))
+}
+
+fn commit_files(a: &Args) -> Result<Value> {
+    let repo = a.repo()?;
+    let sha = a.value("sha").context("commit-files: --sha")?;
+    let files: Vec<Value> = repo.commit_files(sha)?.iter().map(file_json).collect();
+    Ok(json!({ "files": files }))
 }
 
 fn commit(a: &Args) -> Result<Value> {
@@ -398,4 +572,64 @@ fn notes(raw: &str) -> Result<String> {
         })
         .collect();
     Ok(crate::preview::session::notes_message(&notes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str, stage: StageState) -> FileEntry {
+        FileEntry {
+            path: path.into(),
+            orig_path: None,
+            kind: ChangeKind::Modified,
+            stage,
+            adds: None,
+            dels: None,
+        }
+    }
+
+    fn paths(named: Named) -> Vec<String> {
+        match named {
+            Named::Folder(under) => under.iter().map(|e| e.path.display().to_string()).collect(),
+            other => panic!("not a folder: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_path_names_a_file_a_folder_or_neither() {
+        let entries = [
+            entry("src/a.rs", StageState::Unstaged),
+            entry("src/deep/b.rs", StageState::Staged),
+            entry("src-old/c.rs", StageState::Unstaged),
+            entry("top.rs", StageState::Partial),
+        ];
+        let any = |_: &FileEntry| true;
+        assert_eq!(name(&entries, "top.rs", any), Named::File(&entries[3]));
+        assert_eq!(name(&entries, "./top.rs", any), Named::File(&entries[3]));
+        // Per component: `src` never reaches `src-old/`.
+        assert_eq!(
+            paths(name(&entries, "src", any)),
+            ["src/a.rs", "src/deep/b.rs"]
+        );
+        assert_eq!(
+            paths(name(&entries, "src/", any)),
+            ["src/a.rs", "src/deep/b.rs"]
+        );
+        assert_eq!(paths(name(&entries, ".", any)).len(), 4);
+        // Only what the section holds.
+        let staged = |e: &FileEntry| Section::Staged.holds(e);
+        assert_eq!(paths(name(&entries, "src", staged)), ["src/deep/b.rs"]);
+        assert_eq!(
+            paths(name(&entries, ".", staged)),
+            ["src/deep/b.rs", "top.rs"]
+        );
+        // A folder with nothing in the section is still a folder, so git
+        // never gets it (it would stage hidden untracked files).
+        assert_eq!(
+            paths(name(&entries, "src-old/", staged)),
+            Vec::<String>::new()
+        );
+        assert_eq!(name(&entries, "clean.rs", any), Named::Other);
+    }
 }
