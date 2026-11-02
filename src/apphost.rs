@@ -32,7 +32,7 @@ fn app_bin() -> std::ffi::OsString {
     std::env::var_os("GITVIEW_HERDR_APP").unwrap_or_else(|| "herdr-app".into())
 }
 
-fn hc_bin() -> std::ffi::OsString {
+pub fn hc_bin() -> std::ffi::OsString {
     std::env::var_os("GITVIEW_HC").unwrap_or_else(|| "hc".into())
 }
 
@@ -324,46 +324,15 @@ pub fn space_agents(own: Option<&str>) -> Vec<crate::popup::AgentRow> {
 
 /// Deliver review notes to an agent terminal. `submit`: `hc send` (paste +
 /// enter, once the person pauses typing). Otherwise the notes are *placed*
-/// in its input without enter: the core has no "type without submitting"
-/// call, so they go through the app's own paste into that terminal, and the
-/// clipboard is restored afterwards.
+/// in its input without enter: pasted through a framed `terminal.attach`
+/// (see [`crate::hcpaste`]), so no clipboard is involved.
 pub fn send_text(terminal: &str, text: &str, submit: bool) -> Result<()> {
     if submit {
         // `send` presses enter itself; trailing newlines would add blank turns.
         hc_json(&["send", terminal, text.trim_end_matches('\n')])?;
         return Ok(());
     }
-    let saved = clipboard_get();
-    clipboard_set(text)?;
-    let placed = app_do("pane.focus", json!({ "terminal": terminal }))
-        .and_then(|_| app_do("terminal.paste", json!({})));
-    // The paste reads the clipboard when it runs; give it a moment.
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    if let Some(old) = saved {
-        let _ = clipboard_set(&old);
-    }
-    placed.map(|_| ())
-}
-
-fn clipboard_get() -> Option<String> {
-    let out = Command::new("pbpaste").output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-fn clipboard_set(text: &str) -> Result<()> {
-    let mut child = Command::new("pbcopy")
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("placing notes needs pbcopy (macOS); shift+enter sends them instead")?;
-    child
-        .stdin
-        .take()
-        .context("pbcopy stdin")?
-        .write_all(text.as_bytes())?;
-    child.wait()?;
-    Ok(())
+    crate::hcpaste::paste(terminal, text)
 }
 
 // ---- popups -----------------------------------------------------------------

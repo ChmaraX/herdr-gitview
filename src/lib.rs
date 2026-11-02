@@ -4,6 +4,7 @@ pub mod appjson;
 pub mod ask;
 pub mod config;
 pub mod git;
+pub mod hcpaste;
 pub mod herdr_cli;
 pub mod hostenv;
 pub mod ipc;

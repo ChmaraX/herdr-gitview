@@ -23,7 +23,9 @@
 //! - `nvim --repo DIR --path P --line N [--tab T] [--shown t1,t2]` (open it
 //!   in herdr-nvim's or an already running nvim; `{"terminal": null}` when
 //!   there is none: `"herdr-nvim"` or the terminal it went to otherwise)
-//! - `send --terminal T [--submit] TEXT` (place in / submit to an agent)
+//! - `send --terminal T [--submit] TEXT`: place in an agent's input (a
+//!   paste through a framed `terminal.attach`, no clipboard) or, with
+//!   `--submit`, send it (`hc send`)
 
 use std::path::{Path, PathBuf};
 
