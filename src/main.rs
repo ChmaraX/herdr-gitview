@@ -14,9 +14,13 @@ fn main() -> anyhow::Result<()> {
             let args: Vec<String> = std::env::args().skip(2).collect();
             herdr_gitview::appjson::run(&args)
         }
+        Some("app-setup") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            herdr_gitview::appsetup::run(&args)
+        }
         Some(other) => {
             anyhow::bail!(
-                "unknown mode: {other} (expected list|preview|toggle|toggle-tab|open|close|ask|annotate|pick-agent|json)"
+                "unknown mode: {other} (expected list|preview|toggle|toggle-tab|open|close|ask|annotate|pick-agent|json|app-setup)"
             )
         }
     }

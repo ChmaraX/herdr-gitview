@@ -70,6 +70,10 @@
 //! - `sidebar --tab T --mod NAME [--props JSON] [--percent N]` → `{pane}`: a
 //!   mod pane spanning the tab's full height at its right edge, N percent of
 //!   the tab wide (default: `view_width_percent`).
+//!
+//! The app install's layout and key setup is `herdr-gitview app-setup
+//! install|uninstall --keys FILE [--home DIR] [--app BIN]` (see
+//! [`crate::appsetup`]).
 
 use std::path::{Path, PathBuf};
 
