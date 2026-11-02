@@ -1,12 +1,14 @@
-// gitview's "send notes to an agent" dialog. Props: { message, count, space, ids }.
-// Lists the agents, this space's first; enter places the notes in the chosen
-// agent's input (you press enter there), shift+enter sends them right away.
-// Then it tells the gitview panel which notes went ("gitview.sent:<ids>").
+// gitview's "send notes to an agent" dialog. Props: { message, count, space,
+// key, ids }. Lists the agents, this space's first; enter places the notes in
+// the chosen agent's input (you press enter there; no clipboard), shift+enter
+// sends them right away. The notes that went out leave the shared notes
+// (`key`: the repo's notes, `ids`: the ones sent).
 
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { agents, closeOverlay, nextCommand, notify, props, run, theme } from "herdr";
-import { gv } from "./engine.js"; // a link to ../gitview/engine.js (install copies it)
+import { agents, closeOverlay, nextCommand, notify, props, theme } from "herdr";
+import { gv } from "./engine.js"; // links to ../gitview (install copies them)
+import { removeNotes } from "./shared.js";
 
 export default class SendNotes extends View {
   init(_props, cx) {
@@ -43,11 +45,11 @@ export default class SendNotes extends View {
   choose(agent, submit, cx) {
     if (!agent || this.busy) return;
     this.busy = true;
-    const { message, overlay, ids } = props();
+    const { message, overlay, ids, key } = props();
     cx.spawn(async (cx) => {
       try {
         await gv(["send", "--terminal", agent.address, ...(submit ? ["--submit"] : []), message]);
-        run(`gitview.sent:${ids ?? ""}`);
+        if (key && ids?.length) removeNotes(key, ids);
         notify({ title: "gitview", body: `notes ${submit ? "sent" : "placed"}: ${agent.program?.name ?? agent.app ?? agent.address}`, level: "success" });
         closeOverlay(overlay);
       } catch (e) {

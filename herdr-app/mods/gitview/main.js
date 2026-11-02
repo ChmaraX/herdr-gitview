@@ -1,75 +1,59 @@
-// gitview for the Herdr app: the shown space's changed files and the selected
-// file's diff, drawn natively, with herdr-gitview (the TUI's own engine) doing
-// the git. It takes the place of the stock Changes panel (install.sh points the
-// layout's `changes` block here); the gitview-sidebar and gitview-tab keys open
-// it as a pane or a tab of its own, with props { cwd } fixing its repo.
+// gitview for the Herdr app: the file list. It takes the place of the stock
+// Changes panel (the layout's `changes` slot; it follows the shown space),
+// and is the right half of cmd-g's gitview tab (props {cwd, on, space, tab,
+// own}). Clicking a file (or j/k onto it) shows its diff in the tab's diff
+// pane (mod gitview-diff), full height left of the panel, opened on first
+// use; Enter opens nvim. The two talk only through shared state (shared.js).
 //
-// Keys (click the panel first): j/k move · enter edit in nvim · s stage ·
-// u unstage · x discard · c write the commit message · w worktree/branch · tab to the diff and
-// back · in the diff: j/k line · v select · a note · p send notes · esc back.
-// The same keys as commands, for keys.json or scripts: `gitview.key:<key>`
-// (e.g. `herdr-app do gitview.key:s`), `gitview.file:<path>` selects a file,
-// `gitview.note:<text>` writes a note on the selected lines and
-// `gitview.commit:<message>` commits. They reach every gitview on screen.
+// Views: the changed files (flat or as a tree, `t`), the history (`l`) and
+// a commit's files, the notes (`n`). Herdr-gitview's engine does the git
+// (`herdr-gitview json …`, `--on <machine>` for a remote space).
+// Commands: `gitview.key:<key>`, `gitview.file:<path>`, `gitview.commit:<msg>`.
 
 import { View, div } from "gpui-kit";
-import { h_flex, v_flex, InputState, Scrollbar, TextareaState, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { agents, layout, nextCommand, notify, openOverlay, props, run, settings, theme, watchFolder } from "herdr";
-import { gv, location } from "./engine.js";
+import { v_flex, InputState } from "gpui-base";
+import { agents, nextCommand, notify, openOverlay, props, setShared, shared, theme, watchFolder } from "herdr";
+import { gv, location, message, onArgs } from "./engine.js";
+import { diffArgs, entryOf, fileOrder, isDark, listRows, parentDirs, sameFile, viewOf } from "./model.js";
+import { diffPane, notesKey, notesOf, onScreen, removeNotes, setView, takeKeyboard, viewIn } from "./shared.js";
+import { openNvim } from "./nvim.js";
+import { Scroller } from "./scroller.js";
 import * as chrome from "./chrome.js";
 import { handleKey, runCommand } from "./keys.js";
-import * as list from "./listview.js";
-import * as diffs from "./diffview.js";
+import { renderRow, rowSize } from "./listview.js";
+import { COMMIT_ROW, commitRow } from "./history.js";
+import { NOTE_ROW, noteRow } from "./notesview.js";
 
-const EMPTY_DIFF = { rows: [] };
+// Wide enough for the header's tree / history buttons.
+const WIDE = 340;
 
-// Syntax colors: gitview's dark or light set, by the theme's background.
-function isDark(hex) {
-  const n = parseInt(String(hex).slice(1, 7), 16);
-  if (Number.isNaN(n)) return true;
-  return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255) < 128;
-}
-
-// Wide enough (a tab, a wide sidebar) for the list beside the diff.
-const SIDE_BY_SIDE = 720;
-
-// Terminals shown in the layout's blocks (an nvim panel, say).
-function layoutTerminals(node, out = []) {
-  if (node?.content?.terminal) out.push(node.content.terminal);
-  for (const c of node?.children ?? []) layoutTerminals(c, out);
-  return out;
-}
-
-export default class GitView extends View {
+export default class GitList extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
-    this.listScroll = VirtualListScrollHandle.new();
-    this.diffScroll = VirtualListScrollHandle.new();
-    this.composer = TextareaState.new({ placeholder: "Note for the agent · enter saves · esc cancels", rows: 3 });
-    this.composer.on("submit", (_e, cx) => this.saveNote(cx, this.composer.value()));
-    // The commit message, as in the stock Changes panel: enter commits.
+    this.scroll = new Scroller("gitview-list");
     this.commitInput = InputState.new({ placeholder: "Commit message" });
     this.commitInput.on("change", (_e, cx) => cx.notify());
     this.commitInput.on("submit", (_e, cx) => this.commit(cx));
     this.commitInput.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.commitInput.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.width = 0;
-    this.dark = isDark(theme().background);
-    if (props()?.cwd) this.handle.focus(); // opened as a pane or tab: take the keyboard
-    this.status = null;
-    this.items = [];
-    this.selected = null;
-    this.diff = EMPTY_DIFF;
-    this.cursor = 0;
-    this.anchor = null;
-    this.area = "list";
-    this.notes = {}; // repo root → notes, kept while the panel lives
+    this.mode = "files"; // files | log | commit | notes
     this.scope = "worktree";
-    this.noteSeq = 0;
+    this.status = null;
+    this.rows = [];
+    this.selected = null;
+    this.collapsed = new Set();
+    this.log = { commits: [], selected: 0, filter: false, loading: false };
+    this.commitView = null; // {sha, short, subject, status, rows, selected}
+    this.noteSel = 0;
+    this.seen = { view: 0, dirty: shared("gitview.dirty")?.at ?? 0 };
     this.inflight = 0; // loads running; commands wait for them (see idle())
     this.waiters = [];
     this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    // Local repos: the folder watch, and every 10 s; remote ones: every 4 s.
+    // Only while it's on screen.
+    cx.timer.every(4000, (cx) => { if (this.ctx?.on && this.shown()) this.refresh(cx); });
+    cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.shown()) this.refresh(cx); });
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
@@ -78,16 +62,35 @@ export default class GitView extends View {
         cx.notify();
       }
     });
+    if (this.isPane()) this.takeKeyboard(cx);
+  }
+
+  isPane() {
+    return Boolean(props()?.own || props()?.cwd);
+  }
+
+  shown() {
+    return onScreen(this.isPane() ? props()?.tab : null);
+  }
+
+  // The tab whose diff pane this list drives.
+  tab() {
+    return props()?.tab ?? this.ctx?.tab ?? null;
+  }
+
+  takeKeyboard(cx) {
+    takeKeyboard(this, cx);
   }
 
   // ---- data ---------------------------------------------------------------
 
-  // Runs an async load, counted so commands can wait for it.
   load(cx, work) {
     this.inflight++;
     cx.spawn(async (cx) => {
       try {
         await work(cx);
+      } catch (e) {
+        this.flash(message(e));
       } finally {
         if (--this.inflight === 0) this.waiters.splice(0).forEach((resolve) => resolve());
         cx.notify();
@@ -100,47 +103,53 @@ export default class GitView extends View {
   }
 
   context() {
-    const loc = location();
-    if (props()?.cwd) loc.cwd = props().cwd; // a pane or tab of its own: its repo
-    return { ...loc, key: JSON.stringify([loc.space, loc.cwd, loc.on, this.scope]) };
+    const p = props() ?? {};
+    const loc = this.isPane() ? { cwd: p.cwd ?? null, on: p.on ?? null, space: p.space ?? null, tab: p.tab ?? null } : location(this.ctx);
+    return { ...loc, key: JSON.stringify([loc.cwd, loc.on, this.scope]) };
+  }
+
+  where() {
+    const s = this.status;
+    return { root: s?.root, on: this.ctx?.on ?? null, base: s?.base ?? null, editor: s?.editor ?? null };
   }
 
   refresh(cx) {
     const ctx = this.context();
-    this.shownKey = ctx.key; // another folder may still be the same repo
+    if (ctx.key !== this.ctx?.key) this.ctx = ctx;
+    else this.ctx = { ...this.ctx, tab: ctx.tab, space: ctx.space };
     if (this.loading) {
       this.again = true;
       return;
     }
-    if (!ctx.cwd || ctx.on) {
+    if (!ctx.cwd) {
       this.status = null;
-      this.items = [];
-      this.error = ctx.on ? `gitview runs on this computer; this space is on ${ctx.on}.` : "No folder";
+      this.rows = [];
+      this.error = "No folder";
       return;
     }
     this.loading = true;
     this.load(cx, async (cx) => {
       try {
-        const previous = { key: this.selected, index: this.items.findIndex((i) => i.key === this.selected) };
-        const status = await gv(["status", "--repo", ctx.cwd, "--scope", this.scope]);
-        if (ctx.key !== this.shownKey) return;
+        const status = await gv(["status", "--repo", ctx.cwd, "--scope", this.scope, ...onArgs(ctx.on)]);
+        if (ctx.key !== this.ctx.key) return;
         if (status.root !== this.status?.root || status.scope !== this.status?.scope) {
           this.selected = null;
-          this.diff = EMPTY_DIFF;
-          this.diffKey = null;
-          this.anchor = null;
+          this.collapsed = new Set();
+          if (this.mode !== "files" && status.root !== this.status?.root) this.mode = "files";
         }
+        const previous = { key: this.selected, index: this.rows.findIndex((r) => r.key === this.selected) };
         this.status = status;
         this.error = null;
-        this.items = list.listRows(status);
-        this.watch(status.root, cx);
+        this.rebuild();
+        if (!ctx.on) this.watch(status.root, cx);
         this.keepSelection(previous);
-        await this.loadDiff();
+        this.followSelection();
       } catch (e) {
-        if (ctx.key === this.shownKey) {
+        if (ctx.key === this.ctx.key) {
           this.status = null;
-          this.items = [];
-          this.error = String(e.message ?? e).includes("not inside a git repository") ? "Not a git repository" : String(e.message ?? e);
+          this.rows = [];
+          const m = message(e);
+          this.error = m.includes("not inside a git repository") || m.includes("not a git repository") ? "Not a git repository" : m;
         }
       } finally {
         this.loading = false;
@@ -152,6 +161,15 @@ export default class GitView extends View {
     });
   }
 
+  tree() {
+    return Boolean(shared("gitview.tree"));
+  }
+
+  rebuild() {
+    this.rows = listRows(this.status, { tree: this.tree(), collapsed: this.collapsed });
+    if (this.commitView) this.commitView.rows = listRows(this.commitView.status, { tree: this.tree(), collapsed: this.collapsed });
+  }
+
   // Live refresh while the repo changes (a save, a commit, staging elsewhere).
   watch(root, cx) {
     if (this.watched === root) return;
@@ -160,7 +178,7 @@ export default class GitView extends View {
       try {
         while (this.watched === root) {
           await watchFolder(root);
-          if (this.watched === root) this.refresh(cx);
+          if (this.watched === root && this.shown()) this.refresh(cx);
         }
       } catch {
         this.watched = null;
@@ -171,107 +189,249 @@ export default class GitView extends View {
   // After a refresh: the same row, else the same file in its new section
   // (just staged), else whatever is now where it was.
   keepSelection(previous) {
-    const files = this.items.filter((i) => i.file);
-    if (files.some((i) => i.key === previous.key)) return;
+    const rows = this.rows.filter((r) => r.kind !== "header");
+    if (rows.some((r) => r.key === previous.key)) return;
     const path = previous.key?.slice(previous.key.indexOf(":") + 1);
-    const moved = files.find((i) => i.file.path === path);
-    const near = this.items.slice(Math.max(0, previous.index)).find((i) => i.file) ?? files[files.length - 1];
-    this.selected = (moved ?? near ?? null)?.key ?? null;
+    const moved = rows.find((r) => r.kind === "file" && r.file.path === path);
+    const near = this.rows.slice(Math.max(0, previous.index)).find((r) => r.kind !== "header") ?? rows[rows.length - 1];
+    this.selected = (moved ?? (previous.key ? near : null) ?? null)?.key ?? null;
   }
 
-  item() {
-    return this.items.find((i) => i.key === this.selected) ?? null;
+  // The diff pane shows the selected file: when the selection moved to
+  // another section (staged), the pane follows it.
+  followSelection() {
+    const tab = this.tab();
+    const view = viewIn(tab);
+    const row = this.row();
+    if (!view || !row || row.kind !== "file" || view.root !== this.status?.root || this.mode !== "files") return;
+    const next = viewOf(entryOf(row), this.where());
+    if (view.path === next.path && !sameFile(view, next)) this.show(row, { open: false });
   }
 
-  async loadDiff() {
-    const item = this.item();
-    if (!item) {
-      this.diff = EMPTY_DIFF;
-      return;
-    }
-    const { file, section } = item;
-    const args = ["diff", "--repo", this.status.root, "--path", file.path, "--kind", file.kind, "--theme", this.dark ? "dark" : "light"];
-    if (file.orig) args.push("--orig", file.orig);
-    if (section.cached) args.push("--cached");
-    if (this.status.base) args.push("--merge-base", this.status.base.merge_base, "--base", this.status.base.label);
-    if (this.unfolded === item.key) args.push("--unfold");
-    const key = item.key;
-    const diff = await gv(args);
-    if (this.selected !== key) return;
-    const same = this.diffKey === key;
-    this.diff = diff;
-    this.diffKey = key;
-    if (!same) {
-      this.anchor = null;
-      const first = diff.rows.findIndex((r) => r.k === "add" || r.k === "del");
-      this.cursor = Math.max(0, first);
-      this.diffScroll.scroll_to_item(this.cursor, "center");
-    }
-    this.cursor = Math.min(this.cursor, Math.max(0, diff.rows.length - 1));
+  // ---- the current list (files, or a commit's files) -----------------------
+
+  list() {
+    return this.mode === "commit" ? this.commitView?.rows ?? [] : this.rows;
   }
 
-  select(key, cx) {
-    if (key === this.selected) return;
-    this.selected = key;
-    this.anchor = null;
-    const index = this.items.findIndex((i) => i.key === key);
-    if (index >= 0) this.listScroll.scroll_to_item(index);
-    this.load(cx, async () => {
-      try { await this.loadDiff(); } catch (e) { this.flash(String(e.message ?? e)); }
+  selKey() {
+    return this.mode === "commit" ? this.commitView?.selected ?? null : this.selected;
+  }
+
+  setSel(key) {
+    if (this.mode === "commit") this.commitView.selected = key;
+    else this.selected = key;
+  }
+
+  row() {
+    return this.list().find((r) => r.key === this.selKey()) ?? null;
+  }
+
+  listWhere() {
+    if (this.mode !== "commit") return this.where();
+    const c = this.commitView;
+    return { root: this.status?.root, on: this.ctx?.on ?? null, commit: c.sha, short: c.short, editor: this.status?.editor ?? null };
+  }
+
+  // Select a row; a file shows in the diff pane (`open`: open the pane
+  // when the tab has none: a click or j/k, not a refresh).
+  select(key, cx, { open = true } = {}) {
+    this.setSel(key);
+    const index = this.list().findIndex((r) => r.key === key);
+    this.reveal(index, { margin: 28 });
+    const row = this.row();
+    if (row?.kind === "file") this.show(row, { open, cx });
+  }
+
+  show(row, { open, cx, line } = {}) {
+    const tab = this.tab();
+    if (!tab) return;
+    const order = fileOrder(this.mode === "commit" ? this.commitView.status : this.status, this.tree());
+    setView(tab, { ...viewOf(entryOf(row), this.listWhere()), by: "list", files: order.slice(0, 2000).map(entryOf), line: line ?? null });
+    this.seen.view = viewIn(tab)?.seq ?? 0;
+    if (open && cx) this.ensurePane(tab, cx);
+  }
+
+  // The tab's diff pane, opened on first use: full height at the tab's
+  // right edge (`json sidebar`), left of this panel.
+  ensurePane(tab, cx) {
+    if (diffPane(tab) || this.opening === tab || this.isPane()) return;
+    this.opening = tab;
+    cx.spawn(async (cx) => {
+      try {
+        await gv(["sidebar", "--tab", tab, "--mod", "gitview-diff", "--props", JSON.stringify({ tab })]);
+        this.takeKeyboard(cx); // the new pane took the app's focus; the list keeps the keys
+      } catch (e) {
+        this.flash(message(e));
+      } finally {
+        this.opening = null;
+        cx.notify();
+      }
     });
   }
 
   selectPath(path, cx) {
-    const item = this.items.find((i) => i.file?.path === path);
-    if (item) {
-      this.area = "list";
-      this.select(item.key, cx);
-    }
+    if (this.mode !== "files") this.mode = "files";
+    const row = this.rows.find((r) => r.kind === "file" && r.file.path === path)
+      ?? (this.tree() && this.expandTo(path));
+    if (row) this.select(row.key, cx);
     else this.flash(`${path} has no changes`);
   }
 
+  // Unfold the folders above a file (tree mode); returns its row.
+  expandTo(path, section) {
+    const all = listRows(this.status, { tree: true });
+    const row = all.find((r) => r.kind === "file" && r.file.path === path && (!section || r.section.id === section));
+    if (!row) return null;
+    for (const d of parentDirs(row)) this.collapsed.delete(d);
+    this.rebuild();
+    return this.rows.find((r) => r.key === row.key) ?? null;
+  }
+
   move(delta, cx) {
-    const files = this.items.filter((i) => i.file);
-    if (!files.length) return;
-    const at = files.findIndex((i) => i.key === this.selected);
-    const next = files[Math.min(files.length - 1, Math.max(0, at + delta))];
+    const rows = this.list().filter((r) => r.kind !== "header");
+    if (!rows.length) return;
+    const at = rows.findIndex((r) => r.key === this.selKey());
+    const next = rows[at < 0 ? (delta > 0 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, at + delta))];
     this.select(next.key, cx);
+  }
+
+  edge(last, cx) {
+    const rows = this.list().filter((r) => r.kind !== "header");
+    if (rows.length) this.select(rows[last ? rows.length - 1 : 0].key, cx);
+  }
+
+  // Keep list item i in view (the list starts with 6 px of padding).
+  reveal(i, how) {
+    if (i >= 0) this.scroll.reveal(i + 1, how);
   }
 
   flash(text) {
     this.flashText = text;
   }
 
+  // The diff pane moved to another file (J/K there): select it here.
+  followPane(tab) {
+    const view = viewIn(tab);
+    if (!view || view.seq <= this.seen.view) return;
+    this.seen.view = view.seq;
+    if (view.by !== "pane" || view.root !== this.status?.root) return;
+    if (view.commit && this.mode === "commit" && this.commitView?.sha === view.commit) {
+      const row = this.commitView.rows.find((r) => r.kind === "file" && r.file.path === view.path);
+      if (row) { this.commitView.selected = row.key; this.reveal(this.list().indexOf(row), { margin: 28 }); }
+      return;
+    }
+    if (view.commit || this.mode !== "files") return;
+    let row = this.rows.find((r) => r.kind === "file" && r.file.path === view.path && r.section.id === view.section);
+    if (!row && this.tree()) row = this.expandTo(view.path, view.section);
+    if (row) {
+      this.selected = row.key;
+      this.reveal(this.rows.indexOf(row), { margin: 28 });
+    }
+  }
+
+  // ---- folders ----------------------------------------------------------------
+
+  toggleTree(cx) {
+    setShared("gitview.tree", !this.tree());
+    this.collapsed = new Set();
+    this.rebuild();
+    if (!this.row()) {
+      // A folder row selected in tree mode: the first file under it.
+      const key = this.selKey();
+      const path = key?.startsWith("d:") ? key.slice(key.indexOf(":", 2) + 1) : null;
+      const f = path && this.list().find((r) => r.kind === "file" && r.file.path.startsWith(path));
+      this.setSel(f?.key ?? null);
+    }
+    this.reveal(this.list().findIndex((r) => r.key === this.selKey()), { center: true });
+    cx.notify();
+  }
+
+  // Fold (h, left) or unfold (right) the selected folder; on a file, fold
+  // goes to its folder.
+  fold(close, cx) {
+    const row = this.row();
+    if (!row) return;
+    if (row.kind === "dir") {
+      if (close && row.collapsed && row.depth > 0) return this.toParent(row, cx);
+      if (close) this.collapsed.add(row.key);
+      else this.collapsed.delete(row.key);
+      this.rebuild();
+    } else if (close && this.tree()) this.toParent(row, cx);
+  }
+
+  toParent(row, cx) {
+    const list = this.list();
+    const at = list.indexOf(row);
+    for (let i = at - 1; i >= 0; i--) {
+      if (list[i].kind === "dir" && list[i].depth < row.depth) return this.select(list[i].key, cx);
+    }
+  }
+
   // ---- actions --------------------------------------------------------------
 
-  act(op, args, cx) {
+  enter(cx) {
+    const row = this.row();
+    if (!row) return;
+    if (row.kind === "dir") {
+      if (row.collapsed) this.collapsed.delete(row.key);
+      else this.collapsed.add(row.key);
+      this.rebuild();
+      return;
+    }
+    this.edit(row, cx);
+  }
+
+  // nvim at the cursor the diff pane has on this file, else its first change.
+  edit(row, cx) {
+    if (row.file.kind === "deleted") return this.flash(`${row.file.path} is deleted`);
+    const tab = this.tab();
+    const where = this.listWhere();
+    const ctx = this.ctx;
+    this.load(cx, async () => {
+      const view = viewOf(entryOf(row), where);
+      const cursor = (shared("gitview.cursor") ?? {})[tab];
+      let line = cursor && sameFile(cursor, view) ? cursor.line : null;
+      if (!line) line = (await gv(diffArgs(view, { dark: isDark(theme().background), unfold: false })))?.first_change ?? 1;
+      await openNvim({ root: where.root, on: where.on, path: row.file.path, line, tab, space: ctx?.space, editor: where.editor, own: this.isPane() });
+    });
+  }
+
+  // + − ↺ on a row, a folder or a section (null: the selected row).
+  rowAction(op, row, cx) {
+    row = row ?? this.row();
+    if (!row || !this.status || this.mode !== "files" || this.scope !== "worktree") return;
+    const section = row.section.id;
+    const ok = { stage: ["changes", "conflicts"], unstage: ["staged"], discard: ["changes"] }[op];
+    if (!ok.includes(section)) return this.flash(`can't ${op} in ${row.section.title}`);
+    const paths = row.kind === "header" ? row.section.files.map((f) => f.path) : row.kind === "dir" ? [row.path] : [row.file.path];
+    if (op === "discard") return this.discard(paths, section, row);
+    this.act([op, ...paths], cx);
+  }
+
+  act(args, cx) {
+    const root = this.status.root;
+    const on = this.ctx?.on;
     this.load(cx, async (cx) => {
       try {
-        await gv([op, "--repo", this.status.root, ...args]);
+        await gv([args[0], "--repo", root, ...onArgs(on), ...args.slice(1)]);
       } catch (e) {
-        notify({ title: "gitview", body: String(e.message ?? e), level: "error" });
+        notify({ title: "gitview", body: message(e), level: "error" });
       }
       this.refresh(cx);
     });
   }
 
-  stage(on, cx) {
-    const item = this.item();
-    if (!item || this.scope !== "worktree") return;
-    this.act(on ? "stage" : "unstage", [item.file.path], cx);
-  }
-
-  discard() {
-    const item = this.item();
-    if (!item || this.scope !== "worktree") return;
-    this.pendingDiscard = { root: this.status.root, path: item.file.path };
+  discard(paths, section, row) {
+    this.pendingDiscard = { root: this.status.root, on: this.ctx?.on, paths, section };
+    const what = row.kind === "header" ? `All ${row.section.files.length} changed files` : row.kind === "dir" ? `Everything changed in ${row.path}` : row.file.path;
     openOverlay({
       mod: "confirm",
       kind: "dialog",
       modal: true,
       width: 420,
       height: 190,
-      props: { title: "Discard changes?", detail: `${item.file.path}: this can't be undone.`, command: { name: "gitview.discard" } },
+      props: { title: "Discard changes?", detail: `${what}: this can't be undone.`, command: { name: "gitview.discard" } },
     });
   }
 
@@ -279,33 +439,7 @@ export default class GitView extends View {
     const p = this.pendingDiscard;
     this.pendingDiscard = null;
     if (!p || p.root !== this.status?.root) return;
-    this.act("discard", [p.path], cx);
-  }
-
-  // The configured editor at the cursor's line: an nvim already open in this
-  // tab or in the layout (herdr-nvim's panel) takes the file; else a new pane.
-  edit(cx) {
-    const item = this.item();
-    if (!item || item.file.kind === "deleted") return;
-    const row = this.diff.rows[this.cursor];
-    const line = row?.n ?? this.diff.first_change ?? 1;
-    const root = this.status.root;
-    const { tab } = location();
-    this.load(cx, async () => {
-      try {
-        const shown = layoutTerminals(layout()).join(",");
-        const r = await gv(["nvim", "--repo", root, "--path", item.file.path, "--line", String(line), ...(tab ? ["--tab", tab] : []), "--shown", shown]);
-        if (r.terminal === "herdr-nvim") return; // it focuses its nvim itself
-        if (r.terminal) {
-          run("pane.focus", { terminal: r.terminal });
-          return;
-        }
-        const editor = this.status.editor ?? ["nvim"];
-        run("terminal.open", { argv: [...editor, `+${line}`, `${root}/${item.file.path}`], folder: root, place: "right" });
-      } catch (e) {
-        notify({ title: "gitview", body: String(e.message ?? e), level: "error" });
-      }
-    });
+    this.act(["discard", "--section", p.section, ...p.paths], cx);
   }
 
   // Staged changes, or everything when nothing is staged (as the stock
@@ -315,17 +449,22 @@ export default class GitView extends View {
   }
 
   commit(cx) {
-    const message = this.commitInput.value().trim();
-    if (!message || !this.status || this.scope !== "worktree") return;
+    const text = this.commitInput.value().trim();
+    if (!text || !this.status || this.scope !== "worktree" || this.committing) return;
     const all = !this.staged();
+    this.committing = true;
+    const root = this.status.root;
+    const on = this.ctx?.on;
     this.load(cx, async (cx) => {
       try {
-        const r = await gv(["commit", "--repo", this.status.root, ...(all ? ["--all"] : []), message]);
+        const r = await gv(["commit", "--repo", root, ...onArgs(on), ...(all ? ["--all"] : []), text]);
         this.commitInput.set_value("");
         this.handle.focus();
-        notify({ title: "Committed", body: r.summary ?? message, level: "success" });
+        notify({ title: "Committed", body: r.summary ?? text, level: "success" });
       } catch (e) {
-        notify({ title: "Commit failed", body: String(e.message ?? e), level: "error" });
+        notify({ title: "Commit failed", body: message(e), level: "error" });
+      } finally {
+        this.committing = false;
       }
       this.refresh(cx);
     });
@@ -333,116 +472,177 @@ export default class GitView extends View {
 
   toggleScope(cx) {
     this.scope = this.scope === "worktree" ? "branch" : "worktree";
+    this.mode = "files";
     this.refresh(cx);
   }
 
-  // ---- notes ----------------------------------------------------------------
-
-  repoNotes() {
-    return this.status ? (this.notes[this.status.root] ??= []) : [];
+  setMode(mode, cx) {
+    this.mode = mode;
+    if (mode === "files") this.reveal(this.rows.findIndex((r) => r.key === this.selected), { center: true });
+    if (mode === "log" && !this.log.commits.length) this.loadLog(cx);
+    if (mode === "notes") this.noteSel = Math.min(this.noteSel, Math.max(0, this.notes().length - 1));
   }
 
-  annotate() {
-    const item = this.item();
-    if (!item || this.scope !== "worktree") return;
-    const [a, b] = this.anchor === null ? [this.cursor, this.cursor] : [Math.min(this.anchor, this.cursor), Math.max(this.anchor, this.cursor)];
-    const range = diffs.noteRange(this.diff, a, b);
-    if (!range) {
-      this.flash("select some code to annotate");
-      return;
-    }
-    this.pendingNote = { file: item.file.path, ...range };
-    this.composer.set_value("");
-    this.composer.focus();
+  // ---- history ----------------------------------------------------------------
+
+  openLog(cx) {
+    this.log = { commits: [], selected: 0, filter: this.scope === "branch", loading: false };
+    this.setMode("log", cx);
   }
 
-  saveNote(cx, value) {
-    const text = value.trim();
-    if (this.pendingNote && text) this.repoNotes().push({ ...this.pendingNote, text, id: String(++this.noteSeq) });
-    this.pendingNote = null;
-    this.anchor = null;
-    this.handle.focus();
-    cx.notify();
+  toggleLogFilter(cx) {
+    this.log.filter = !this.log.filter;
+    this.log.selected = 0;
+    this.loadLog(cx);
   }
 
-  cancelNote() {
-    this.pendingNote = null;
-    this.handle.focus();
-  }
-
-  send(cx) {
-    const notes = this.repoNotes();
-    if (!notes.length) {
-      this.flash("no notes yet: v selects lines, a writes a note");
-      return;
-    }
-    const { space } = location();
+  loadLog(cx) {
+    if (!this.status) return;
+    const root = this.status.root;
+    const on = this.ctx?.on;
+    const log = this.log;
+    log.loading = true;
     this.load(cx, async () => {
       try {
-        const { message } = await gv(["notes", JSON.stringify(notes.map(({ id, ...note }) => note))]);
-        const height = Math.min(420, 140 + 32 * Math.max(1, agents().length));
-        const ids = notes.map((n) => n.id).join(",");
-        openOverlay({ mod: "gitview-agents", kind: "dialog", modal: true, width: 460, height, props: { message, count: notes.length, space, ids } });
-      } catch (e) {
-        notify({ title: "gitview", body: String(e.message ?? e), level: "error" });
+        const args = ["log", "--repo", root, "--limit", "200", ...onArgs(on)];
+        if (log.filter) {
+          let base = this.status.base?.merge_base;
+          if (!base) base = (await gv(["status", "--repo", root, "--scope", "branch", ...onArgs(on)])).base?.merge_base;
+          if (base) args.push("--merge-base", base);
+          else log.filter = false;
+        }
+        const r = await gv(args);
+        log.commits = r.commits ?? [];
+        log.selected = Math.min(log.selected, Math.max(0, log.commits.length - 1));
+      } finally {
+        log.loading = false;
       }
     });
   }
 
-  // The notes that went out (ones written meanwhile stay).
-  clearNotes(ids) {
-    for (const root of Object.keys(this.notes)) this.notes[root] = this.notes[root].filter((n) => !ids.includes(n.id));
+  logMove(delta) {
+    const n = this.log.commits.length;
+    if (!n) return;
+    this.log.selected = Math.min(n - 1, Math.max(0, this.log.selected + delta));
+    this.reveal(this.log.selected, { margin: COMMIT_ROW });
   }
 
-  // ---- keys -----------------------------------------------------------------
+  openCommit(c, cx) {
+    if (!c) return;
+    const root = this.status.root;
+    const on = this.ctx?.on;
+    this.load(cx, async () => {
+      const r = await gv(["commit-files", "--repo", root, "--sha", c.sha, ...onArgs(on)]);
+      const status = { sections: [{ id: "commit", title: "", cached: false, files: r.files ?? [] }] };
+      const rows = listRows(status, { tree: this.tree(), collapsed: this.collapsed });
+      this.commitView = { sha: c.sha, short: c.short, subject: c.subject, status, rows, selected: rows.find((x) => x.kind === "file")?.key ?? null };
+      this.mode = "commit";
+      this.scroll.top = 0;
+      const first = this.row();
+      if (first) this.show(first, { open: true, cx });
+    });
+  }
+
+  // ---- notes ----------------------------------------------------------------
+
+  notesKey() {
+    return this.status ? notesKey(this.ctx?.on, this.status.root) : null;
+  }
+
+  notes() {
+    const key = this.notesKey();
+    return key ? notesOf(key) : [];
+  }
+
+  noteMove(delta) {
+    const n = this.notes().length;
+    if (!n) return;
+    this.noteSel = Math.min(n - 1, Math.max(0, this.noteSel + delta));
+    this.reveal(this.noteSel, { margin: 8 });
+  }
+
+  deleteNote(note) {
+    if (note) removeNotes(this.notesKey(), [note.id]);
+  }
+
+  // The note's file in the diff pane, its cursor on the note.
+  jumpToNote(note, cx) {
+    if (!note) return;
+    this.mode = "files";
+    let row = this.rows.find((r) => r.kind === "file" && r.file.path === note.file && !r.section.cached)
+      ?? this.rows.find((r) => r.kind === "file" && r.file.path === note.file);
+    if (!row && this.tree()) row = this.expandTo(note.file);
+    if (!row) return this.flash(`${note.file} has no changes now`);
+    this.setSel(row.key);
+    this.reveal(this.rows.indexOf(row), { center: true });
+    this.show(row, { open: true, cx, line: note.end || note.start || null });
+  }
+
+  send(cx) {
+    const notes = this.notes();
+    if (!notes.length) return this.flash("no notes yet: select lines in the diff (v or drag), then a");
+    const space = this.ctx?.space;
+    const key = this.notesKey();
+    this.load(cx, async () => {
+      const { message: text } = await gv(["notes", JSON.stringify(notes.map(({ id, ...note }) => note))]);
+      const height = Math.min(420, 140 + 32 * Math.max(1, agents().length));
+      openOverlay({ mod: "gitview-agents", kind: "dialog", modal: true, width: 460, height, props: { message: text, count: notes.length, space, key, ids: notes.map((n) => n.id) } });
+    });
+  }
+
+  // ---- keys & mouse -----------------------------------------------------------
 
   key(e, cx) {
     return handleKey(this, e, cx);
   }
 
-  line(delta) {
-    const n = this.diff.rows.length;
-    if (!n) return;
-    this.cursor = Math.min(n - 1, Math.max(0, this.cursor + delta));
-    this.diffScroll.scroll_to_item(this.displayIndex(this.cursor));
+  clickRow(row, e, cx) {
+    this.handle.focus();
+    if (row.kind === "header") return;
+    if (row.kind === "dir") {
+      this.setSel(row.key);
+      if (row.collapsed) this.collapsed.delete(row.key);
+      else this.collapsed.add(row.key);
+      this.rebuild();
+    } else if (e.click_count >= 2) this.edit(row, cx);
+    else if (row.key !== this.selKey() || !viewIn(this.tab()) || !diffPane(this.tab())) this.select(row.key, cx);
+    cx.notify();
   }
 
-  unfold(cx) {
-    this.unfolded = this.selected;
-    this.load(cx, async () => {
-      try { await this.loadDiff(); } catch (e) { this.flash(String(e.message ?? e)); }
-    });
-  }
-
-  displayIndex(rowIndex) {
-    return Math.max(0, this.display.findIndex((d) => d.index === rowIndex));
+  hoverRow(key, hovered, cx) {
+    if (hovered) this.hover = key;
+    else if (this.hover === key) this.hover = null;
+    else return;
+    cx.notify();
   }
 
   // ---- view -----------------------------------------------------------------
 
   render(cx) {
-    if (this.context().key !== this.shownKey) this.refresh(cx);
-    const t = theme();
-    if (isDark(t.background) !== this.dark) {
-      // Syntax colors come in a dark and a light set: a theme switch reloads.
-      this.dark = isDark(t.background);
-      if (this.status) this.load(cx, () => this.loadDiff());
+    const ctx = this.context();
+    if (ctx.key !== this.ctx?.key) this.refresh(cx);
+    else if (ctx.tab !== this.ctx.tab) this.ctx = { ...this.ctx, tab: ctx.tab, space: ctx.space };
+    const dirty = shared("gitview.dirty");
+    if (dirty && dirty.at > this.seen.dirty) {
+      this.seen.dirty = dirty.at;
+      if (dirty.root === this.status?.root) this.refresh(cx);
     }
+    this.followPane(this.tab());
+    const t = theme();
     const focused = this.handle.is_focused();
-    const notes = this.status ? this.repoNotes().filter((n) => n.file === this.item()?.file.path) : [];
-    this.display = diffs.displayRows(this.diff, notes);
-    const wide = this.width >= SIDE_BY_SIDE;
-    const files = this.filesView(t, focused, wide);
-    const diff = this.diffView(t, focused);
+    const notes = this.notes();
     return v_flex()
       .id("gitview")
       .size_full()
       .min_h(0)
       .bg(t.background)
       .text_color(t.foreground)
-      .text_size(12.5)
+      .text_size(13)
+      .when(!this.isPane(), (e) => e.rounded(10).overflow_hidden().border_1().border_color(focused ? t.accent : t.border))
       .track_focus(this.handle)
+      .on_mouse_down("left", (_e, cx) => { this.handle.focus(); cx.notify(); })
       .on_size_change((size, cx) => {
+        if (size.width === this.width) return;
         this.width = size.width;
         cx.notify();
       })
@@ -455,67 +655,87 @@ export default class GitView extends View {
         cx.stop_propagation();
         cx.notify();
       })
-      .child(chrome.header(t, this.status, this.items.filter((i) => i.file).length, this.status ? this.repoNotes().length : 0, this.loading))
-      .child(
-        wide
-          ? h_flex().flex_1().min_h(0).child(files.w(Math.max(260, this.width * 0.32)).h_full().border_r(1).border_color(t.border)).child(diff.h_full())
-          : v_flex().flex_1().min_h(0).child(files.h(Math.min(260, Math.max(48, this.items.length * list.ROW + 12))).border_b(1).border_color(t.border)).child(diff),
+      .child(this.header(t, notes))
+      .child(this.body(t, focused, notes))
+      .when(this.mode === "files" && this.scope === "worktree" && Boolean(this.status), (e) =>
+        e.child(chrome.commitBox(t, this.commitInput, this.typing, this.staged(), this.committing, (cx) => this.commit(cx))),
       )
-      .when(Boolean(this.pendingNote), (e) => e.child(chrome.composer(t, this.pendingNote, this.composer)))
-      .when(this.scope === "worktree" && Boolean(this.status), (e) => e.child(chrome.commitBox(t, this.commitInput, this.typing, this.staged(), (cx) => this.commit(cx))))
-      .child(chrome.footer(t, this.flashText, this.area));
+      .child(chrome.footer(t, this.flashText, this.mode));
   }
 
-  filesView(t, focused, wide) {
-    const items = this.items; // this frame's rows, whatever loads meanwhile
-    return div()
-      .relative()
-      .flex_none()
-      .child(
-        v_virtual_list("gitview-files", items.length, list.ROW, (i) => items[i].key, (range) =>
-          items.slice(range.start, range.end).map((item) => list.renderRow(item, { t, selected: this.selected, focused: focused && this.area === "list" })),
-        )
-          .track_scroll(this.listScroll)
-          .on_item_click((key, cx) => {
-            this.area = "list";
-            this.handle.focus();
-            if (!key.startsWith("h:")) this.select(key, cx);
-            cx.notify();
-          })
-          .size_full(),
-      )
-      .child(Scrollbar.vertical("gitview-files").viewport_from_layout().absolute().inset_0())
-      .when(!items.length, (e) => e.child(div().absolute().top(10).px(14).text_color(t.dim).child(this.error ?? (this.loading ? "Loading…" : "No changes"))))
-      .when(wide, (e) => e.pt(4));
+  header(t, notes) {
+    const back = (to) => (cx) => { this.setMode(to, cx); cx.notify(); };
+    if (this.mode === "log") {
+      return chrome.subHeader(t, {
+        title: "History",
+        detail: this.log.filter ? `since ${this.status?.base?.label ?? "the base"}` : this.status?.branch ?? "",
+        pill: this.log.filter ? "branch" : "all",
+        onPill: (cx) => { this.toggleLogFilter(cx); cx.notify(); },
+        loading: this.log.loading,
+        onBack: back("files"),
+      });
+    }
+    if (this.mode === "commit") {
+      const n = this.commitView?.status.sections[0].files.length ?? 0;
+      return chrome.subHeader(t, { title: this.commitView?.short ?? "", detail: this.commitView?.subject, pill: `${n} file${n === 1 ? "" : "s"}`, onBack: back("log") });
+    }
+    if (this.mode === "notes") {
+      return chrome.subHeader(t, { title: "Notes", detail: this.status?.root?.split("/").pop(), pill: String(notes.length), onBack: back("files"), onSend: notes.length ? (cx) => { this.send(cx); cx.notify(); } : null });
+    }
+    return chrome.filesHeader(t, {
+      status: this.status,
+      files: this.status?.sections.reduce((n, s) => n + s.files.length, 0) ?? 0,
+      notes: notes.length,
+      loading: this.loading || this.inflight > 0,
+      wide: this.width >= WIDE,
+      tree: this.tree(),
+      onNotes: (cx) => { this.setMode("notes", cx); cx.notify(); },
+      onTree: (cx) => this.toggleTree(cx),
+      onLog: (cx) => { this.openLog(cx); cx.notify(); },
+    });
   }
 
-  diffView(t, focused) {
-    const selection = this.anchor === null ? null : [Math.min(this.anchor, this.cursor), Math.max(this.anchor, this.cursor)];
-    const display = this.display;
-    return div()
-      .relative()
-      .flex_1()
-      .min_h(0)
-      .min_w(0)
-      .font_family(settings().font_family ?? "JetBrains Mono")
-      .text_size(12)
-      .child(
-        v_virtual_list("gitview-diff", display.length, display.map(diffs.rowSize), (i) => (display[i].note ? `n${i}` : `r${display[i].index}`), (range) =>
-          display.slice(range.start, range.end).map((item) => diffs.renderRow(item, { t, cursor: this.cursor, selection, focused: focused && this.area === "diff" })),
-        )
-          .track_scroll(this.diffScroll)
-          .on_item_click((key, cx) => {
-            this.area = "diff";
-            this.handle.focus();
-            if (key.startsWith("r")) {
-              this.cursor = Number(key.slice(1));
-              if (this.diff.rows[this.cursor]?.k === "fold") this.unfold(cx);
-            }
-            cx.notify();
-          })
-          .size_full(),
-      )
-      .child(Scrollbar.vertical("gitview-diff").viewport_from_layout().absolute().inset_0())
-      .when(this.diff.empty || this.diff.binary, (e) => e.child(div().absolute().top(8).px(14).text_color(t.dim).child(this.diff.binary ? "Binary file" : "No text changes")));
+  empty(t, text) {
+    return div().px(16).py(12).text_color(t.dim).child(text);
+  }
+
+  body(t, focused, notes) {
+    const pad = (sizes) => [6, ...sizes, 6]; // 6 px above and below, like the stock panel
+    if (this.mode === "log") {
+      const commits = this.log.commits;
+      if (!commits.length) return this.empty(t, this.log.loading ? "Loading history…" : "No commits");
+      this.scroll.measure(pad(commits.map(() => COMMIT_ROW)));
+      const ctx = { t, selected: this.log.selected, focused, onClick: (i, e, cx) => this.clickCommit(i, e, cx) };
+      return this.scroll.view(t, (i) => (i === 0 || i > commits.length ? div().h(6) : commitRow(commits[i - 1], i - 1, ctx)));
+    }
+    if (this.mode === "notes") {
+      if (!notes.length) return this.empty(t, "No notes. In the diff: select lines (v or drag), then a.");
+      this.noteSel = Math.min(this.noteSel, notes.length - 1);
+      this.scroll.measure(pad(notes.map(() => NOTE_ROW)));
+      const ctx = {
+        t, selected: this.noteSel, hover: this.hover, focused,
+        onClick: (i, e, cx) => { this.handle.focus(); this.noteSel = i; if (e.click_count >= 2) this.jumpToNote(notes[i], cx); cx.notify(); },
+        onHover: (n, h, cx) => this.hoverRow(n.id, h, cx),
+        onDelete: (n, cx) => { this.deleteNote(n); cx.notify(); },
+      };
+      return this.scroll.view(t, (i) => (i === 0 || i > notes.length ? div().h(6) : noteRow(notes[i - 1], i - 1, ctx)));
+    }
+    const rows = this.list();
+    if (!rows.length) return this.empty(t, this.error ?? (this.loading ? "Loading changes…" : this.status ? "No changes" : "No folder"));
+    this.scroll.measure(pad(rows.map(rowSize)));
+    const ctx = {
+      t, selected: this.selKey(), hover: this.hover, focused, tree: this.tree(),
+      onClick: (row, e, cx) => this.clickRow(row, e, cx),
+      onHover: (row, h, cx) => this.hoverRow(row.key, h, cx),
+      onAction: (op, row, cx) => { this.handle.focus(); this.rowAction(op, row, cx); cx.notify(); },
+    };
+    return this.scroll.view(t, (i) => (i === 0 || i > rows.length ? div().h(6) : renderRow(rows[i - 1], ctx)));
+  }
+
+  clickCommit(i, e, cx) {
+    this.handle.focus();
+    this.log.selected = i;
+    if (e.click_count >= 1) this.openCommit(this.log.commits[i], cx);
+    cx.notify();
   }
 }

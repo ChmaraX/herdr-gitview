@@ -1,54 +1,76 @@
-// gitview's keys and commands. A key press and `gitview.key:<key>` take the
-// same path; `gitview.file:`, `gitview.note:`, `gitview.commit:` and the
-// dialogs' replies (`discard`, `sent:<ids>`) are commands only.
+// The list's keys and commands. A key press and `gitview.key:<key>` take the
+// same path; `gitview.file:`, `gitview.commit:`, `focus` (from the app) and
+// the confirm dialog's reply (`discard`) are commands only.
 
+// "J" for shift-j, as the commands spell it.
+export function keyName(e) {
+  const m = e.modifiers ?? {};
+  return m.shift && /^[a-z]$/.test(e.key) ? e.key.toUpperCase() : e.key;
+}
+
+// Returns false for keys it leaves to the app.
 export function handleKey(view, e, cx) {
-  const k = e.key;
   const m = e.modifiers ?? {};
   if (m.platform || m.control || m.alt) return false; // the app's shortcuts
-  if (view.pendingNote) {
-    if (k === "escape") view.cancelNote();
-    else return false;
-    return true;
-  }
-  if (k === "tab") view.area = view.area === "list" ? "diff" : "list";
-  else if (k === "enter" && view.area === "diff" && view.diff.rows[view.cursor]?.k === "fold") view.unfold(cx);
-  else if (k === "enter" || k === "e") view.edit(cx);
-  else if (k === "w") view.toggleScope(cx);
-  else if (k === "r") view.refresh(cx);
+  const k = keyName(e);
+  const down = k === "j" || k === "down";
+  const up = k === "k" || k === "up";
+  if (k === "r") view.refresh(cx);
   else if (k === "p") view.send(cx);
-  else if (k === "s") view.stage(true, cx);
-  else if (k === "u") view.stage(false, cx);
-  else if (k === "x") view.discard();
-  else if (k === "c") view.commitInput.focus();
-  else if (view.area === "list") {
-    if (k === "j" || k === "down") view.move(1, cx);
-    else if (k === "k" || k === "up") view.move(-1, cx);
-    else if (k === "a") { view.area = "diff"; view.annotate(); }
+  else if (view.mode === "files") {
+    if (down) view.move(1, cx);
+    else if (up) view.move(-1, cx);
+    else if (k === "enter" || k === "e") view.enter(cx);
+    else if (k === "left" || k === "h") view.fold(true, cx);
+    else if (k === "right") view.fold(false, cx);
+    else if (k === "s") view.rowAction("stage", null, cx);
+    else if (k === "u") view.rowAction("unstage", null, cx);
+    else if (k === "x") view.rowAction("discard", null, cx);
+    else if (k === "c") view.commitInput.focus();
+    else if (k === "w") view.toggleScope(cx);
+    else if (k === "t") view.toggleTree(cx);
+    else if (k === "l") view.openLog(cx);
+    else if (k === "n") view.setMode("notes", cx);
+    else if (k === "g") view.edge(false, cx);
+    else if (k === "G") view.edge(true, cx);
     else return false;
-  } else {
-    if (k === "j" || k === "down") view.line(1);
-    else if (k === "k" || k === "up") view.line(-1);
-    else if (k === "v") view.anchor = view.anchor === null ? view.cursor : null;
-    else if (k === "a") view.annotate();
-    else if (k === "escape") { if (view.anchor !== null) view.anchor = null; else view.area = "list"; }
+  } else if (view.mode === "log") {
+    if (down) view.logMove(1);
+    else if (up) view.logMove(-1);
+    else if (k === "enter" || k === "right") view.openCommit(view.log.commits[view.log.selected], cx);
+    else if (k === "w") view.toggleLogFilter(cx);
+    else if (k === "escape" || k === "h" || k === "left" || k === "l") view.setMode("files", cx);
     else return false;
-  }
+  } else if (view.mode === "commit") {
+    if (down) view.move(1, cx);
+    else if (up) view.move(-1, cx);
+    else if (k === "enter" || k === "e") view.enter(cx);
+    else if (k === "escape" || k === "h" || k === "left") view.setMode("log", cx);
+    else if (k === "t") view.toggleTree(cx);
+    else return false;
+  } else if (view.mode === "notes") {
+    if (down) view.noteMove(1);
+    else if (up) view.noteMove(-1);
+    else if (k === "enter") view.jumpToNote(view.notes()[view.noteSel], cx);
+    else if (k === "d" || k === "x") view.deleteNote(view.notes()[view.noteSel]);
+    else if (k === "escape" || k === "h" || k === "left" || k === "n") view.setMode("files", cx);
+    else return false;
+  } else return false;
   return true;
 }
 
-// One `gitview.<command>` (from keys.json, a script, or gitview's dialogs).
+// One `gitview.<command>` (keys.json, a script, the confirm dialog, the app).
 export function runCommand(view, command, cx) {
-  if (command === "discard") view.discardConfirmed(cx);
-  else if (command.startsWith("sent:")) view.clearNotes(command.slice(5).split(","));
-  else if (command.startsWith("key:")) view.key({ key: command.slice(4), modifiers: {} }, cx);
-  else if (command.startsWith("file:")) view.selectPath(command.slice(5), cx);
+  if (command === "focus") view.takeKeyboard(cx);
+  else if (command === "focus:panel") {
+    if (!view.isPane()) view.takeKeyboard(cx);
+  } else if (command === "discard") view.discardConfirmed(cx);
+  else if (command.startsWith("key:")) {
+    const k = command.slice(4);
+    view.key({ key: k.length === 1 ? k.toLowerCase() : k, modifiers: { shift: k.length === 1 && k !== k.toLowerCase() } }, cx);
+  } else if (command.startsWith("file:")) view.selectPath(command.slice(5), cx);
   else if (command.startsWith("commit:")) {
     view.commitInput.set_value(command.slice(7));
     view.commit(cx);
-  } else if (command.startsWith("note:")) {
-    view.annotate();
-    if (view.pendingNote) view.saveNote(cx, command.slice(5));
   }
-  view.flashText = command.startsWith("key:") ? null : view.flashText;
 }

@@ -1,11 +1,13 @@
 // gitview's git engine, the herdr-gitview binary (`herdr-gitview json <op>`),
-// and where the panel looks: the shown space's repo.
+// and where the panel looks: the shown space's repo, on its machine.
+// Shared by the gitview mods (the other folders link to this file; install
+// copies it).
 
 import { appHome, exec, focused, panes, readTextFile, spaces } from "herdr";
 
 let config = null;
 
-// Written by install.sh: { bin, herdr_app, hc }.
+// Written by install: { bin, herdr_app, hc }.
 export async function loadConfig() {
   if (config) return config;
   const text = await readTextFile(`${appHome()}/mods/gitview/config.json`);
@@ -22,7 +24,8 @@ export function hostEnv(cfg) {
   return env;
 }
 
-// Runs one `json` op; resolves with its object, rejects with its error.
+// Runs one `json` op here (it reaches another machine itself, `--on`);
+// resolves with its object, rejects with its error.
 export async function gv(args) {
   const cfg = await loadConfig();
   const r = await exec("/usr/bin/env", [...hostEnv(cfg), cfg.bin, "json", ...args]);
@@ -32,15 +35,24 @@ export async function gv(args) {
   return out;
 }
 
+// `--on <machine>` for a repo on another machine, nothing here.
+export const onArgs = (on) => (on ? ["--on", on] : []);
+
+export const message = (e) => String(e?.message ?? e);
+
 // The shown space's folder, as the stock Changes panel finds it: the focused
-// pane's live folder, else the space's. `on`: the space's machine (null here).
-export function location() {
+// pane's live folder, else the space's. `on`: the machine it's on (null:
+// this one). A mod pane (gitview's own diff pane) has no folder: `keep` (the
+// place before, in the same tab) stays.
+export function location(keep) {
   const f = focused();
   const space = spaces().find((s) => s.active);
   const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
+  const on = f?.pane === null ? (f?.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : space?.machine ?? null;
+  if (pane && !pane.terminal && keep && keep.tab === f?.tab) return keep;
   return {
     cwd: pane?.cwd || f?.cwd || space?.folder || null,
-    on: space?.machine ?? null,
+    on,
     space: space?.id ?? null,
     tab: f?.tab ?? null,
   };
