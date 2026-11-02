@@ -253,27 +253,44 @@ do_ gitview.click:src/app/a.rs
 expect 'mod_panes | grep -q gitview-diff' "the next file click opens the diff pane again"
 rm -rf "$STAND"
 
-step "focus: pane.go reaches the diff pane, a click takes the keyboard (keys.py, private window only)"
-do_ pane.focus --terminal "$SHELL_T"
-do_ pane.go --direction right
-sleep 0.6
-L0=$(shared "s['gitview.cursor']['$TAB']['row']")
-keys 38 # j
-expect '[ "$(shared "s[\"gitview.cursor\"][\"$TAB\"][\"row\"]")" != "$L0" ]' "pane.go then j: the diff pane has the keyboard (the cursor moved)"
+# Keys need the window drawn: macOS doesn't draw a covered window, and a mod
+# takes the keyboard only when drawn. Covered (your windows in front; it's
+# never raised), the keys run their commands instead and say so.
+KEYS=0
+if until_ drawn 20; then KEYS=1; else echo "note: the private window is covered by another window: key presses replaced by their commands" | tee -a "$LOG"; fi
+press() { # press <keys.py spec> <the command the key runs>
+  if [ "$KEYS" = 1 ]; then keys "$1"; else do_ mod.open --name "$2"; fi
+}
+
+step "focus: pane.go reaches the diff pane, which takes the keyboard (keys.py, private window only)"
+if [ "$KEYS" = 1 ]; then
+  do_ pane.focus --terminal "$SHELL_T"
+  do_ pane.go --direction right
+  sleep 0.6
+  L0=$(shared "s['gitview.cursor']['$TAB']['row']")
+  keys 38 # j
+  expect '[ "$(shared "s[\"gitview.cursor\"][\"$TAB\"][\"row\"]")" != "$L0" ]' "pane.go then j: the diff pane has the keyboard (the cursor moved)"
+else
+  skip "pane.go then j (the window is covered)"
+fi
 
 step "cmd-shift-g toggles the Changes panel; cmd-g opens gitview's own tab"
-keys 5:cmd,shift
+press 5:cmd,shift gitview-sidebar
 expect '[ "$(panel_state)" = "hidden changes" ]' "cmd-shift-g hides the panel"
-keys 5:cmd,shift
+press 5:cmd,shift gitview-sidebar
 expect '[ "$(panel_state)" = "open changes" ]' "cmd-shift-g shows it, on gitview"
-sleep 0.5
-P0=$(view_of $TAB path)
-keys 38 # j
-expect '[ "$(view_of $TAB path)" != "$P0" ]' "and the list has the keyboard: j moves the diff"
+if [ "$KEYS" = 1 ]; then
+  sleep 0.5
+  P0=$(view_of $TAB path)
+  keys 38 # j
+  expect '[ "$(view_of $TAB path)" != "$P0" ]' "and the list has the keyboard: j moves the diff"
+else
+  skip "the list has the keyboard after cmd-shift-g (the window is covered)"
+fi
 shot 14-cmd-shift-g 1
-keys 5:cmd,shift
+press 5:cmd,shift gitview-sidebar
 expect '[ "$(panel_state)" = "hidden changes" ]' "hidden again"
-keys 5:cmd
+press 5:cmd gitview-tab
 expect '[ "$(tab_active)" = gitview ]' "cmd-g opens the gitview tab"
 OWN=$(tab_id)
 expect 'mod_panes | grep -q "^$OWN .* gitview-diff$" && mod_panes | grep -q "^$OWN .* gitview$"' "diff pane and list pane"
@@ -281,9 +298,9 @@ do_ gitview.click:src/main.rs
 expect '[ "$(view_of $OWN path)" = src/main.rs ]' "a click in its list shows the diff on the left"
 shot 15-own-tab 1.5
 do_ tab.select --index 1
-keys 5:cmd
+press 5:cmd gitview-tab
 expect '[ "$(tab_active)" = gitview ]' "from another tab cmd-g jumps to it"
-keys 5:cmd
+press 5:cmd gitview-tab
 expect '[ "$(tab_active)" = 1 ]' "from inside it closes, back to where you were"
 [ -n "$(terms | awk '$1=="'"$SHELL_T"'"')" ] && ok "the shell's tab is untouched" || fail "closed the wrong tab"
 

@@ -31,6 +31,9 @@ for v in $(env | grep -oE '^(HERDR_[A-Z_]+|HC_[A-Z_]+)=' | tr -d =); do unset "$
 export HERDR_APP_HOME="$BASE/home" HC_SESSION="gve$(printf %s "${BASE: -4}" | tr A-Z a-z)$$" XDG_STATE_HOME="$BASE/state"
 export XDG_CONFIG_HOME="$BASE/config" XDG_DATA_HOME="$BASE/data" HERDR_APP_NO_SOUND=1 HERDR_TELEMETRY=0 DO_NOT_TRACK=1
 export HERDR_RELEASES_URL=http://127.0.0.1:9 # never update the installed app or core
+# herdr-nvim (coexist.sh): its daemons, state and agents' session logs here too.
+export HERDR_NVIM_RUNTIME_DIR="$BASE/nvrun" HERDR_NVIM_STATE_DIR="$BASE/nvstate"
+export PI_CODING_AGENT_DIR="$BASE/pi" CLAUDE_CONFIG_DIR="$BASE/claude"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 mkdir -p "$HERDR_APP_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 echo '{"frame.welcomed": true, "layout": "main"}' >"$HERDR_APP_HOME/shared.json"
@@ -71,6 +74,10 @@ cleanup() {
   for p in $(pgrep -f '(hc|herdr-core) (serve|hold)'); do
     ps eww -o command= -p "$p" 2>/dev/null | grep -q "XDG_STATE_HOME=$BASE/state " && kill "$p"
   done
+  # herdr-nvim's nvims of this run (their sockets are in this run's folder).
+  for s in "$BASE"/nvrun/app/*.sock; do
+    [ -S "$s" ] && nvim --headless --server "$s" --remote-send '<cmd>qa!<cr>' >/dev/null 2>&1
+  done
   rm -rf "$BASE"
   echo "artifacts: $ART"
 }
@@ -78,9 +85,10 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 # --- helpers ---------------------------------------------------------------------
-PASSES=0
+PASSES=0 SKIPS=0
 step() { printf '\n== %s\n' "$*" | tee -a "$LOG"; }
 ok() { PASSES=$((PASSES + 1)); printf 'PASS %s\n' "$*" | tee -a "$LOG"; }
+skip() { SKIPS=$((SKIPS + 1)); printf 'SKIP %s\n' "$*" | tee -a "$LOG"; }
 fail() {
   printf 'FAIL %s\n' "$*" | tee -a "$LOG"
   { echo "--- terminals"; terms; echo "--- status"; "$APP" status; echo "--- mod panes"; mod_panes
@@ -92,7 +100,7 @@ fail() {
   [ -z "${E2E_KEEP:-}" ] || { echo "kept: source $BASE/env.sh" | tee -a "$LOG"; trap - EXIT; }
   exit 1
 }
-passed() { step "all passed: $PASSES checks"; }
+passed() { if [ "$SKIPS" -gt 0 ]; then step "all passed: $PASSES checks, $SKIPS skipped"; else step "all passed: $PASSES checks"; fi; }
 do_() { "$APP" do "$@" >>"$LOG" 2>&1 || fail "herdr-app do $*"; }
 # Poll a condition (a shell snippet) for up to $2 seconds (default 10).
 until_() {
@@ -104,6 +112,10 @@ until_() {
 }
 expect() { until_ "$1" "${3:-10}" && ok "$2" || fail "$2"; }
 screen() { hc read "$1" --lines 0 2>/dev/null; }
+# Whether macOS draws the private window now (some of it isn't covered by
+# your windows; drawn.py only reads the window list). Covered, it gets no
+# frames: screenshots are stale and a mod can't take the keyboard.
+drawn() { "$PY" "$E2E/drawn.py" "$APP_PID"; }
 # Keys to the private app's process only (keys.py: keycodes, names, text:).
 keys() { "$PY" "$E2E/keys.py" "$APP_PID" "$@"; }
 # The dummy agent's input line / submitted messages (its own record).
@@ -147,9 +159,23 @@ nvim_buf() {
   [ -n "$sock" ] && nvim --server "$sock" --remote-expr 'bufname("%")'
 }
 status_has() { "$APP" status | grep -q "$1"; }
-shot() { # $1 file name: the app's last frame (no raise); give it a moment to draw
+# $1 file name: the app's last frame (no raise); give it a moment to draw.
+# macOS doesn't draw a window that's fully covered: then the frame is the
+# last one drawn, and the log says so (the checks never depend on drawing).
+LAST_SHOT=
+shot() {
   sleep "${2:-0.8}"
-  "$APP" shot "$ART/$1.png" >/dev/null && echo "shot $1.png" >>"$LOG"
+  "$APP" shot "$ART/$1.png" >/dev/null || return 0
+  local sum
+  sum=$(shasum "$ART/$1.png" | cut -c1-40)
+  if ! drawn; then
+    echo "shot $1.png (stale: the window is covered by another window; not raising it)" | tee -a "$LOG"
+  elif [ "$sum" = "$LAST_SHOT" ]; then
+    echo "shot $1.png (same frame as the one before)" | tee -a "$LOG"
+  else
+    echo "shot $1.png" >>"$LOG"
+  fi
+  LAST_SHOT=$sum
 }
 # The node of the shown layout by id, as JSON.
 layout_node() {
