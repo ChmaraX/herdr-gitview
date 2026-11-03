@@ -22,7 +22,7 @@ import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
   addNote, cursorIn, diffPane, liveView, notesKey, notesOf, onScreen, pump, removeNotes, setCursor, setDirty, setView, takeKeyboard, viewIn,
 } from "./shared.js";
-import { Flash, Loads, ModPanes, commandLoop, keyEvent, keyName, watch } from "./modkit.js";
+import { Flash, Loads, ModPanes, commandLoop, followStamp, keyEvent, keyName, stampMoved, watch } from "./modkit.js";
 import { panePlacement } from "./placement.js";
 import { openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
@@ -113,6 +113,7 @@ export default class GitDiff extends View {
   // then this one starts afresh too.
   sync(cx) {
     if (this.modPanes.gone()) this.loads.revive(cx); // Loads.revive
+    if (followStamp(this.watcher) && onScreen(this.tab())) this.reload(cx); // another copy's watch saw the repo change
     if (isDark(theme().background) !== this.dark) {
       this.dark = !this.dark;
       this.reload(cx);
@@ -449,7 +450,7 @@ export default class GitDiff extends View {
 
   render(cx) {
     const t = theme();
-    if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(t.background) !== this.dark || this.modPanes.changed()) this.kick();
+    if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(t.background) !== this.dark || this.modPanes.changed() || stampMoved(this.watcher)) this.kick();
     const focused = this.handle.is_focused();
     const key = this.notesKey();
     // A note's card shows on the side it was written on (notes from before

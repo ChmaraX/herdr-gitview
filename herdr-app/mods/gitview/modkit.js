@@ -4,6 +4,10 @@
 
 import { closeOverlay, nextCommand, notify, panes, props, watchFolder } from "herdr";
 import { message } from "./engine.js";
+import { changedAt, stampChanged } from "./shared.js";
+
+// At most one "gitview.changed" stamp per repo this often.
+const STAMP_MS = 250;
 
 // Loads in flight. `run(cx, what, work)` counts one; `latest(cx, what,
 // work)` runs one at a time per name, coalescing; `idle(cx)` resolves when
@@ -156,19 +160,41 @@ export class Flash {
 
 // Calls `changed(cx)` whenever something under `root` changes, until
 // `watcher.root` is something else. A local repo only (no watch elsewhere).
+// Only the newest copy waiting on a folder wakes (herdr-app 0.1.12): the
+// one that wakes stamps shared "gitview.changed" for the repo (at most once
+// per STAMP_MS; a batch inside that waits for the next stamp, never
+// dropped), and every copy follows the stamp too (`followStamp`). A
+// refresh never stamps, so nothing loops.
 export function watch(watcher, root, cx, changed) {
   if (watcher.root === root) return;
   watcher.root = root;
+  watcher.seen = changedAt(root);
   cx.spawn(async (cx) => {
     try {
       while (watcher.root === root) {
         await watchFolder(root);
-        if (watcher.root === root) changed(cx);
+        const wait = STAMP_MS - (Date.now() - changedAt(root));
+        if (wait > 0) await cx.sleep(wait);
+        if (watcher.root !== root) break;
+        const at = Date.now();
+        stampChanged(root, at);
+        watcher.seen = at;
+        changed(cx);
       }
     } catch {
       if (watcher.root === root) watcher.root = null;
     }
   });
+}
+
+// Another copy's watch stamped this watcher's repo since this copy looked.
+export const stampMoved = (watcher) => Boolean(watcher.root) && changedAt(watcher.root) > (watcher.seen ?? 0);
+
+// True (once) when the stamp moved: the repo changed, refresh it.
+export function followStamp(watcher) {
+  if (!stampMoved(watcher)) return false;
+  watcher.seen = changedAt(watcher.root);
+  return true;
 }
 
 // The mod's commands (`<mod>.<command>`), one at a time: `before(cx)`

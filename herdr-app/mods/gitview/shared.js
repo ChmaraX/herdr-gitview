@@ -19,6 +19,10 @@
 //   text, snippet}; `cached`: written on the staged diff.
 // - "gitview.dirty": {root, on, at}: the pane staged or discarded something
 //   (the list refreshes and picks the file the pane shows next).
+// - "gitview.changed": {"<machine or ''>:<repo root>": at}: a folder watch
+//   saw the repo change. With two copies watching one folder only the
+//   newest wakes (herdr-app 0.1.12), so the copy that woke says so here and
+//   the others follow (modkit.js watch).
 // - "gitview.tree": the list shows folders as a tree.
 // - "gitview.own": {<space>: <tab>}: the space's gitview tab (cmd-g).
 // - "gitview.origins": {<space>: <tab>}: where cmd-g was pressed (it goes
@@ -93,6 +97,15 @@ export function setOrigin(space, tab) {
 export function machineOf(address) {
   const s = String(address ?? "");
   return s.includes("/") ? s.split("/")[0] : null;
+}
+
+// When a watch last saw the (local) repo change.
+export function changedAt(root) {
+  return (shared("gitview.changed") ?? {})[notesKey(null, root)] ?? 0;
+}
+
+export function stampChanged(root, at) {
+  setShared("gitview.changed", { ...(shared("gitview.changed") ?? {}), [notesKey(null, root)]: at });
 }
 
 // ---- notes ------------------------------------------------------------------

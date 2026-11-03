@@ -20,7 +20,7 @@ import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
   cursorIn, diffPane, dirty, liveView, notesKey, notesOf, pump, setTreeMode, setView, takeKeyboard, treeMode, viewIn,
 } from "./shared.js";
-import { Flash, Loads, ModPanes, commandLoop, watch } from "./modkit.js";
+import { Flash, Loads, ModPanes, commandLoop, followStamp, stampMoved, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
 import { FileList } from "./filelist.js";
 import { History } from "./history.js";
@@ -99,6 +99,7 @@ export default class GitList extends View {
     if (this.modPanes.changed()) return true;
     if (this.cycle && this.cycle.shown !== this.place.shown()) return true;
     if (!this.place.shown()) return false;
+    if (stampMoved(this.watcher)) return true;
     const ctx = this.context();
     const d = dirty();
     const view = viewIn(this.tab());
@@ -117,7 +118,8 @@ export default class GitList extends View {
     const repoChanged = Boolean(d && d.at > this.seen.dirty && d.root === this.work?.where.root);
     if (d) this.seen.dirty = Math.max(this.seen.dirty, d.at);
     const tabChanged = ctx.tab !== this.ctx?.tab;
-    if (ctx.key !== this.ctx?.key || repoChanged) this.refresh(cx);
+    const stamped = followStamp(this.watcher); // another copy's watch saw the repo change
+    if (ctx.key !== this.ctx?.key || repoChanged || stamped) this.refresh(cx);
     else if (tabChanged) this.ctx = { ...this.ctx, tab: ctx.tab, space: ctx.space };
     this.followPane({ adopt: tabChanged });
   }
