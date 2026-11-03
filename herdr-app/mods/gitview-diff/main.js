@@ -201,14 +201,22 @@ export default class GitDiff extends View {
 
   // The op, and the repo is marked changed: the list refreshes and shows
   // here where the file went (staged), or the next file when it's gone.
+  // Until it has (5 s at most), this counts as loading, so the next command
+  // acts on that file, not on the one that moved.
   applyOp(op, v, cx) {
-    this.loads.run(cx, op, async () => {
+    const tab = this.tab();
+    this.loads.run(cx, op, async (cx) => {
+      const seq = viewIn(tab)?.seq ?? 0;
       try {
         await gv([op, "--repo", v.root, ...onArgs(v.on), "--section", v.section, "--", v.path]);
       } catch (e) {
         notify({ title: "gitview", body: message(e), level: "error" });
+        return;
+      } finally {
+        setDirty(v.root, v.on);
       }
-      setDirty(v.root, v.on);
+      for (let i = 0; i < 50 && (viewIn(tab)?.seq ?? 0) === seq; i++) await cx.sleep(100);
+      this.sync(cx);
     });
   }
 
