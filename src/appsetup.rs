@@ -35,7 +35,8 @@
 //!
 //! `--home`: the app home (default `$HERDR_APP_HOME`, else
 //! `$HOME/.config/herdr-app`). `--app`: the `herdr-app` binary (default
-//! `$HERDR_APP_BIN`, else `herdr-app` on `PATH`); install only.
+//! `$GITVIEW_HERDR_APP`, else `herdr-app` on `PATH`); install only. Both as
+//! [`App::from_env`] reads them for `json`.
 
 use std::collections::HashSet;
 use std::fs;
@@ -44,6 +45,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
+use crate::apphost::App;
 use crate::applayout::{self, Patched};
 
 /// Keys older installs bound for the TUI inside the app, now gone.
@@ -65,20 +67,21 @@ pub fn run(args: &[String]) -> Result<()> {
             .and_then(|at| args.get(at + 1))
             .cloned()
     };
-    let home = value("--home")
-        .map(PathBuf::from)
-        .unwrap_or_else(crate::apphost::app_home);
-    let app = value("--app")
-        .or_else(|| std::env::var("HERDR_APP_BIN").ok())
-        .unwrap_or_else(|| "herdr-app".to_string());
+    let mut app = App::from_env();
+    if let Some(home) = value("--home") {
+        app.home = PathBuf::from(home);
+    }
+    if let Some(bin) = value("--app") {
+        app.bin = bin.into();
+    }
     let keys_path = value("--keys").context(USAGE)?;
     let ours: Value = serde_json::from_str(
         &fs::read_to_string(&keys_path).with_context(|| format!("cannot read {keys_path}"))?,
     )
     .with_context(|| format!("{keys_path}: invalid JSON"))?;
     match args.first().map(String::as_str) {
-        Some("install") => install(&home, &app, &ours),
-        Some("uninstall") => uninstall(&home, &ours),
+        Some("install") => install(&app, &ours),
+        Some("uninstall") => uninstall(&app.home, &ours),
         _ => bail!(USAGE),
     }
 }
@@ -87,7 +90,8 @@ fn say(line: impl AsRef<str>) {
     println!("gitview: {}", line.as_ref());
 }
 
-fn install(home: &Path, app: &str, ours: &Value) -> Result<()> {
+fn install(app: &App, ours: &Value) -> Result<()> {
+    let home = &app.home;
     if !home.is_dir() {
         bail!(
             "no Herdr app home at {} (start the app once, or pass --home)",
@@ -97,7 +101,7 @@ fn install(home: &Path, app: &str, ours: &Value) -> Result<()> {
     let shipped = shipped_layouts(home)?;
     // Where the layout part goes is decided first: it may refuse, and then
     // nothing has changed yet.
-    let (shown, target) = plan_layout(home, app, &shipped)?;
+    let (shown, target) = plan_layout(app, &shipped)?;
     let keys = home.join("keys.json");
     if !keys.exists() {
         fs::write(&keys, "{}\n")?;
@@ -123,7 +127,7 @@ fn install(home: &Path, app: &str, ours: &Value) -> Result<()> {
         .iter()
         .for_each(|l| say(format!("keys: kept yours: {l}")));
     remove_retired_mods(home)?;
-    install_layout(home, app, &shown, target)
+    install_layout(app, &shown, target)
 }
 
 fn uninstall(home: &Path, ours: &Value) -> Result<()> {
@@ -165,17 +169,6 @@ fn remove_retired_mods(home: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-// ---- the app ------------------------------------------------------------------
-
-/// `herdr-app <args>` against `home`; its JSON reply.
-fn app_call(app: &str, home: &Path, args: &[&str]) -> Result<Value> {
-    crate::apphost::app_call(std::ffi::OsStr::new(app), Some(home), args)
-}
-
-fn app_do(app: &str, home: &Path, command: &str, args: Value) -> Result<Value> {
-    app_call(app, home, &["do", command, &args.to_string()])
 }
 
 // ---- layouts --------------------------------------------------------------------
@@ -267,8 +260,8 @@ pub fn choose(shown: &str, shown_is_shipped: bool, personal: &[(String, Value)])
 
 /// The layout on screen and where the install goes, without changing
 /// anything (an error when [`choose`] refuses).
-fn plan_layout(home: &Path, app: &str, shipped: &HashSet<String>) -> Result<(String, Target)> {
-    let status = app_call(app, home, &["status"])?;
+fn plan_layout(app: &App, shipped: &HashSet<String>) -> Result<(String, Target)> {
+    let status = app.status()?;
     let shown = status
         .get("layout")
         .and_then(Value::as_str)
@@ -277,23 +270,24 @@ fn plan_layout(home: &Path, app: &str, shipped: &HashSet<String>) -> Result<(Str
     let target = choose(
         &shown,
         shipped.contains(&shown),
-        &personal_layouts(home, shipped),
+        &personal_layouts(&app.home, shipped),
     )?;
     Ok((shown, target))
 }
 
-fn install_layout(home: &Path, app: &str, shown: &str, target: Target) -> Result<()> {
+fn install_layout(app: &App, shown: &str, target: Target) -> Result<()> {
+    let home = &app.home;
     let target = match target {
         Target::Edit(name) => name,
         Target::Switch(copy) => {
-            app_do(app, home, "layout.switch", json!({ "name": copy }))?;
+            app.command("layout.switch", json!({ "name": copy }))?;
             say(format!(
                 "layout: switched to {copy}, your personal copy of {shown} (Herdr's own layouts can't be edited)"
             ));
             copy
         }
         Target::Clone(shown) => {
-            app_do(app, home, "layout.clone", json!({ "name": shown }))?;
+            app.command("layout.clone", json!({ "name": shown }))?;
             let copy = format!("{shown}-copy");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             while !layout_path(home, &copy).exists() {

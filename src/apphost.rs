@@ -1,8 +1,9 @@
 //! The Herdr desktop app, as `herdr-gitview json` and `app-setup` reach it:
 //!
-//! - `herdr-app` changes and reads the window (`do pane.split`, `status`).
-//!   Binary: `GITVIEW_HERDR_APP` (the mods pass the path the installer
-//!   recorded), else `herdr-app` on `PATH`.
+//! - `herdr-app` changes and reads the window (`do pane.split`, `status`),
+//!   through one client, [`App`]: the binary and the app home, read from the
+//!   environment once ([`App::from_env`]) or given (`app-setup --app
+//!   --home`).
 //! - `hc` (herdr-core) runs and talks to terminals; `hc connect` gives the
 //!   JSON-RPC API for what the CLI doesn't print (terminal facts, the app's
 //!   layout documents). Binary: `GITVIEW_HC`, else `hc`.
@@ -10,7 +11,7 @@
 //! The gitview TUI itself runs only under the herdr TUI; nothing here
 //! starts or drives its panes.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -22,65 +23,77 @@ use crate::logx::log;
 
 pub use crate::remote::hc_bin;
 
-/// The `herdr-app` binary: `GITVIEW_HERDR_APP`, else `herdr-app` on `PATH`.
-pub fn app_bin() -> OsString {
-    std::env::var_os("GITVIEW_HERDR_APP").unwrap_or_else(|| "herdr-app".into())
+/// The Herdr app, as gitview reaches it: its `herdr-app` binary, and its
+/// home (layouts, keys, mods), which every call is made against.
+pub struct App {
+    pub bin: OsString,
+    pub home: PathBuf,
 }
 
-/// The app's home, as the app defines it: `$HERDR_APP_HOME`, else
-/// `$HOME/.config/herdr-app`.
-pub fn app_home() -> PathBuf {
-    if let Some(home) = std::env::var_os("HERDR_APP_HOME") {
-        return PathBuf::from(home);
+impl App {
+    /// The binary: `GITVIEW_HERDR_APP` (the mods pass the path the installer
+    /// recorded), else `herdr-app` on `PATH`. The home, as the app defines
+    /// it: `$HERDR_APP_HOME`, else `$HOME/.config/herdr-app`.
+    pub fn from_env() -> App {
+        let bin = std::env::var_os("GITVIEW_HERDR_APP").unwrap_or_else(|| "herdr-app".into());
+        let home = std::env::var_os("HERDR_APP_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default()
+                    .join(".config/herdr-app")
+            });
+        App { bin, home }
     }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
-        .join(".config/herdr-app")
-}
 
-/// `herdr-app <args>` (against the app home `home` when given) → its JSON
-/// reply. An `{"error"}` reply or a failed exit is an error.
-pub fn app_call(bin: &OsStr, home: Option<&Path>, args: &[&str]) -> Result<Value> {
-    let mut cmd = Command::new(bin);
-    cmd.args(args).stdin(Stdio::null());
-    if let Some(home) = home {
-        cmd.env("HERDR_APP_HOME", home);
-    }
-    let out = cmd
-        .output()
-        .with_context(|| format!("cannot run {}", bin.to_string_lossy()))?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
-    log(format!(
-        "herdr-app {} -> {} | {}{}",
-        args.join(" "),
-        out.status,
-        stdout.trim(),
-        String::from_utf8_lossy(&out.stderr).trim()
-    ));
-    let reply: Value = serde_json::from_str(stdout.trim()).unwrap_or(Value::Null);
-    if let Some(err) = reply.get("error").and_then(Value::as_str) {
-        bail!("herdr-app {what}: {err}");
-    }
-    if !out.status.success() {
-        bail!(
-            "herdr-app {what} failed (is the Herdr app open?): {}{}",
+    /// `herdr-app <args>` → its JSON reply. An `{"error"}` reply or a failed
+    /// exit is an error.
+    fn call(&self, args: &[&str]) -> Result<Value> {
+        let out = Command::new(&self.bin)
+            .args(args)
+            .stdin(Stdio::null())
+            .env("HERDR_APP_HOME", &self.home)
+            .output()
+            .with_context(|| format!("cannot run {}", self.bin.to_string_lossy()))?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
+        log(format!(
+            "herdr-app {} -> {} | {}{}",
+            args.join(" "),
+            out.status,
             stdout.trim(),
             String::from_utf8_lossy(&out.stderr).trim()
-        );
+        ));
+        let reply: Value = serde_json::from_str(stdout.trim()).unwrap_or(Value::Null);
+        if let Some(err) = reply.get("error").and_then(Value::as_str) {
+            bail!("herdr-app {what}: {err}");
+        }
+        if !out.status.success() {
+            bail!(
+                "herdr-app {what} failed (is the Herdr app open?): {}{}",
+                stdout.trim(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(reply)
     }
-    Ok(reply)
-}
 
-/// `herdr-app do <command> <json args>`.
-pub fn app_do(command: &str, args: Value) -> Result<Value> {
-    app_call(&app_bin(), None, &["do", command, &args.to_string()])
-}
+    /// `herdr-app do <command> <json args>`.
+    pub fn command(&self, command: &str, args: Value) -> Result<Value> {
+        self.call(&["do", command, &args.to_string()])
+    }
 
-/// What the window shows (`herdr-app status`): focused space, tab, pane.
-pub fn app_status() -> Result<Value> {
-    app_call(&app_bin(), None, &["status"])
+    /// What the window shows (`herdr-app status`): layout, focused space,
+    /// tab, pane.
+    pub fn status(&self) -> Result<Value> {
+        self.call(&["status"])
+    }
+
+    /// The herdr-nvim mod's command-line entry, when it's installed.
+    fn herdr_nvim(&self) -> PathBuf {
+        self.home.join("mods/herdr-nvim/bin/herdr-nvim")
+    }
 }
 
 /// One herdr-core API call over `hc connect` (JSON-RPC, one line each).
@@ -225,6 +238,7 @@ fn child_pids(pid: u64) -> Vec<u64> {
 /// `shown` terminals (layout blocks). Returns how it went, `None` when there
 /// is no nvim to reuse (the caller starts a plain one).
 pub fn open_in_running_nvim(
+    app: &App,
     tab: Option<&str>,
     space: Option<&str>,
     shown: &[String],
@@ -232,7 +246,7 @@ pub fn open_in_running_nvim(
     line: u32,
 ) -> Option<String> {
     if let Some(tab) = tab
-        && open_in_herdr_nvim(tab, space, file, line)
+        && open_in_herdr_nvim(app, tab, space, file, line)
     {
         return Some("herdr-nvim".to_string());
     }
@@ -252,8 +266,14 @@ pub fn open_in_running_nvim(
 /// needed), focuses it, prints `{"terminal":"tN"}` and exits 0; nonzero with
 /// the reason on stderr. No binary there: herdr-nvim isn't installed, and the
 /// caller falls back to plain nvim.
-pub fn open_in_herdr_nvim(tab: &str, space: Option<&str>, file: &Path, line: u32) -> bool {
-    let bin = app_home().join("mods/herdr-nvim/bin/herdr-nvim");
+pub fn open_in_herdr_nvim(
+    app: &App,
+    tab: &str,
+    space: Option<&str>,
+    file: &Path,
+    line: u32,
+) -> bool {
+    let bin = app.herdr_nvim();
     if !bin.exists() {
         return false;
     }
@@ -318,8 +338,8 @@ fn find_tab<'a>(doc: &'a Value, tab: &str) -> Option<&'a Value> {
         .find(|t| t.get("id").and_then(Value::as_str) == Some(tab))
 }
 
-fn weigh(node: &str, weight: f64) {
-    let _ = app_do("layout.resize", json!({ "id": node, "weight": weight }));
+fn weigh(app: &App, node: &str, weight: f64) {
+    let _ = app.command("layout.resize", json!({ "id": node, "weight": weight }));
 }
 
 /// A mod pane (`pane.split {mod}`) at the tab's right edge, `width_percent`
@@ -328,18 +348,19 @@ fn weigh(node: &str, weight: f64) {
 /// remote tab `machine/…` that machine's); else split off the tab's focused
 /// pane. Returns its pane id.
 pub fn open_mod_sidebar(
+    app: &App,
     tab: &str,
     module: &str,
     props: Value,
     width_percent: u8,
 ) -> Result<String> {
     let mut tried = Vec::new();
-    for target in split_targets(tab) {
+    for target in split_targets(app, tab) {
         let mut args = json!({ "direction": "right", "pane": target, "mod": module });
         if !props.is_null() {
             args["props"] = props.clone();
         }
-        let pane = app_do("pane.split", args).and_then(|reply| {
+        let pane = app.command("pane.split", args).and_then(|reply| {
             reply
                 .get("pane")
                 .and_then(Value::as_str)
@@ -349,7 +370,7 @@ pub fn open_mod_sidebar(
         match pane {
             Ok(pane) => {
                 let f = f64::from(width_percent) / 100.0;
-                weigh(&pane, f / (1.0 - f));
+                weigh(app, &pane, f / (1.0 - f));
                 return Ok(pane);
             }
             Err(err) => tried.push(format!("{target}: {err:#}")),
@@ -362,7 +383,7 @@ pub fn open_mod_sidebar(
 }
 
 /// The panes to split for a pane at `tab`'s right edge, best first.
-fn split_targets(tab: &str) -> Vec<String> {
+fn split_targets(app: &App, tab: &str) -> Vec<String> {
     let root_in = |doc: &Value, id: &str| {
         find_tab(doc, id)
             .and_then(|t| t.pointer("/root/id")?.as_str())
@@ -384,7 +405,7 @@ fn split_targets(tab: &str) -> Vec<String> {
             format!("{machine}/{root}")
         });
     }
-    if let Ok(status) = app_status()
+    if let Ok(status) = app.status()
         && status.get("tab").and_then(Value::as_str) == Some(tab)
         && let Some(pane) = status.get("focused_pane").and_then(Value::as_str)
     {

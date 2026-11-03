@@ -699,12 +699,13 @@ fn nvim(a: &Args) -> Result<Value> {
     let file = repo.root.join(a.value("path").context("--path")?);
     let line = a.value("line").and_then(|l| l.parse().ok()).unwrap_or(1);
     let (tab, space) = (a.value("tab"), a.value("space"));
+    let app = crate::apphost::App::from_env();
     if repo.machine != crate::remote::Machine::Local {
         // A remote repo's file only exists there: herdr-nvim with the space
         // (whose machine it is), never an nvim of this machine.
         let terminal = match (tab, space) {
             (Some(tab), Some(space)) => {
-                crate::apphost::open_in_herdr_nvim(tab, Some(space), &file, line)
+                crate::apphost::open_in_herdr_nvim(&app, tab, Some(space), &file, line)
                     .then_some("herdr-nvim")
             }
             _ => None,
@@ -720,7 +721,7 @@ fn nvim(a: &Args) -> Result<Value> {
                 .collect()
         })
         .unwrap_or_default();
-    let terminal = crate::apphost::open_in_running_nvim(tab, space, &shown, &file, line);
+    let terminal = crate::apphost::open_in_running_nvim(&app, tab, space, &shown, &file, line);
     Ok(json!({ "terminal": terminal }))
 }
 
@@ -735,6 +736,7 @@ fn sidebar(a: &Args) -> Result<Value> {
         None => cfg.view_width_percent,
     };
     let pane = crate::apphost::open_mod_sidebar(
+        &crate::apphost::App::from_env(),
         a.value("tab").context("--tab")?,
         a.value("mod").context("--mod")?,
         props,
