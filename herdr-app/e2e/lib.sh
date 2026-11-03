@@ -58,9 +58,9 @@ echo "{\"last_run\": \"$version\", \"presented\": []}" >"$HERDR_APP_HOME/update-
 
 PY=
 for c in python3 /usr/bin/python3 /opt/homebrew/bin/python3 /opt/homebrew/anaconda3/bin/python3; do
-  if "$c" -c 'import Quartz' 2>/dev/null; then PY=$(command -v "$c"); break; fi
+  if "$c" -c 'import Quartz, PIL' 2>/dev/null; then PY=$(command -v "$c"); break; fi
 done
-[ -n "$PY" ] || { echo "no python3 with pyobjc (Quartz) for key presses" >&2; exit 1; }
+[ -n "$PY" ] || { echo "no python3 with pyobjc (Quartz) for key presses and Pillow for pixel probes" >&2; exit 1; }
 
 APP_PID=""
 cleanup() {

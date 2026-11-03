@@ -16,7 +16,8 @@
 # run.log, then uninstalls and shuts the private app and core down.
 #
 # Needs: the Herdr app (HERDR_APP_BIN, else found like install.sh does), hc,
-# git, nvim, python3 with pyobjc (Quartz), cargo (or GITVIEW_BIN).
+# git, nvim, python3 with pyobjc (Quartz) and Pillow, node, cargo (or
+# GITVIEW_BIN).
 set -euo pipefail
 
 . "$(dirname "$0")/lib.sh"
@@ -70,13 +71,9 @@ step "Changes button → gitview's file list, with its first file already in the
 do_ pane.focus --terminal "$SHELL_T"
 expect panel_up "the panel is up (it takes gitview.* commands)" 20
 expect '[ "$(panel_state)" = "open changes" ]' "the panel shows Changes"
-# The list notices it's shown when it draws (a covered window doesn't).
-if drawn; then
-  expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "showing the panel opens the diff pane in this tab"
-  expect '[ -n "$(view_of $TAB path)" ] && [ "$(view_of $TAB by)" = list ]' "on the list's first file"
-else
-  skip "showing the panel opens the diff pane on the first file (the window is covered: the list doesn't draw)"
-fi
+# The list notices it's shown from a timer too (a covered window doesn't draw).
+expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "showing the panel opens the diff pane in this tab"
+expect '[ -n "$(view_of $TAB path)" ] && [ "$(view_of $TAB by)" = list ]' "on the list's first file"
 shot 01-panel-list
 do_ gitview.click:src/main.rs
 expect '[ "$(view_of $TAB path)" = src/main.rs ] && [ "$(view_of $TAB scope)" = uncommitted ]' "the pane shows src/main.rs (uncommitted)"
@@ -381,15 +378,21 @@ else
 fi
 shot 14-cmd-shift-g 1
 press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ] && ! mod_panes | grep -q gitview-diff' "hides both again"
-if [ "$KEYS" = 1 ]; then # the Changes button's path is noticed when the mods draw
-  do_ layout.select '{"stack":"panel-body","child":"changes"}'
-  do_ layout.show --id panel
-  expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "the Changes button shows both too"
-  do_ layout.hide --id panel
-  expect '! mod_panes | grep -q gitview-diff' "and hiding the panel (the Changes button again) closes the diff pane"
-else
-  skip "the Changes button shows and hides both (the window is covered: the mods don't draw)"
-fi
+changes_button
+expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "the Changes button shows both too"
+do_ layout.hide --id panel
+expect '! mod_panes | grep -q gitview-diff' "and hiding the panel (the Changes button again) closes the diff pane"
+# The hide was noticed only by a diff pane in the shown tab once (B7).
+changes_button
+expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "shown again in tab 1, with its diff pane"
+TAB2=$("$APP" do tab.new --space "$SPACE" --folder "$S" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+expect '[ "$(tab_id)" = "$TAB2" ] && ! mod_panes | grep -q "^$TAB2 "' "a second tab, without a diff pane"
+do_ layout.hide --id panel
+expect '! mod_panes | grep -q gitview-diff' "the Changes button hides the panel from there: tab 1's diff pane closes too"
+changes_button
+expect 'mod_panes | grep -q "^$TAB2 .* gitview-diff$" && [ -n "$(view_of $TAB2 path)" ]' "and shows it again: its file opens in a diff pane in this tab"
+do_ tab.close --id "$TAB2" --confirmed true
+expect '[ "$(tab_id)" = "$TAB" ]' "back in tab 1"
 press 5:cmd cmd-g gitview-tab '[ "$(tab_active)" = gitview ]' "opens the gitview tab"
 OWN=$(tab_id)
 expect 'mod_panes | grep -q "^$OWN .* gitview-diff$" && mod_panes | grep -q "^$OWN .* gitview$"' "diff pane and list pane"
@@ -414,6 +417,12 @@ printf 'm changed\n' >"$C/dir/m.txt"
 git -C "$C" diff --name-only --diff-filter=U | grep -q dir/c.txt || fail "no conflict set up"
 "$APP" do space.new --name conflict --folder "$C" >>"$LOG"
 expect panel_up "the panel shows the conflicted repo" 20
+CHEAD=$(git -C "$C" rev-parse HEAD) CSTATUS=$(git -C "$C" status --porcelain)
+do_ "gitview.commit:e2e: must not commit the conflict"
+do_ gitview.key:r # runs once the commit is done (commands wait for loads)
+sleep 2
+[ "$(git -C "$C" rev-parse HEAD)" = "$CHEAD" ] && [ "$(git -C "$C" status --porcelain)" = "$CSTATUS" ] \
+  && ok "Commit all with only conflicts (and a change) is refused: no commit, nothing staged, the conflict stays" || fail "a commit during conflicts: $(git -C "$C" status --short)"
 [ "$(shared "s.get('gitview.tree')")" = true ] || do_ gitview.key:t
 do_ gitview.button:stage:in:conflicts:dir/
 expect '[ -z "$(git -C "$C" diff --name-only --diff-filter=U)" ]' "the conflict under dir/ is staged (resolved as it is)"
@@ -435,6 +444,30 @@ confirm_discard gitview-diff
 expect '[ -z "$(git -C "$L" status --short)" ]' "it's discarded"
 expect '[ "$(view_of $LTAB empty)" = true ]' "the pane's view is empty (not a broken one)"
 shot 16b-last-file-gone 1.5
+do_ space.select --index 1
+
+step "Commit all: with nothing staged the commit row commits everything (untracked too, unless they're hidden)"
+A="$BASE/all"
+mkdir -p "$A" && git -C "$A" init -q -b main && printf 'one\n' >"$A/tracked.txt"
+git -C "$A" -c user.email=e2e@test -c user.name=e2e add -A && git -C "$A" -c user.email=e2e@test -c user.name=e2e commit -qm init
+git -C "$A" config user.email e2e@test && git -C "$A" config user.name e2e
+printf 'two\n' >>"$A/tracked.txt" && printf 'new\n' >"$A/new.txt"
+"$APP" do space.new --name all --folder "$A" >>"$LOG"
+expect panel_up "the panel shows a repo with nothing staged" 20
+do_ "gitview.commit:e2e: commit all"
+expect 'git -C "$A" log -1 --format=%s | grep -qx "e2e: commit all"' "the commit row commits"
+[ -z "$(git -C "$A" status --porcelain)" ] && git -C "$A" show --name-only --format= HEAD | sort | tr '\n' ' ' | grep -qx "new.txt tracked.txt " \
+  && ok "everything went in: the change and the untracked file" || fail "commit all left: $(git -C "$A" status --short); took: $(git -C "$A" show --name-only --format= HEAD)"
+# The person's gitview config (this run's XDG_CONFIG_HOME) hides untracked files.
+GVCONF="$XDG_CONFIG_HOME/herdr/plugins/config/chmarax.gitview"
+mkdir -p "$GVCONF" && printf 'show_untracked = false\n' >"$GVCONF/config.toml"
+printf 'three\n' >>"$A/tracked.txt" && printf 'hidden\n' >"$A/hidden.txt"
+do_ gitview.key:r
+do_ "gitview.commit:e2e: commit all, untracked hidden"
+expect 'git -C "$A" log -1 --format=%s | grep -qx "e2e: commit all, untracked hidden"' "with untracked files hidden, the commit row commits"
+[ "$(git -C "$A" show --name-only --format= HEAD)" = tracked.txt ] && [ "$(git -C "$A" status --porcelain)" = "?? hidden.txt" ] \
+  && ok "the hidden untracked file stays out (add -u)" || fail "took: $(git -C "$A" show --name-only --format= HEAD); left: $(git -C "$A" status --short)"
+rm -f "$GVCONF/config.toml"
 do_ space.select --index 1
 
 # --- a remote space ------------------------------------------------------------------------
@@ -497,6 +530,41 @@ status_has '"errors": \[\]' && ok "no mod errors in a light theme" || fail "mod 
 shot 21-light-tree 1
 echo '{"zoom": 1, "theme": "graphite", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
 do_ gitview.key:t
+
+step "Catppuccin Frappé: a comment on an added line reads on its green tint (contrast ≥ 3.5)"
+# The regression 1799186 fixed: One Dark's comment color on the theme's own
+# insert tint. Measured in the app's frame when the window is drawn; the
+# color the pane's render code gives the span is checked either way
+# (colors.mjs runs the installed diffview.js on the engine's diff).
+CT="$ART/contrast" && mkdir -p "$CT" "$HERDR_APP_HOME/themes"
+cp "$E2E/catppuccin-frappe.json" "$HERDR_APP_HOME/themes/catppuccin-frappe.json"
+printf '// MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM\n' >"$S/probe.rs"
+for _ in 1 2 3 4 5 6; do printf '// MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM a comment\n' >>"$S/probe.rs"; done
+echo '{"zoom": 1, "theme": "catppuccin-frappe", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
+sleep 1.5
+do_ gitview.key:r
+expect '"$APP" do gitview.click:probe.rs >/dev/null && [ "$(view_of $TAB path)" = probe.rs ]' "probe.rs (only comments, all added) in the pane"
+python3 -c 'import json,sys; th=json.load(open(sys.argv[1])); print(json.dumps({"background":th["background"],"foreground":th["foreground"],"selection":th["selection"],**{f"ansi{i}":c for i,c in enumerate(th["ansi"])},**th.get("colors",{})}))' \
+  "$E2E/catppuccin-frappe.json" >"$CT/theme-colors.json"
+env GITVIEW_HOST=app "$HERDR_APP_HOME/mods/gitview/bin/herdr-gitview" json diff --repo "$S" --path probe.rs --kind "$(view_of $TAB kind)" --theme dark >"$CT/diff.json" || fail "json diff probe.rs"
+node "$E2E/colors.mjs" "$HERDR_APP_HOME/mods/gitview-diff/diffview.js" "$CT/diff.json" "$CT/theme-colors.json" >"$CT/colors.jsonl" || fail "colors.mjs"
+COMPUTED=$("$PY" "$E2E/contrast.py" computed "$CT/colors.jsonl" "$E2E/catppuccin-frappe.json") && ok "the pane gives the comment a color that reads: $COMPUTED" || fail "the comment's color doesn't read: $COMPUTED"
+echo "$COMPUTED" | python3 -c 'import json,sys; sys.exit(0 if all(o["engine_contrast"] < 3.5 for o in json.load(sys.stdin)) else 1)' \
+  && ok "(the engine's own comment color wouldn't: the lift is what the check sees)" || fail "the engine's comment color already reads here: the check proves nothing"
+if until_ drawn 5; then
+  PIXELS=
+  for i in 1 2 3; do
+    shot "23-frappe-probe-$i" 1.5
+    PIXELS=$("$PY" "$E2E/contrast.py" pixels "$ART/23-frappe-probe-$i.png" "$E2E/catppuccin-frappe.json") && break
+  done
+  echo "$PIXELS" >"$CT/pixels.json"
+  "$PY" "$E2E/contrast.py" pixels "$ART/23-frappe-probe-$i.png" "$E2E/catppuccin-frappe.json" >/dev/null \
+    && ok "drawn: the comment's pixels on the tint reach 3.5: $PIXELS" || fail "drawn comment pixels: $PIXELS"
+else
+  skip "the drawn pixels of the comment (the window is covered: no new frame to probe)"
+fi
+echo '{"zoom": 1, "theme": "graphite", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
+rm -f "$S/probe.rs"
 
 # --- uninstall -------------------------------------------------------------------------
 step "uninstall: our edits go, the layout stays"
