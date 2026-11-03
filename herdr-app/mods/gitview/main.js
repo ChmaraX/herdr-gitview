@@ -376,10 +376,26 @@ export default class GitList extends View {
   }
 
   setMode(mode, cx) {
+    const leaving = this.mode;
     this.mode = mode;
+    if (mode === "files" && leaving !== "files") this.reshowWork(cx);
     if (this.list()) this.reveal(this.list().index(this.list().selected), { center: true });
     if (mode === "log" && !this.history.commits.length) loadLog(this, cx);
     if (mode === "notes") this.noteSel = Math.min(this.noteSel, Math.max(0, this.notes().length - 1));
+  }
+
+  // Back from history (or the notes list): the diff pane showed a commit's
+  // file; it shows the list's selected (else first) changed file again, or
+  // nothing when there are no changes.
+  reshowWork(cx) {
+    const tab = this.tab();
+    const view = liveView(viewIn(tab));
+    if (!tab || !this.work || !view) return;
+    const selected = this.work.row();
+    const row = selected?.kind === "file" ? selected : this.work.rows.find((r) => r.kind === "file");
+    if (!row) return setView(tab, null);
+    const next = this.work.viewFor(row);
+    if (!sameFile(view, next)) this.select(row.key, cx, { open: false });
   }
 
   // ---- notes ----------------------------------------------------------------

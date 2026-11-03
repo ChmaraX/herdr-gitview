@@ -226,6 +226,9 @@ sleep 0.5
 [ "$(shared "len(s.get('gitview.notes',{}).get('$KEY0',[]))")" = "$N0" ] && ok "no notes on a commit's diff (as the TUI)" || fail "a note on a commit"
 do_ gitview.key:escape
 do_ gitview.key:escape
+expect '[ "$(view_of $TAB commit)" = null ] && [ "$(view_of $TAB scope)" = uncommitted ]' "back to the uncommitted list: the pane leaves the commit's file for the list's selected change"
+SELP=$(view_of $TAB path)
+git -C "$S" status --porcelain | grep -q " $SELP$\|?? $SELP$" && ok "that file has uncommitted changes" || fail "the pane shows $SELP, not a changed file"
 
 step "notes: drag-select, note, the notes list"
 do_ gitview.click:src/main.rs
