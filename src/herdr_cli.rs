@@ -84,23 +84,27 @@ fn pane_nvim_socket(bin: &OsStr, pane: &str) -> Option<PathBuf> {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
-        // `nvim --server <sock> --remote-ui` (herdr-nvim sidebar and co.).
-        if let Some(pos) = argv.iter().position(|a| *a == "--server")
-            && let Some(sock) = argv.get(pos + 1)
-        {
-            let sock = PathBuf::from(sock);
-            if sock.exists() {
-                return Some(sock);
-            }
-        }
-        // Plain nvim: derive the auto-listen socket from the pid.
-        if let Some(pid) = proc.get("pid").and_then(Value::as_u64)
-            && let Some(sock) = socket_for_pid(pid)
-        {
+        let pid = proc.get("pid").and_then(Value::as_u64);
+        if let Some(sock) = server_socket(&argv, pid) {
             return Some(sock);
         }
     }
     None
+}
+
+/// The socket an nvim process with `argv` (and `pid`) serves on: the one
+/// `nvim --server <sock> --remote-ui` names (herdr-nvim sidebar and co.),
+/// when it's there; else a plain nvim's auto-listen socket, from its pid.
+pub fn server_socket(argv: &[&str], pid: Option<u64>) -> Option<PathBuf> {
+    if let Some(pos) = argv.iter().position(|a| *a == "--server")
+        && let Some(sock) = argv.get(pos + 1)
+    {
+        let sock = PathBuf::from(sock);
+        if sock.exists() {
+            return Some(sock);
+        }
+    }
+    socket_for_pid(pid?)
 }
 
 /// nvim ≥0.9's default server socket: `<rundir>/nvim.<user>/<rand>/nvim.<pid>.0`

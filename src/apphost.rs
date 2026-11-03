@@ -210,17 +210,11 @@ fn find_nvim(candidates: Vec<Value>, exclude: &[&str]) -> Option<crate::herdr_cl
 /// a plain nvim auto-listens on a socket derived from its pid (nvim ≥0.10's
 /// TUI runs its server as a `nvim --embed` child: that pid owns it).
 fn nvim_socket_from(argv: &[&str], pid: Option<u64>) -> Option<PathBuf> {
-    if let Some(pos) = argv.iter().position(|a| *a == "--server")
-        && let Some(sock) = argv.get(pos + 1)
-    {
-        let sock = PathBuf::from(sock);
-        if sock.exists() {
-            return Some(sock);
-        }
-    }
-    let pid = pid?;
-    let socket = crate::herdr_cli::socket_for_pid;
-    socket(pid).or_else(|| child_pids(pid).into_iter().find_map(socket))
+    crate::herdr_cli::server_socket(argv, pid).or_else(|| {
+        child_pids(pid?)
+            .into_iter()
+            .find_map(crate::herdr_cli::socket_for_pid)
+    })
 }
 
 fn child_pids(pid: u64) -> Vec<u64> {
