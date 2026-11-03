@@ -36,7 +36,6 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
@@ -165,25 +164,7 @@ fn remove_retired_mods(home: &Path) -> Result<()> {
 
 /// `herdr-app <args>` against `home`; its JSON reply.
 fn app_call(app: &str, home: &Path, args: &[&str]) -> Result<Value> {
-    let out = Command::new(app)
-        .args(args)
-        .env("HERDR_APP_HOME", home)
-        .output()
-        .with_context(|| format!("cannot run {app}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let reply: Value = serde_json::from_str(stdout.trim()).unwrap_or(Value::Null);
-    if let Some(err) = reply.get("error").and_then(Value::as_str) {
-        bail!("herdr-app {}: {err}", args.join(" "));
-    }
-    if !out.status.success() {
-        bail!(
-            "herdr-app {} failed (is the app running?): {}{}",
-            args.join(" "),
-            stdout.trim(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(reply)
+    crate::apphost::app_call(std::ffi::OsStr::new(app), Some(home), args)
 }
 
 fn app_do(app: &str, home: &Path, command: &str, args: Value) -> Result<Value> {
