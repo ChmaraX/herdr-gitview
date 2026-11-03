@@ -470,10 +470,8 @@ fn diff(a: &Args) -> Result<Value> {
         });
     }
     let doc = crate::preview::worker::load_doc(&repo, &cfg, &req).map_err(anyhow::Error::msg)?;
-    let roles = crate::preview::render::tint_roles(cfg.theme);
-    let hex = |c| hex(c, &roles);
-    let rows = doc
-        .text
+    let text = doc.tagged_text();
+    let rows = text
         .lines
         .iter()
         .enumerate()
@@ -503,20 +501,23 @@ fn diff(a: &Args) -> Result<Value> {
         .collect();
     reply(DiffOut {
         rows,
-        truncated: doc.text.lines.len() > MAX_ROWS,
+        truncated: text.lines.len() > MAX_ROWS,
         first_change: doc.first_change,
         empty: doc.is_empty,
         binary: doc.binary,
     })
 }
 
-fn hex(color: Option<ratatui::style::Color>, roles: &[((u8, u8, u8), &str)]) -> Option<String> {
+/// A tagged text's color as the mod takes it: a tint's role (`@ins`, …),
+/// `#rrggbb`, or the change bars' `red`/`green`.
+fn hex(color: Option<ratatui::style::Color>) -> Option<String> {
     use ratatui::style::Color;
-    match color? {
-        Color::Rgb(r, g, b) => Some(match roles.iter().find(|(rgb, _)| *rgb == (r, g, b)) {
-            Some((_, role)) => format!("@{role}"),
-            None => format!("#{r:02x}{g:02x}{b:02x}"),
-        }),
+    let color = color?;
+    if let Some(tint) = crate::preview::render::Tint::of(color) {
+        return Some(format!("@{}", tint.name()));
+    }
+    match color {
+        Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
         Color::Red => Some("red".to_string()),
         Color::Green => Some("green".to_string()),
         _ => None,
