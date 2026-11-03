@@ -17,7 +17,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
 import { focused, run, setShared, settings, shared, spaces, theme } from "herdr";
 import { gv, message } from "./engine.js";
-import { diffArgs, isDark, sameFile } from "./model.js";
+import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
   addNote, answerIn, ask, cursorIn, diffPane, liveView, notesKey, notesOf, previewOff, removeNotes, setCursor, setPreviewOff,
@@ -152,7 +152,7 @@ export default class GitDiff extends View {
     const same = !fresh && sameFile(view, this.view);
     // The same file written again (the list's j on the last row, a refresh):
     // load again only when its change did (the counts) or a line was asked.
-    const changed = !same || view.line || ["rev", "add", "del", "kind", "letter", "cached", "scope"].some((k) => view[k] !== this.view?.[k]);
+    const changed = !same || view.line || !sameShown(view, this.view);
     this.view = view;
     if (!same) {
       // Another file: the old body stays until the new one is here (dimmed

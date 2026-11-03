@@ -15,7 +15,7 @@ import { View } from "gpui-kit";
 import { v_flex, InputState } from "gpui-base";
 import { notify, run, shared, theme } from "herdr";
 import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
-import { diffArgs, isDark, sameFile } from "./model.js";
+import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
   answer, askIn, cursorIn, diffPane, panelState, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, setHandoff, setTreeMode, setView,
@@ -417,7 +417,7 @@ export default class GitList extends View {
       // Its rev moved (an agent wrote to it, it was staged in part): the
       // pane reloads it, and its header follows the counts.
       const now = work.viewFor(there);
-      if (["rev", "add", "del", "kind", "letter"].some((k) => now[k] !== view[k])) this.show(there);
+      if (!sameShown(now, view)) this.show(there);
       return;
     }
     const next = work.shownFile();
@@ -457,7 +457,7 @@ export default class GitList extends View {
     // The same file as shown, the same way (j on the last row, a click on
     // the selected one): nothing to write, nothing for the pane to reload.
     const was = liveView(viewIn(tab));
-    const same = was && sameFile(was, next) && !line && !focusPane && ["rev", "add", "del", "kind", "letter", "scope"].every((k) => was[k] === next[k]);
+    const same = was && sameShown(was, next) && !line && !focusPane;
     if (!same) setView(tab, next);
     if (open && cx && this.place.opensDiffPane) this.ensurePane(tab, cx, { focusPane });
   }

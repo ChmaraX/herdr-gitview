@@ -116,6 +116,10 @@ export function viewOf(entry, where) {
 export const sameFile = (a, b) =>
   Boolean(a && b) && a.root === b.root && a.on === b.on && a.path === b.path && a.section === b.section && a.commit === b.commit;
 
+// The same file shown the same way: what the pane shows of it (its rev,
+// counts, kind, side, scope) unchanged too.
+export const sameShown = (a, b) => sameFile(a, b) && ["rev", "add", "del", "kind", "letter", "cached", "scope"].every((k) => a[k] === b[k]);
+
 // `herdr-gitview json diff` arguments for a view.
 // `unless`: the hash of the rows shown now (the reply is {same} when they'd
 // be the same).
