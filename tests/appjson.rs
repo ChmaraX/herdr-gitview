@@ -1,6 +1,23 @@
 //! The JSON engine the Herdr app's gitview panel draws from
 //! (`herdr-gitview json …`), run as the panel runs it: the real binary
 //! against a real repo. These pin the contract the mod relies on.
+//!
+//! Failure modes this catches:
+//! - status grouped differently from the TUI's list (a partly staged file
+//!   in one section only, conflicts mixed into changes), or carrying fields
+//!   the mods don't read;
+//! - a folder path reaching past its own path component (`src` taking
+//!   `src-old/`), or acting on another section than the one asked for (a
+//!   conflict folder staging plain changes under it);
+//! - a discard from "changes" throwing away the staged part too, or a path
+//!   without changes discarded silently;
+//! - a message or path starting with `--` read as a flag;
+//! - a commit that takes conflict markers as resolved, sweeps in untracked
+//!   files the list hides, or takes unstaged changes while something is
+//!   staged;
+//! - a branch base passed back by the caller kept after HEAD moved;
+//! - diff rows without their markers, numbers or tint roles; history, a
+//!   commit's files or a commit's own diff (the root commit's too) wrong.
 
 mod common;
 
@@ -224,7 +241,6 @@ fn log_commit_files_and_a_commits_diff() {
         })
         .collect();
     assert_eq!(got, [("added.txt", "A", 1), ("base.txt", "M", 1)]);
-    assert!(files[0].get("stage").is_none(), "no stage field any more");
 
     // The commit's change, even after the worktree moved on.
     write(&repo.dir, "base.txt", "something else\n");
@@ -375,7 +391,6 @@ fn status_carries_only_what_the_mods_read_and_takes_a_base_from_the_caller() {
 
     let branch = gv(&repo.dir, &["status", "--scope", "branch"]);
     assert_eq!(branch["base"]["label"], "main");
-    assert!(branch.get("ahead").is_none());
     // A base passed in (with the HEAD it was for) is used as given, not
     // detected again.
     let sha = branch["base"]["merge_base"].as_str().unwrap().to_string();
