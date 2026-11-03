@@ -160,9 +160,15 @@ Spaces on other machines work the same way.
   <file>:<line>`; its full-height nvim pane takes the diff pane's place, so
   gitview closes its diff pane (not in cmd-g's tab). herdr-nvim's sync
   controller leaves the panel on Changes. Without it: an nvim already
-  running in the tab (or a layout block) opens the file; else a new nvim
-  (the configured editor) starts right of the diff pane, in the repo, and
-  closes with `:q`. On another machine it starts there.
+  running in the tab (or a layout block) opens the file; else the editor
+  the engine picks on the repo's machine (`json editor`: config.toml's
+  `editor`, `$VISUAL`, `$EDITOR`, nvim, vim, vi; here, else the system's
+  opener), looked up once per repo and machine, starts right of the diff
+  pane in the repo (`+line` for nvim and vim kinds) and closes when it
+  exits; the system's opener (`open -t`) runs without a pane; with no
+  editor at all a toast says what to install or set, and no pane opens.
+  Enter's keycap and the keys card name it (`[⏎] vim`, `[⏎] open`). On
+  another machine it starts there.
 - **Discard** asks first (the app's confirm). From the changes section it
   keeps a partly staged file's staged part; a section's or folder's `↺`
   covers the files that section lists under it when you press it (a file
@@ -381,7 +387,8 @@ Spaces on other machines work the same way.
   input without submitting and leaves the clipboard as it was; into a
   program without bracketed paste it says why and types nothing;
   shift+enter submits. A note can't be written on a commit's diff.
-- Enter opens nvim at the line (one nvim, reused); with herdr-nvim it calls
+- Enter opens nvim at the line (one nvim, reused); with config.toml's
+  `editor` set to a vim, Enter starts it with `+line file`; with herdr-nvim it calls
   `herdr-nvim open --tab <tab> --space <space> <file>:<line>`, starts no
   nvim and closes the diff pane.
 - cmd-shift-g hides and shows the panel; the Changes button does the same,
