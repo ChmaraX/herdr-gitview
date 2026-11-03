@@ -7,7 +7,6 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::hostenv::Host;
 use crate::layout::{Dir, MoveStep};
 use crate::logx::{log, state_dir};
 
@@ -93,7 +92,8 @@ pub fn toggle_tab() -> Result<()> {
     match read_tab_state(&repo) {
         Some(state) if view_alive(&state) && here.as_ref().is_some_and(|t| *t != state.tab_id) => {
             log(format!("focusing existing view tab {}", state.tab_id));
-            focus_tab(&state.tab_id)
+            herdr_json(&["tab", "focus", &state.tab_id])?;
+            Ok(())
         }
         Some(state) if view_alive(&state) => close_view(&repo, &state),
         Some(state) => {
@@ -143,15 +143,6 @@ pub fn close() -> Result<()> {
 /// Fire-and-forget `herdr-gitview close`, used by a pane to tear down the
 /// whole view from inside (a pane can't close its own tab and keep running).
 pub fn spawn_close() {
-    if host() == Host::App {
-        // Our terminal ends right after this, and the core ends what runs in
-        // it: the close runs in a hidden terminal of its own instead.
-        if let Err(err) = crate::apphost::run_detached("close", &["GITVIEW_REPO", "GITVIEW_SOCKET"])
-        {
-            log(format!("close: {err}"));
-        }
-        return;
-    }
     if let Ok(exe) = std::env::current_exe() {
         let _ = Command::new(exe).arg("close").spawn();
     }
@@ -162,9 +153,6 @@ pub fn spawn_close() {
 /// Open the view in its own dedicated tab (the original behavior):
 /// preview + list panes, list at `list_width_percent` of the tab.
 fn open_tab_view(repo: &Path) -> Result<()> {
-    if host() == Host::App {
-        return open_app_view(repo, ViewMode::Tab);
-    }
     log(format!("opening tab view for {}", repo.display()));
     let origin_tab = view_context().ok().map(|ctx| ctx.tab);
     let cfg = crate::config::Config::load();
@@ -249,9 +237,6 @@ fn open_tab_view(repo: &Path) -> Result<()> {
 /// existing layout is squeezed to the left (via a parking tab + rebuild,
 /// herdr-nvim style) and preview+list take the right `view_width_percent`.
 fn open_sidebar_view(repo: &Path) -> Result<()> {
-    if host() == Host::App {
-        return open_app_view(repo, ViewMode::Sidebar);
-    }
     log(format!("opening view for {}", repo.display()));
     let ctx = view_context()?;
     replay_recovery(repo, &ctx.tab); // best-effort: undo an interrupted earlier open
@@ -388,60 +373,10 @@ fn open_sidebar_view(repo: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Open a view under the Herdr desktop app: same state files and toggle
-/// logic as under herdr, with the window work done by [`crate::apphost`]
-/// (a full-height sidebar is one split of the tab's root there; no parking
-/// tab needed). Pane ids in the state are terminal addresses.
-fn open_app_view(repo: &Path, mode: ViewMode) -> Result<()> {
-    log(format!("opening app {mode:?} view for {}", repo.display()));
-    let ctx = crate::apphost::context()?;
-    let cfg = crate::config::Config::load();
-    std::fs::create_dir_all(views_dir())?;
-    let (state_path, socket) = match mode {
-        ViewMode::Tab => (tab_state_path(repo), tab_socket_path(repo)),
-        ViewMode::Sidebar => (
-            sidebar_state_path(repo, &ctx.tab),
-            sidebar_socket_path(repo, &ctx.tab),
-        ),
-    };
-    sweep_views_dir_best_effort(&state_path);
-    let _ = std::fs::remove_file(&socket);
-    let opened = match mode {
-        ViewMode::Tab => crate::apphost::open_tab(repo, &socket, &cfg, &ctx)?,
-        ViewMode::Sidebar => crate::apphost::open_sidebar(repo, &socket, &cfg, &ctx)?,
-    };
-    let state = ViewState {
-        repo: repo.to_path_buf(),
-        tab_id: opened.tab,
-        preview_pane: opened.preview,
-        list_pane: opened.list,
-        socket,
-        mode,
-        origin_tab: (mode == ViewMode::Tab).then_some(ctx.tab),
-    };
-    write_state(repo, &state)?;
-    log("app view opened");
-    Ok(())
-}
-
 /// Sidebar: closing the panes hands their space back to the squeezed
 /// layout. Tab: close the whole dedicated tab (pane-by-pane fallback).
 fn close_view(repo: &Path, state: &ViewState) -> Result<()> {
     log(format!("closing view (tab {})", state.tab_id));
-    if host() == Host::App {
-        // Ending a terminal closes its pane (and a tab with no panes left).
-        crate::apphost::kill(&state.list_pane);
-        crate::apphost::kill(&state.preview_pane);
-        if state.mode == ViewMode::Tab {
-            // Gone already when its panes were the last ones in it.
-            let _ = crate::apphost::close_tab(&state.tab_id);
-            if let Some(origin) = &state.origin_tab {
-                let _ = crate::apphost::select_tab(origin);
-            }
-        }
-        cleanup(repo, state);
-        return Ok(());
-    }
     match state.mode {
         ViewMode::Tab => {
             if herdr_json(&["tab", "close", &state.tab_id]).is_err() {
@@ -586,11 +521,6 @@ fn resolve_repo() -> Result<PathBuf> {
         return Ok(PathBuf::from(repo));
     }
     let mut candidates = Vec::new();
-    if host() == Host::App
-        && let Ok(ctx) = crate::apphost::context()
-    {
-        candidates.extend(ctx.folders);
-    }
     if let Ok(raw) = std::env::var("HERDR_PLUGIN_CONTEXT_JSON") {
         log(format!("context json: {raw}"));
         if let Ok(value) = serde_json::from_str::<Value>(&raw) {
@@ -759,11 +689,7 @@ const SWEEP_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
 /// uncertainty). `keep` is the state file about to be written for the view
 /// currently being opened, so the sweep can't race its own write.
 fn sweep_views_dir_best_effort(keep: &Path) {
-    let ids = match host() {
-        Host::Herdr => pane_ids(),
-        Host::App => crate::apphost::live_terminals(),
-    };
-    let Ok(ids) = ids else {
+    let Ok(ids) = pane_ids() else {
         log("pane list failed, skipping stale view sweep");
         return;
     };
@@ -836,21 +762,7 @@ fn older_than(path: &Path, min_age: Duration) -> bool {
 }
 
 fn current_tab_id() -> Result<String> {
-    match host() {
-        Host::Herdr => Ok(view_context()?.tab),
-        Host::App => Ok(crate::apphost::context()?.tab),
-    }
-}
-
-fn host() -> Host {
-    Host::from_process()
-}
-
-fn focus_tab(tab: &str) -> Result<()> {
-    match host() {
-        Host::Herdr => herdr_json(&["tab", "focus", tab]).map(|_| ()),
-        Host::App => crate::apphost::select_tab(tab),
-    }
+    Ok(view_context()?.tab)
 }
 
 /// FNV-1a, hand-rolled: deterministic across runs and Rust versions, which
@@ -877,10 +789,7 @@ fn tab_key(tab_id: &str) -> String {
 // ---- herdr CLI ------------------------------------------------------------
 
 fn pane_alive(pane_id: &str) -> bool {
-    match host() {
-        Host::Herdr => herdr_json(&["pane", "get", pane_id]).is_ok(),
-        Host::App => crate::apphost::terminal_live(pane_id),
-    }
+    herdr_json(&["pane", "get", pane_id]).is_ok()
 }
 
 /// Where the sidebar should open: the invoking workspace/tab/focused pane.

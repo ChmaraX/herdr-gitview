@@ -87,6 +87,7 @@ pub struct Session {
 impl Session {
     pub fn new(mut app: App, env: HostEnv, tx: Sender<Event>, popup_supported: bool) -> Session {
         app.nvim_server = env.nvim_server();
+        app.in_herdr = env.in_herdr();
         let shared = Arc::new(Mutex::new(Shared {
             scope: app.scope,
             merge_base: app.merge_base.clone(),
@@ -555,20 +556,21 @@ impl Session {
         if !self.app.cfg.reuse_tab_nvim {
             return false;
         }
-        if self.env.own_pane.is_none() {
+        let Some(own) = self.env.own_pane.clone() else {
             return false; // standalone — no herdr to ask
-        }
+        };
         let mut exclude: Vec<&str> = Vec::new();
         if let Some(preview) = &self.env.preview_pane {
             exclude.push(preview);
         }
-        let Some(target) = self.env.find_nvim_in_tab(&exclude) else {
+        let Some(target) = crate::herdr_cli::find_nvim_in_tab(&self.env.herdr_bin, &own, &exclude)
+        else {
             return false;
         };
         let abs = self.app.repo.root.join(path);
         let editor = self.app.cfg.editor.first().cloned().unwrap_or_default();
         if crate::nvim::open_file(&editor, Some(&target.socket), &abs) {
-            self.env.focus_pane(&target.pane_id);
+            crate::herdr_cli::focus_pane(&self.env.herdr_bin, &target.pane_id);
             true
         } else {
             false // dead socket etc. — fall through to the preview editor
@@ -649,10 +651,7 @@ impl Session {
         };
         self.app.base_job = app::BaseJob::Running { then, since };
         let tx = self.tx.clone();
-        let repo = crate::git::Repo {
-            root: self.app.repo.root.clone(),
-            on: self.app.repo.on.clone(),
-        };
+        let repo = self.app.repo.clone();
         let cfg_base = self.app.cfg.base.clone();
         thread::spawn(move || {
             let result = app::resolve_base(&repo, &cfg_base);
@@ -674,13 +673,13 @@ impl Session {
 
     fn focus_preview(&self) {
         if let Some(preview) = &self.env.preview_pane {
-            self.env.focus_pane(preview);
+            crate::herdr_cli::focus_pane(&self.env.herdr_bin, preview);
         }
     }
 
     fn focus_self(&self) {
         if let Some(own) = &self.env.own_pane {
-            self.env.focus_pane(own);
+            crate::herdr_cli::focus_pane(&self.env.herdr_bin, own);
         }
     }
 

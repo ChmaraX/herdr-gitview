@@ -84,47 +84,28 @@ fn pane_nvim_socket(bin: &OsStr, pane: &str) -> Option<PathBuf> {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
-        if let Some(sock) = nvim_socket_from(&argv, proc.get("pid").and_then(Value::as_u64)) {
+        // `nvim --server <sock> --remote-ui` (herdr-nvim sidebar and co.).
+        if let Some(pos) = argv.iter().position(|a| *a == "--server")
+            && let Some(sock) = argv.get(pos + 1)
+        {
+            let sock = PathBuf::from(sock);
+            if sock.exists() {
+                return Some(sock);
+            }
+        }
+        // Plain nvim: derive the auto-listen socket from the pid.
+        if let Some(pid) = proc.get("pid").and_then(Value::as_u64)
+            && let Some(sock) = socket_for_pid(pid)
+        {
             return Some(sock);
         }
     }
     None
 }
 
-/// The remote socket of an nvim process, from its argv and pid:
-/// `nvim --server <sock> --remote-ui` (herdr-nvim sidebar and co.) names it;
-/// a plain nvim auto-listens on a socket derived from its pid.
-pub fn nvim_socket_from(argv: &[&str], pid: Option<u64>) -> Option<PathBuf> {
-    if let Some(pos) = argv.iter().position(|a| *a == "--server")
-        && let Some(sock) = argv.get(pos + 1)
-    {
-        let sock = PathBuf::from(sock);
-        if sock.exists() {
-            return Some(sock);
-        }
-    }
-    let pid = pid?;
-    // nvim ≥0.10's TUI runs its server as a `nvim --embed` child: that pid
-    // owns the socket.
-    socket_for_pid(pid).or_else(|| child_pids(pid).into_iter().find_map(socket_for_pid))
-}
-
-fn child_pids(pid: u64) -> Vec<u64> {
-    Command::new("pgrep")
-        .args(["-P", &pid.to_string()])
-        .output()
-        .map(|out| {
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter_map(|l| l.trim().parse().ok())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// nvim ≥0.9's default server socket: `<rundir>/nvim.<user>/<rand>/nvim.<pid>.0`
 /// where rundir is `$XDG_RUNTIME_DIR` or the temp dir.
-fn socket_for_pid(pid: u64) -> Option<PathBuf> {
+pub fn socket_for_pid(pid: u64) -> Option<PathBuf> {
     let user = std::env::var("USER").ok()?;
     let bases = [
         std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),

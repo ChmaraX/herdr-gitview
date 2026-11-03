@@ -12,8 +12,9 @@
 //!   as Enter into a program without it (it must refuse instead);
 //! - `--submit` doesn't go through `hc send`, or sends trailing newlines.
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const FAKE_HC: &str = r#"#!/usr/bin/env python3
 import json, os, struct, sys
@@ -78,7 +79,7 @@ fn send_raw(
 ) -> (bool, String, Vec<serde_json::Value>) {
     let log = dir.join("hc.log");
     let _ = std::fs::remove_file(&log);
-    let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
+    let out = common::gitview()
         .args(["json", "send", "--terminal", "t9"])
         .args(args)
         .env("GITVIEW_HC", hc)

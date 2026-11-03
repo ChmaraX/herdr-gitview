@@ -16,7 +16,6 @@ use super::app::{self, PreviewApp, ShowReq};
 use super::render;
 use super::telemetry::Telemetry;
 use super::worker::Worker;
-use crate::git::Repo;
 use crate::git::first_line;
 use crate::hostenv::HostEnv;
 use crate::ipc::{Conn, ToList, ToPreview};
@@ -75,14 +74,7 @@ impl Session {
     /// Builds the session and spawns the latest-wins diff worker (real git,
     /// real highlighting — also under test).
     pub fn new(app: PreviewApp, env: HostEnv, tx: Sender<Event>) -> Session {
-        let worker = Worker::spawn(
-            tx.clone(),
-            Repo {
-                root: app.repo.root.clone(),
-                on: app.repo.on.clone(),
-            },
-            app.cfg.clone(),
-        );
+        let worker = Worker::spawn(tx.clone(), app.repo.clone(), app.cfg.clone());
         Session {
             app,
             env,
@@ -276,7 +268,7 @@ impl Session {
                     self.app.popup_request = Some(app::PopupReq::PickAgent);
                 }
                 app::PopupReq::PickAgent => {
-                    let agents = self.env.agents();
+                    let agents = crate::popup::workspace_agents();
                     if agents.is_empty() {
                         self.app.flash("no agent panes in this workspace");
                     } else {
@@ -407,10 +399,18 @@ impl Session {
     /// (submit optionally presses enter). Returns the agent name on success.
     fn deliver_notes(&self, pane: &str, submit: bool) -> Result<String> {
         let msg = notes_message(&self.app.notes);
-        self.env.send_text(pane, &msg, submit)?;
-        let agent = self
-            .env
-            .agents()
+        let out = std::process::Command::new(&self.env.herdr_bin)
+            .args(["pane", "send-text", pane, &msg])
+            .output()?;
+        if !out.status.success() {
+            anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        if submit {
+            let _ = std::process::Command::new(&self.env.herdr_bin)
+                .args(["pane", "send-keys", pane, "enter"])
+                .output();
+        }
+        let agent = crate::popup::workspace_agents()
             .into_iter()
             .find(|(id, _, _, _, _)| id == pane)
             .map(|(_, name, _, _, _)| name)

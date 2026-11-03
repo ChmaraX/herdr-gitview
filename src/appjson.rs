@@ -121,6 +121,23 @@ pub fn run(args: &[String]) -> Result<()> {
     }
 }
 
+/// The person's gitview config: the TUI plugin's own `config.toml`, which
+/// herdr keeps in `<config>/herdr/plugins/config/chmarax.gitview`
+/// (`GITVIEW_CONFIG_DIR` overrides the folder), so both share one.
+fn config() -> crate::config::Config {
+    let dir = std::env::var_os("GITVIEW_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+                .unwrap_or_default()
+                .join("herdr/plugins/config/chmarax.gitview")
+        });
+    crate::config::Config::load_from(Some(&dir.join("config.toml")))
+}
+
 fn reply(value: impl Serialize) -> Result<Value> {
     Ok(serde_json::to_value(value)?)
 }
@@ -337,7 +354,7 @@ struct DiffOut {
 
 fn status(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
-    let cfg = crate::config::Config::load();
+    let cfg = config();
     let branch = repo.head_branch();
     if a.value("scope") == Some("branch") {
         // The caller may pass back the base it got last time: base detection
@@ -397,7 +414,7 @@ fn letter(kind: ChangeKind) -> &'static str {
 
 fn diff(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
-    let mut cfg = crate::config::Config::load();
+    let mut cfg = config();
     match a.value("theme") {
         Some("light") => cfg.theme = crate::config::Theme::Light,
         Some("dark") => cfg.theme = crate::config::Theme::Dark,
@@ -554,7 +571,7 @@ fn change_index(a: &Args, op: IndexOp) -> Result<Value> {
         IndexOp::Stage => Section::Changes,
         IndexOp::Unstage => Section::Staged,
     });
-    let cfg = crate::config::Config::load();
+    let cfg = config();
     let entries = repo.worktree_status(cfg.show_untracked)?;
     let mut others: Vec<PathBuf> = Vec::new();
     let found = resolve(
@@ -592,7 +609,7 @@ fn discard(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
     let raws = a.paths()?;
     let section = a.section()?;
-    let cfg = crate::config::Config::load();
+    let cfg = config();
     let entries = repo.worktree_status(cfg.show_untracked)?;
     let holds = |e: &FileEntry| match section {
         Some(s) => s.holds(e),
@@ -678,7 +695,7 @@ fn nvim(a: &Args) -> Result<Value> {
 }
 
 fn sidebar(a: &Args) -> Result<Value> {
-    let cfg = crate::config::Config::load();
+    let cfg = config();
     let props: Value = match a.value("props") {
         Some(raw) => serde_json::from_str(raw).context("--props")?,
         None => Value::Null,

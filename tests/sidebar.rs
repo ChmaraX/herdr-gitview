@@ -11,8 +11,9 @@
 //!   when it belongs to another tab;
 //! - the width not applied to the new pane.
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::{Value, json};
 
@@ -84,7 +85,7 @@ impl Fakes {
     ) -> (bool, Value, Vec<Value>) {
         let log = self.dir.join("app.log");
         let _ = std::fs::remove_file(&log);
-        let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
+        let out = common::gitview()
             .args(["json", "sidebar", "--tab", tab, "--mod", "gitview-diff"])
             .args(["--percent", "25", "--props", r#"{"tab":"x"}"#])
             .env("GITVIEW_HC", self.dir.join("hc"))

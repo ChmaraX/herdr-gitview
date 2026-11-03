@@ -19,7 +19,7 @@ use crossterm::event::{KeyEvent, KeyModifiers};
 use common::{FakeHerdr, TempRepo, fixture, write};
 use herdr_gitview::config::Config;
 use herdr_gitview::git::Repo;
-use herdr_gitview::hostenv::{Host, HostEnv};
+use herdr_gitview::hostenv::HostEnv;
 use herdr_gitview::ipc::Conn;
 use herdr_gitview::keymap::{Keymap, parse_key};
 use herdr_gitview::list;
@@ -81,7 +81,6 @@ impl World {
             own_pane: Some(own.to_string()),
             preview_pane: preview_pane.map(str::to_string),
             socket: Some(socket_base.clone()),
-            host: Host::Herdr,
         };
 
         let keys = Keymap::build(&HashMap::new()).unwrap();

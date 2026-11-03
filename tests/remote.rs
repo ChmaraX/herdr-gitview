@@ -11,6 +11,8 @@
 //! child runs in an empty folder: anything that reached the repo except
 //! through the shim fails or shows.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -197,14 +199,12 @@ impl World {
         } else {
             (&self.here, self.here.display().to_string())
         };
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"));
+        let mut cmd = common::gitview();
         cmd.arg("json")
             .args(args)
             .args(["--repo", &repo.display().to_string()])
             .envs(GIT_ENV)
-            .env("GITVIEW_HOST", "app")
             .env("GITVIEW_CONFIG_DIR", self.tmp.join("no-config"))
-            .env("GITVIEW_STATE_DIR", self.tmp.join("state"))
             .env("HERDR_APP_HOME", self.tmp.join("no-app"))
             .current_dir(self.tmp.join("empty"));
         if on_box {
@@ -437,7 +437,7 @@ fn nvim_on_a_machine_never_reaches_for_a_local_nvim() {
 #[test]
 fn an_unknown_machine_is_an_error_not_a_local_fallback() {
     let w = world("unknown");
-    let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
+    let out = common::gitview()
         .args(["json", "status", "--on", "elsewhere", "--repo"])
         .arg(&w.remote)
         .env("GITVIEW_HC", &w.hc)

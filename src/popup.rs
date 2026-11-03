@@ -1,10 +1,6 @@
 //! Shared helper for herdr floating popup panes (≥0.7.4): spawn a plugin
 //! popup entrypoint and poll for its answer file. Used for confirms
 //! (`ask`), note input (`annotate`), and the agent picker (`pick_agent`).
-//! Under the Herdr desktop app the same entrypoints run in a hidden core
-//! terminal shown as a dialog ([`crate::apphost::open_popup`]).
-
-use crate::hostenv::Host;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -13,9 +9,6 @@ use std::process::Command;
 pub fn supported(env: &crate::hostenv::HostEnv) -> bool {
     if !env.in_herdr() {
         return false; // standalone
-    }
-    if env.host == Host::App {
-        return true; // every app version shows terminal dialogs
     }
     let Ok(out) = Command::new(&env.herdr_bin).arg("--version").output() else {
         return false;
@@ -47,7 +40,6 @@ struct Pending<K> {
     path: PathBuf,
     pane_id: Option<String>,
     herdr_bin: std::ffi::OsString,
-    host: Host,
     last_liveness_check: std::time::Instant,
 }
 
@@ -96,31 +88,6 @@ impl<K> Popups<K> {
         let answer = sock.with_extension(format!("{entrypoint}.answer"));
         let _ = std::fs::remove_file(&answer);
 
-        if env.host == Host::App {
-            let mut all = vec![(
-                "GITVIEW_ANSWER_FILE".to_string(),
-                answer.display().to_string(),
-            )];
-            all.extend(envs.iter().cloned());
-            return match crate::apphost::open_popup(entrypoint, &all, (width, height)) {
-                Ok(terminal) => {
-                    self.pending = Some(Pending {
-                        key,
-                        path: answer,
-                        pane_id: Some(terminal),
-                        herdr_bin: env.herdr_bin.clone(),
-                        host: Host::App,
-                        last_liveness_check: std::time::Instant::now(),
-                    });
-                    true
-                }
-                Err(err) => {
-                    crate::logx::log(format!("popup {entrypoint} failed: {err}"));
-                    false
-                }
-            };
-        }
-
         let mut cmd = Command::new(&env.herdr_bin);
         cmd.args(["plugin", "pane", "open", "--plugin", "chmarax.gitview"])
             .args([
@@ -164,7 +131,6 @@ impl<K> Popups<K> {
             path: answer,
             pane_id,
             herdr_bin: env.herdr_bin.clone(),
-            host: Host::Herdr,
             last_liveness_check: std::time::Instant::now(),
         });
         true
@@ -186,7 +152,6 @@ impl<K> Popups<K> {
         if pending.last_liveness_check.elapsed() > self.liveness_interval {
             pending.last_liveness_check = std::time::Instant::now();
             let alive = match &pending.pane_id {
-                Some(id) if pending.host == Host::App => crate::apphost::terminal_live(id),
                 Some(id) => pane_alive(&pending.herdr_bin, id),
                 None => true, // can't check — rely on the answer file
             };
@@ -229,11 +194,9 @@ pub fn write_answer(answer: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One agent for the picker: `(pane_id, agent, status, tab_label, cwd_basename)`.
-pub type AgentRow = (String, String, String, String, String);
-
-/// The agent panes in the current herdr workspace.
-pub fn workspace_agents() -> Vec<AgentRow> {
+/// The agent panes in the current workspace:
+/// `(pane_id, agent, status, tab_label, cwd_basename)`.
+pub fn workspace_agents() -> Vec<(String, String, String, String, String)> {
     let Some(workspace) = std::env::var_os("HERDR_WORKSPACE_ID") else {
         return Vec::new();
     };

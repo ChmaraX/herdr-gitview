@@ -59,6 +59,7 @@ pub struct FileEntry {
     pub dels: Option<u32>,
 }
 
+#[derive(Debug, Clone)]
 pub struct Repo {
     pub root: PathBuf,
     /// The machine the repo lives on (`hc machine ls`), `None` = here. A

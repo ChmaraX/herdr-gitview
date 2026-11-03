@@ -98,10 +98,15 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Config {
-        let Some(path) = config_path() else {
+        Config::load_from(config_path().as_deref())
+    }
+
+    /// The config in `path` (`None` or a missing file: the defaults).
+    pub fn load_from(path: Option<&std::path::Path>) -> Config {
+        let Some(path) = path else {
             return Config::default();
         };
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(raw) => Config::parse(&raw),
             Err(_) => Config::default(), // missing file is the normal case
         }
@@ -129,19 +134,7 @@ impl Config {
     }
 }
 
-/// The herdr plugin's config dir; under the Herdr desktop app
-/// `GITVIEW_CONFIG_DIR`, else the TUI plugin's own config dir, so both
-/// versions share one `config.toml`.
 fn config_path() -> Option<PathBuf> {
-    if crate::hostenv::Host::from_process() == crate::hostenv::Host::App {
-        let dir = std::env::var_os("GITVIEW_CONFIG_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                crate::logx::xdg_dir("XDG_CONFIG_HOME", ".config")
-                    .join("herdr/plugins/config/chmarax.gitview")
-            });
-        return Some(dir.join("config.toml"));
-    }
     std::env::var_os("HERDR_PLUGIN_CONFIG_DIR").map(|dir| PathBuf::from(dir).join("config.toml"))
 }
 

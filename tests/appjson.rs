@@ -5,18 +5,16 @@
 mod common;
 
 use std::path::Path;
-use std::process::Command;
 
 use common::{fixture, write};
 use serde_json::Value;
 
 fn gv(repo: &Path, args: &[&str]) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
+    let out = common::gitview()
         .arg("json")
         .arg(args[0])
         .args(["--repo", &repo.display().to_string()])
         .args(&args[1..])
-        .env("GITVIEW_HOST", "app")
         // No personal config: defaults only.
         .env("GITVIEW_CONFIG_DIR", repo.join(".no-config"))
         .output()
@@ -102,7 +100,7 @@ fn discard_restores_the_file_and_notes_render_the_agent_message() {
 }
 
 fn gv_err(repo: &Path, args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
+    let out = common::gitview()
         .arg("json")
         .arg(args[0])
         .args(["--repo", &repo.display().to_string()])

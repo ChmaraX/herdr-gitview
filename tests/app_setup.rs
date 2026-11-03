@@ -12,8 +12,9 @@
 //! - a person's key replaced, or a retired key/mod removed that isn't ours;
 //! - an ambiguous copy guessed instead of refused.
 
+mod common;
+
 use std::path::PathBuf;
-use std::process::Command;
 
 use serde_json::{Value, json};
 
@@ -110,7 +111,7 @@ impl Home {
     }
 
     fn try_setup(&self, op: &str) -> (bool, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
+        let out = common::gitview()
             .args(["app-setup", op, "--home"])
             .arg(&self.dir)
             .arg("--app")
@@ -252,7 +253,7 @@ fn several_copies_stop_the_install_without_touching_a_layout() {
         .into_iter()
         .filter(|(n, _)| n != "keys.json")
         .collect();
-    let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
+    let out = common::gitview()
         .args(["app-setup", "install", "--home"])
         .arg(&h.dir)
         .arg("--app")
