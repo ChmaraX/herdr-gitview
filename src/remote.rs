@@ -102,6 +102,18 @@ impl Machine {
         cmd
     }
 
+    /// `argv` in the folder `dir` there.
+    pub fn command(&self, dir: &Path, argv: &[&str], run: Run) -> Command {
+        match self {
+            Machine::Local => {
+                let mut cmd = Command::new(argv[0]);
+                cmd.args(&argv[1..]).current_dir(dir);
+                cmd
+            }
+            Machine::On(m) => Machine::hc_exec(m, dir, run, argv),
+        }
+    }
+
     /// `git <args>` in the repo (or folder) `dir`. Reads never take optional
     /// locks: a poll holding the index lock made the person's own
     /// merge/commit fail ("Unable to write index").

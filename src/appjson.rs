@@ -100,8 +100,27 @@
 //!   herdr-nvim (`<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab T
 //!   [--space S]`, then `terminal` is `"herdr-nvim"`), else in an nvim
 //!   already running in tab T or in one of the `shown` terminals (`terminal`
-//!   is that terminal); `null` when there is none. With `--on`: herdr-nvim
+//!   is that terminal); `null` when there is none. herdr-nvim is asked
+//!   only when `nvim` is on that machine's `PATH`. With `--on`: herdr-nvim
 //!   only (it needs `--tab` and `--space`), never an nvim of this machine.
+//! - `editor --repo DIR [--on M]` → `{editor: {argv, kind, name}}`: the
+//!   editor a new file view starts, on the repo's machine, the first that's
+//!   there of: the config's `editor` (only when `config.toml` sets it),
+//!   `$VISUAL`, `$EDITOR` (each split like a shell word list, no
+//!   expansion), `nvim`, `vim`, `vi`. A program is there when it's an
+//!   executable file: by path, or found on `PATH`. On `--on M` that's asked
+//!   of M's login shell (`sh -lc`, one `hc exec`, a second one only for a
+//!   `$VISUAL`/`$EDITOR` program), so its `PATH`, `$VISUAL` and `$EDITOR`
+//!   count, not this machine's. Here only, when none is there, the
+//!   system's opener: `/usr/bin/open -t` on macOS, `xdg-open` on `PATH`
+//!   elsewhere. `argv`: the program's path, then its own arguments; the
+//!   caller adds `+LINE` (only for kind `nvim` or `vim`) and the file.
+//!   `kind`: `nvim`; `vim` (vim, vi, view, vimdiff, gvim, mvim); `other`;
+//!   `system` (the opener: no line, no pane). `name`: the program's file
+//!   name (`code`, `open`). None at all: `{editor: null, error: "No editor
+//!   found: install nvim or set editor in gitview's config.toml
+//!   (<path>)"}`, exit 0. DIR isn't read here; on M it's where the shell
+//!   starts.
 //! - `notes [--] NOTES_JSON` (`[{file, start, end, text, snippet,
 //!   cached}]`; `cached`: written on the staged diff, default false) →
 //!   `{message}`: the text an agent gets, as the TUI builds it (which
@@ -166,6 +185,11 @@ pub fn run(args: &[String]) -> Result<()> {
 /// herdr keeps in `<config>/herdr/plugins/config/chmarax.gitview`
 /// (`GITVIEW_CONFIG_DIR` overrides the folder), so both share one.
 fn config() -> crate::config::Config {
+    crate::config::Config::load_from(Some(&config_path()))
+}
+
+/// Where [`config`] reads `config.toml`.
+fn config_path() -> PathBuf {
     let dir = std::env::var_os("GITVIEW_CONFIG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -176,7 +200,7 @@ fn config() -> crate::config::Config {
                 .unwrap_or_default()
                 .join("herdr/plugins/config/chmarax.gitview")
         });
-    crate::config::Config::load_from(Some(&dir.join("config.toml")))
+    dir.join("config.toml")
 }
 
 fn reply(value: impl Serialize) -> Result<Value> {
@@ -201,6 +225,7 @@ fn dispatch(args: &[String]) -> Result<Value> {
             Ok(json!({ "message": message }))
         }
         "nvim" => nvim(&a),
+        "editor" => editor(&a),
         "sidebar" => sidebar(&a),
         "send" => {
             let terminal = a.value("terminal").context("send: --terminal")?;
@@ -741,11 +766,13 @@ fn nvim(a: &Args) -> Result<Value> {
     let line = a.value("line").and_then(|l| l.parse().ok()).unwrap_or(1);
     let (tab, space) = (a.value("tab"), a.value("space"));
     let app = crate::apphost::App::from_env();
+    // herdr-nvim only where there's an nvim for it to run.
+    let herdr_nvim = crate::editor::has_nvim(&repo.machine, &repo.root)?;
     if repo.machine != crate::remote::Machine::Local {
         // A remote repo's file only exists there: herdr-nvim with the space
         // (whose machine it is), never an nvim of this machine.
         let terminal = match (tab, space) {
-            (Some(tab), Some(space)) => {
+            (Some(tab), Some(space)) if herdr_nvim => {
                 crate::apphost::open_in_herdr_nvim(&app, tab, Some(space), &file, line)
                     .then_some("herdr-nvim")
             }
@@ -762,8 +789,28 @@ fn nvim(a: &Args) -> Result<Value> {
                 .collect()
         })
         .unwrap_or_default();
-    let terminal = crate::apphost::open_in_running_nvim(&app, tab, space, &shown, &file, line);
+    let terminal =
+        crate::apphost::open_in_running_nvim(&app, herdr_nvim, tab, space, &shown, &file, line);
     Ok(json!({ "terminal": terminal }))
+}
+
+/// The editor a new file view starts on the repo's machine (see
+/// [`crate::editor::pick`]); `{editor: null, error}` when there's none.
+fn editor(a: &Args) -> Result<Value> {
+    let dir = Path::new(a.value("repo").context("--repo")?);
+    let machine = crate::remote::Machine::parse(a.value("on"));
+    let cfg = config();
+    let configured = cfg.editor_set.then_some(cfg.editor.as_slice());
+    Ok(match crate::editor::pick(&machine, dir, configured)? {
+        Some(editor) => json!({ "editor": editor }),
+        None => json!({
+            "editor": null,
+            "error": format!(
+                "No editor found: install nvim or set editor in gitview's config.toml ({})",
+                config_path().display()
+            ),
+        }),
+    })
 }
 
 fn sidebar(a: &Args) -> Result<Value> {

@@ -45,6 +45,10 @@ pub struct Config {
     /// or the herdr-nvim sidebar), Enter opens the file there instead of
     /// starting an editor on the gitview diff pane.
     pub reuse_tab_nvim: bool,
+    /// Whether the file set `editor` (the default is `nvim`); the app tries
+    /// `$VISUAL`/`$EDITOR` before the default, never before a chosen one.
+    #[serde(skip)]
+    pub editor_set: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -92,6 +96,7 @@ impl Default for Config {
             view_width_percent: 50,
             list_width_percent: 29,
             reuse_tab_nvim: true,
+            editor_set: false,
         }
     }
 }
@@ -122,6 +127,7 @@ impl Config {
                 Config::default()
             }
         };
+        cfg.editor_set = toml::from_str::<toml::Table>(raw).is_ok_and(|t| t.contains_key("editor"));
         cfg.context_lines = cfg.context_lines.min(20);
         cfg.tab_width = cfg.tab_width.clamp(1, 16);
         cfg.view_width_percent = cfg.view_width_percent.clamp(20, 80);

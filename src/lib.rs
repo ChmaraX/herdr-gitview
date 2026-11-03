@@ -6,6 +6,7 @@ pub mod applayout;
 pub mod appsetup;
 pub mod ask;
 pub mod config;
+pub mod editor;
 pub mod git;
 pub mod hcpaste;
 pub mod herdr_cli;

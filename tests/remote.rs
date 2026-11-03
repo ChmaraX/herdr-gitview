@@ -27,7 +27,9 @@
 //!   poll while HEAD stays put;
 //! - `json file` there: an image that doesn't arrive byte for byte (from
 //!   the worktree or from git), or text, binary, too big and missing told
-//!   apart differently from here, or a failed read there taken as missing.
+//!   apart differently from here, or a failed read there taken as missing;
+//! - `json editor` there answered from this machine (its `PATH`, `$VISUAL`,
+//!   its system opener) instead of that machine's login shell.
 
 mod common;
 
@@ -60,6 +62,12 @@ cd "$cwd" || exit 94
 [ -n "$stdin" ] || exec </dev/null
 if [ -n "$SHIM_FAIL_READS" ] && [ "$1" = sh ] && [[ "$3" == *"exit 44"* ]]; then
   echo "shim: the connection dropped" >&2; exit 255
+fi
+# The machine's login shell: its own PATH, $VISUAL and $EDITOR, nothing of
+# the caller's environment.
+if [ -n "${SHIM_LOGIN_PATH+x}" ] && [ "$1" = sh ] && [ "$2" = -lc ]; then
+  shift 2
+  exec env -i HOME="$cwd" PATH="$SHIM_LOGIN_PATH" VISUAL="${SHIM_VISUAL-}" EDITOR="${SHIM_EDITOR-}" /bin/sh -c "$@"
 fi
 if [[ " $* " == *" rev-parse --show-toplevel "* ]]; then
   out=$("$@") || exit $?
@@ -704,6 +712,63 @@ fn a_file_for_the_preview_arrives_from_the_machine_byte_for_byte() {
 
     assert!(!w.remote.exists());
     assert_eq!(w.trap_log(), "", "a local git ran");
+    let prefix = format!("exec --on box --cwd {}", w.remote.display());
+    for call in w.shim_log() {
+        assert!(call.starts_with(&prefix), "unexpected hc call: {call}");
+    }
+}
+
+#[test]
+fn the_editor_is_picked_from_the_machines_login_shell() {
+    let w = world("editor");
+    // This machine has a vim and a $VISUAL of its own; neither counts there.
+    let here_bin = w.tmp.join("here-bin");
+    let there_bin = w.remote_real.parent().unwrap().join("bin");
+    for (dir, name) in [
+        (&here_bin, "vim"),
+        (&here_bin, "here-ed"),
+        (&there_bin, "vi"),
+        (&there_bin, "hx"),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+        write(dir, name, b"#!/bin/sh\nexit 0\n");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let pick = |login: &[(&str, &str)]| {
+        let mut cmd = common::gitview();
+        cmd.args(["json", "editor"])
+            .env(
+                "PATH",
+                format!("{}:{}", here_bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .env("VISUAL", "here-ed");
+        let mut extra = vec![("SHIM_LOGIN_PATH", there_bin.to_str().unwrap())];
+        extra.extend(login.iter().copied());
+        let (ok, reply) = w.run_with(cmd, &extra);
+        assert!(ok, "{reply}");
+        reply
+    };
+    let there = |name: &str| there_bin.join(name).display().to_string();
+    assert_eq!(
+        pick(&[]),
+        serde_json::json!({"editor": {"argv": [there("vi")], "kind": "vim", "name": "vi"}})
+    );
+    assert_eq!(
+        pick(&[("SHIM_EDITOR", "hx --vsplit")])["editor"],
+        serde_json::json!({"argv": [there("hx"), "--vsplit"], "kind": "other", "name": "hx"})
+    );
+    // Nothing there: an error, never this machine's opener.
+    std::fs::remove_file(there_bin.join("vi")).unwrap();
+    let none = pick(&[("SHIM_VISUAL", "zed")]);
+    assert_eq!(none["editor"], Value::Null);
+    assert!(
+        none["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("No editor found"),
+        "{none}"
+    );
     let prefix = format!("exec --on box --cwd {}", w.remote.display());
     for call in w.shim_log() {
         assert!(call.starts_with(&prefix), "unexpected hc call: {call}");

@@ -234,18 +234,21 @@ fn child_pids(pid: u64) -> Vec<u64> {
 }
 
 /// Open `file` at `line` in this tab's nvim: the herdr-nvim mod's when it
-/// takes the request, else an nvim already running in `tab` or in one of the
+/// takes the request (asked only when `herdr_nvim`: there's an nvim for it
+/// to run), else an nvim already running in `tab` or in one of the
 /// `shown` terminals (layout blocks). Returns how it went, `None` when there
 /// is no nvim to reuse (the caller starts a plain one).
 pub fn open_in_running_nvim(
     app: &App,
+    herdr_nvim: bool,
     tab: Option<&str>,
     space: Option<&str>,
     shown: &[String],
     file: &Path,
     line: u32,
 ) -> Option<String> {
-    if let Some(tab) = tab
+    if herdr_nvim
+        && let Some(tab) = tab
         && open_in_herdr_nvim(app, tab, space, file, line)
     {
         return Some("herdr-nvim".to_string());
