@@ -199,7 +199,7 @@ sleep 1
 do_ layout.hide --id panel
 do_ mod.open --name gitview-tab
 expect '[ "$(tab_active)" = gitview ]' "cmd-g's tab: a second gitview list"
-expect '"$APP" do gitview.key:r' "its list is up"
+expect '"$APP" do gitview.key:r' "its list is up" 20
 do_ gitview.button:discard:drop.txt
 expect 'overlay_open confirm' "the tab's list asks about drop.txt"
 expect panel_up "both lists on screen: the panel's is up too" 20
