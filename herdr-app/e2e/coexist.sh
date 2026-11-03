@@ -168,6 +168,29 @@ expect list_has_keys "with the keys on the list"
 expect focus_check "and one focus shows"
 shot coexist-03b-q-back 1.5
 
+step "a :w in nvim, then quitting: the diff comes back all the same (the saved file's rev moves)"
+do_ gitview-diff.key:enter
+expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: nvim, in the diff's place" 30
+expect '[ "$(nv --remote-expr 1)" = 1 ]' "its daemon answers" 15
+nv --remote-send '<esc>Gogitview-saved<esc>:w<cr>'
+expect 'grep -q gitview-saved "$S/src/main.rs"' "saved in nvim (:w)"
+sleep 1 # the list sees the save: the file's rev moves, its view is written again
+hc keys "$(tab_nvim)" esc shift+z shift+q >>"$LOG" 2>&1
+expect '[ -z "$(tab_nvim)" ]' "ZQ closes nvim's pane" 15
+expect 'mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = src/main.rs ]' "the diff pane is back on src/main.rs" 5
+
+step "a :w in nvim, then cmd-shift-g twice: the diff of that file is back"
+do_ gitview-diff.key:enter
+expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: nvim, in the diff's place" 30
+expect '[ "$(nv --remote-expr 1)" = 1 ]' "its daemon answers" 15
+nv --remote-send '<esc>Gogitview-saved-again<esc>:w<cr>'
+expect 'grep -q gitview-saved-again "$S/src/main.rs"' "saved in nvim (:w)"
+sleep 1
+do_ mod.open --name gitview-sidebar
+expect '[ "$(panel_state)" = "hidden changes" ] && [ -z "$(tab_nvim)" ]' "cmd-shift-g: the panel and nvim's pane go" 15
+do_ mod.open --name gitview-sidebar
+expect '[ "$(panel_state)" = "open changes" ] && mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = src/main.rs ]' "cmd-shift-g again: the diff of src/main.rs" 15
+
 step "cmd-shift-g with the file in nvim closes the whole unit, nvim too (its daemon keeps the edit); again: the diff, the keys on the list"
 do_ gitview-diff.key:enter
 expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: nvim, in the diff's place" 30
