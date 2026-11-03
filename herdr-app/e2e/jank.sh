@@ -18,7 +18,8 @@
 #     so without it only the execs are measured and the frame budgets skip
 #
 # The budgets (JANK_ASSERT=1, the default): no blank diff body on j/k, s, u,
-# discard, commit, an agent's write or the way back from nvim; at most one
+# discard, commit or an agent's write, and none back from nvim but the new
+# pane's first file (a new mod copy has nothing to show before it); at most one
 # status and one diff per s/u/discard; no diff for an agent's write to
 # another file; no blank body on `t`; back from history the pane shows the
 # worktree's file.
@@ -197,6 +198,6 @@ if [ "$JANK_ASSERT" = 1 ]; then
   budget write-other 'm["execs"].get("diff", 0) == 0' "no diff for a write to another file"
   budget tree 'm["trace_blank"] == 0 and m["no_file"] == 0' "no blank body, no \"No file selected\""
   [ "$HCOMMIT" = null ] && ok "history: back to files, the pane shows the worktree's file" || fail "history: the pane still shows commit $HCOMMIT"
-  if [ -n "$HNV_SRC" ] && [ -n "${NVT:-}" ]; then budget nvim-quit 'm["trace_blank"] == 0 and m["blank"] == 0' "no blank body coming back from nvim"; fi
+  if [ -n "$HNV_SRC" ] && [ -n "${NVT:-}" ]; then budget nvim-quit 'm["trace_blank"] <= 1' "coming back from nvim, no blank body after the new pane's first file (a new mod copy starts empty: nothing crosses copies)"; fi
 fi
 passed

@@ -41,6 +41,13 @@ git -C "$S" rm -q gone.txt
 printf 'brand new\n' >"$S/added.txt" && git -C "$S" add added.txt
 printf 'untracked\n' >"$S/notes.md"
 staged() { git -C "$S" diff --cached --name-only | tr '\n' ' '; }
+# A diff pane in one of the first space's tabs (a hide closes those; the
+# panes in other spaces' tabs stay, for when the person goes back there).
+space_diff() {
+  local tabs
+  tabs=$("$APP" ls | python3 -c 'import json,sys; print(" ".join(t["id"] for s in json.load(sys.stdin)["spaces"] if s["id"] == sys.argv[1] for t in s["tabs"]))' "$SPACE")
+  mod_panes | awk -v tabs=" $tabs " '$3 == "gitview-diff" && index(tabs, " " $1 " ") {found=1} END {exit !found}'
+}
 # The tab has its diff pane, on that file: the pane takes its commands then.
 # (A space switch can hide the panel a moment, as the tab bar restores the
 # space's own panel; its diff panes close with it and open again.)
@@ -77,7 +84,7 @@ expect panel_up "the panel is up (it takes gitview.* commands)" 20
 expect '[ "$(panel_state)" = "open changes" ]' "the panel shows Changes"
 # The list notices it's shown from a timer too (a covered window doesn't draw).
 expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "showing the panel opens the diff pane in this tab"
-expect '[ -n "$(view_of $TAB path)" ] && [ "$(view_of $TAB by)" = list ]' "on the list's first file"
+expect '[ -n "$(view_of $TAB path)" ]' "on the list's first file"
 shot 01-panel-list
 do_ gitview.click:src/main.rs
 expect '[ "$(view_of $TAB path)" = src/main.rs ] && [ "$(view_of $TAB scope)" = uncommitted ]' "the pane shows src/main.rs (uncommitted)"
@@ -116,7 +123,7 @@ shot 02b-keys 0.5
 
 step "J/K in the diff pane move through the list (the list follows)"
 do_ gitview-diff.key:J
-expect '[ "$(view_of $TAB path)" != config.toml ] && [ "$(view_of $TAB by)" = pane ]' "J: the next file, chosen by the pane"
+expect '[ "$(view_of $TAB path)" != config.toml ]' "J: the next file (the pane asks the list, which shows it)"
 NEXT=$(view_of $TAB path)
 do_ gitview-diff.key:K
 expect '[ "$(view_of $TAB path)" = config.toml ]' "K: back to config.toml"
@@ -196,19 +203,21 @@ do_ gitview.discard # an old, token-less confirm
 do_ "gitview.discard:nottheone"
 sleep 1
 [ -e "$S/keep.txt" ] && ok "a confirm without the right token discards nothing" || fail "keep.txt discarded"
-do_ layout.hide --id panel
 do_ mod.open --name gitview-tab
 expect '[ "$(tab_active)" = gitview ]' "cmd-g's tab: a second gitview list"
 expect '"$APP" do gitview.key:r' "its list is up" 20
+expect '[ "$(panel_state)" = "hidden changes" ]' "cmd-g's tab shows one list: the panel steps aside there"
+OWN0=$(tab_id)
+expect '[ -n "$(view_of $OWN0 path)" ]' "and its first file shows in its diff pane at once"
 do_ gitview.button:discard:drop.txt
 expect 'overlay_open confirm' "the tab's list asks about drop.txt"
-expect panel_up "both lists on screen: the panel's is up too" 20
-confirm_discard gitview # its Confirm reaches both lists
+confirm_discard gitview # its Confirm reaches every list on screen
 expect '[ ! -e "$S/drop.txt" ]' "the confirmed one (drop.txt) is discarded"
 sleep 1
 [ -e "$S/keep.txt" ] && ok "the cancelled one (keep.txt) is not" || fail "keep.txt discarded by another copy's confirm"
 do_ mod.open --name gitview-tab # closes it, back to tab 1
 expect '[ "$(tab_active)" = 1 ]' "back in tab 1"
+expect '[ "$(panel_state)" = "open changes" ]' "the panel is back in tab 1"
 rm -f "$S/keep.txt"
 do_ gitview.key:r
 
@@ -413,7 +422,7 @@ fi
 step "cmd-shift-g toggles the Changes panel; cmd-g opens gitview's own tab"
 expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "(the diff pane is open before cmd-shift-g)"
 SEL=$(view_of $TAB path)
-press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ] && ! mod_panes | grep -q gitview-diff' "hides the panel and its diff pane together"
+press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ] && ! space_diff' "hides the panel and its diff pane together"
 press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "open changes" ] && mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = "$SEL" ]' "shows both again, on the file that was selected ($SEL)"
 if [ "$KEYS" = 1 ]; then
   sleep 0.5
@@ -424,18 +433,18 @@ else
   skip "the list has the keyboard after cmd-shift-g (keys reach only a frontmost app)"
 fi
 shot 14-cmd-shift-g 1
-press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ] && ! mod_panes | grep -q gitview-diff' "hides both again"
+press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ] && ! space_diff' "hides both again"
 changes_button
 expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "the Changes button shows both too"
 do_ layout.hide --id panel
-expect '! mod_panes | grep -q gitview-diff' "and hiding the panel (the Changes button again) closes the diff pane"
+expect '! space_diff' "and hiding the panel (the Changes button again) closes the diff pane"
 # The hide was noticed only by a diff pane in the shown tab once (B7).
 changes_button
 expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "shown again in tab 1, with its diff pane"
 TAB2=$("$APP" do tab.new --space "$SPACE" --folder "$S" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
 expect '[ "$(tab_id)" = "$TAB2" ] && ! mod_panes | grep -q "^$TAB2 "' "a second tab, without a diff pane"
 do_ layout.hide --id panel
-expect '! mod_panes | grep -q gitview-diff' "the Changes button hides the panel from there: tab 1's diff pane closes too"
+expect '! space_diff' "the Changes button hides the panel from there: tab 1's diff pane closes too"
 changes_button
 expect 'mod_panes | grep -q "^$TAB2 .* gitview-diff$" && [ -n "$(view_of $TAB2 path)" ]' "and shows it again: its file opens in a diff pane in this tab"
 do_ tab.close --id "$TAB2" --confirmed true
