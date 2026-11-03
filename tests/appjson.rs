@@ -16,6 +16,8 @@
 //!   files the list hides, or takes unstaged changes while something is
 //!   staged;
 //! - a branch base passed back by the caller kept after HEAD moved;
+//! - spans split where the colors don't change (more for the mod to
+//!   build), or their text changed by the merge;
 //! - a huge diff's last sent rows left without syntax colors (only the
 //!   rows sent are highlighted, so a cap counted wrong shows as plain
 //!   text);
@@ -597,4 +599,13 @@ fn every_row_sent_of_a_huge_diff_has_its_syntax_colors() {
     let first = code(&rows[0]);
     assert!(first.len() > 3, "colored: {first:?}");
     assert_eq!(code(rows.last().unwrap()), first, "the last row sent");
+    // Neighbours of the same colors come as one span: the same text.
+    let text: String = first.iter().map(|s| s[0].as_str().unwrap()).collect();
+    assert_eq!(text, line.trim_end());
+    for pair in first.windows(2) {
+        assert!(
+            (&pair[0][1], &pair[0][2]) != (&pair[1][1], &pair[1][2]),
+            "{pair:?}"
+        );
+    }
 }

@@ -637,11 +637,11 @@ fn diff(a: &Args) -> Result<Value> {
                 o,
                 n,
                 bg: hex(line.style.bg),
-                s: line
-                    .spans
-                    .iter()
-                    .map(|s| (s.content.to_string(), hex(s.style.fg), hex(s.style.bg)))
-                    .collect(),
+                s: merged(
+                    line.spans
+                        .iter()
+                        .map(|s| (s.content.to_string(), hex(s.style.fg), hex(s.style.bg))),
+                ),
                 m: marker.to_string(),
             }
         })
@@ -654,6 +654,21 @@ fn diff(a: &Args) -> Result<Value> {
         binary: doc.binary,
         hash,
     })
+}
+
+/// `spans` with each run of neighbours of the same colors as one span: the
+/// same text in the same colors, in fewer spans for the mod to build.
+fn merged(
+    spans: impl Iterator<Item = (String, Option<String>, Option<String>)>,
+) -> Vec<(String, Option<String>, Option<String>)> {
+    let mut out: Vec<(String, Option<String>, Option<String>)> = Vec::new();
+    for (text, fg, bg) in spans {
+        match out.last_mut() {
+            Some(last) if last.1 == fg && last.2 == bg => last.0.push_str(&text),
+            _ => out.push((text, fg, bg)),
+        }
+    }
+    out
 }
 
 /// A tagged text's color as the mod takes it: a tint's role (`@ins`, …),
