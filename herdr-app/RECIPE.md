@@ -50,8 +50,12 @@ Spaces on other machines work the same way.
     corners (border `accent` while typing) and a 32 px button, `solid` when
     there's a message: "Commit staged", or "Commit all" when the last status
     had nothing staged ("Committing…" meanwhile);
-  - a 26 px footer: the keys that work in this view, 11 px `dim`; a message
-    in `blocked` instead for 5 s.
+  - a 28 px footer: the view's most useful keys as keycaps, as many as fit
+    (a 16 px box on `raised` with a `border` and 4 px corners, the key in
+    the mono font at 10.5 px, ⏎ ↑ ← in the UI font; then its label in 11 px
+    `dim`: `[s] stage [u] unstage [⏎] nvim [x] discard …`), and always a `?`
+    keycap at the right edge that opens the keys card; a message in
+    `blocked` replaces the keycaps for 5 s.
 - **History** (`l`): a header with ← and "History", the branch (or `since
   <base>`) and an `all` / `branch` pill; 44 px rows: the subject and up to
   two refs (`accent` on `raised`), under it `<short sha> · <when> ·
@@ -77,7 +81,17 @@ Spaces on other machines work the same way.
   44 px in, 8 px corners, `accent` border on `raised`, `note · lines 4-5` in
   11 px `accent` with an 18 px ×, the text in 12 px. The composer opens under
   the selection: a 104 px card on `surface` with "new note · lines a-b · enter
-  saves · esc cancels" and a 52 px text area. A 26 px footer with the keys.
+  saves · esc cancels" and a 52 px text area. The same 28 px footer of
+  keycaps (`[⏎] save the note [esc] cancel` while writing one).
+  **Preview** (markdown `.md .markdown .mdx`, images `.png .jpg .jpeg .gif
+  .webp .bmp .ico`, `.svg`, `.html`): the header gets a `Diff | Preview`
+  segmented toggle (a 1 px `border`, the shown side on `raised`; under
+  420 px wide two icons, Lucide `diff` and `eye`); markdown renders in the
+  UI font at 13 px, selectable and scrolling; an image fills the pane
+  (contain), and a changed one shows before | after side by side (stacked
+  under 560 px), each under an 11 px `dim` caption (`before · index`,
+  `after · worktree`); a deleted file shows its old version with a
+  `deleted` tag.
   With nothing selected: "No file selected / Click a file in the gitview
   list." centered in `dim`.
 - **cmd-g's tab** "gitview": the diff pane on the left, the list on the right
@@ -86,6 +100,11 @@ Spaces on other machines work the same way.
   one 30 px row per agent (status dot, name, status, space / tab, address),
   this space's first.
 - **Confirm**: the app's own `confirm` dialog ("Discard changes?").
+- **Keys card** (`?`): a 500 px dialog on `popover`: the mod's name in
+  15 px semibold, `esc` and `?` keycaps; then every key grouped by view
+  (the shown one first, its title in `accent`, the others' in `muted`):
+  22 px rows of keycaps (96 px column) and the label in `muted`; it
+  scrolls when long.
 
 ## How it behaves
 
@@ -118,7 +137,24 @@ Spaces on other machines work the same way.
   it went (staged), or the file now where it was, with none left "No file
   selected"; `J`/`K`
   the next/previous file in the list's order (the list follows); `p` sends;
-  `esc` clears the selection; × closes the pane (the next click opens it).
+  `esc` clears the selection; `m` Diff or Preview; `?` the keys card; ×
+  closes the pane (the next click opens it).
+- **Keys card**: `?` (or the footer's `?`) opens it; `?`, `esc` or a click
+  beside it closes it. The keycaps, the card and the keys themselves come
+  from one table per view (`keymap.js`), so they can't disagree.
+- **Preview**: a file that previews opens in Preview; Diff on one keeps
+  that kind of file (markdown, images, html) in Diff while the pane lives,
+  until Preview again (`m` or the toggle). It shows the side the diff's
+  new version comes from: the worktree for a change, the index for a
+  staged one, the commit for a history file, the worktree for the
+  branch's diff; a deleted file its old version; a changed image before
+  (the index, HEAD, the commit before it, or the merge-base) and after.
+  What can't show (too big: 1 MiB of text, 16 MiB of image; not on that
+  side; a failed read) falls back to Diff with the reason in the footer;
+  a binary file that isn't an image keeps "Binary file". In Preview the
+  keys that work on lines (j/k, v, a, notes) say "that works in Diff";
+  enter opens nvim at line 1, or where the cursor was moved in Diff, and
+  the list's Enter does the same.
 - **Enter → nvim**: with herdr-nvim installed (`<app home>/mods/herdr-nvim/
   bin/herdr-nvim`), `herdr-nvim open --tab <tab> --space <space>
   <file>:<line>`; its full-height nvim pane takes the diff pane's place, so
@@ -197,7 +233,10 @@ Spaces on other machines work the same way.
   rows and actions), `notesview.js` (note rows and actions), `model.js`
   (status → flat or tree rows, a file's view, `diff` arguments), and,
   shared with the pane: `chrome.js` (icon buttons, pills, the spinner, a
-  path, the headers of both mods, the commit row, the footer), `modkit.js`
+  path, the headers of both mods, the Diff | Preview toggle, the commit
+  row, keycaps and the footer), `keymap.js` (key tables: the key that
+  runs, its keycaps and label, its rank as a footer chip; the keys card's
+  content), `modkit.js`
   (the load counter, with `latest`: one load per name at a time,
   coalesced, an older reply dropped; the fading message, the folder watch, the command
   loop, key names, the launchers' one-shot), `actions.js` (which section
@@ -206,17 +245,28 @@ Spaces on other machines work the same way.
   `engine.js` (runs the binary; the shown space's folder and machine),
   `nvim.js` (Enter), `scroller.js` (a list that draws only its visible rows
   as ordinary elements), `icons/` (Lucide: plus, minus, undo, x, chevrons,
-  folder, history, list, list-tree, send, arrow-left, branch). `mod.json`:
+  folder, history, list, list-tree, send, arrow-left, branch, diff, eye).
+  `mod.json`:
   `{"place": "none", "title": "gitview", "focusable": true}`.
-- **mods/gitview-diff** (the diff pane): `main.js`, `diffview.js` (diff
-  rows, note cards, the composer, a note's range); props `{tab}` (`{space,
-  own}` in cmd-g's tab). `focusable`.
+- **mods/gitview-diff** (the diff pane): `main.js` (its key table too),
+  `diffview.js` (diff rows, note cards, the composer, a note's range),
+  `preview.js` (which files preview, which side, `json file`, the cache,
+  the Preview's body); props `{tab}` (`{space, own}` in cmd-g's tab).
+  `focusable`. Images come from `json file --out <app home>/mods/
+  gitview-diff/.cache` (named by content; hidden, so writing there reloads
+  no mod; the newest 50 files and 50 MB are kept) and are drawn with
+  `image("mods/gitview-diff/.cache/<name>")`, a path relative to the app
+  home, as Herdr's own mods draw theirs.
+- **mods/gitview-keys**: the keys card, a dialog with props `{title,
+  groups}` made from the key tables; `gitview.keys` in shared state while
+  it's open (the mods' `?` closes it then).
 - **The two talk only through shared state**: the list writes
   `gitview.views[<tab>]` (the file, its section and scope, the base or
   commit, the list's file order for J/K, a `seq` bumped on every write and
   a `showing` bumped when another file is shown: the pane starts that one
   afresh; `{empty: true}` when there's nothing to show); the pane writes
-  `gitview.cursor[<tab>]` (the list's Enter uses its line),
+  `gitview.cursor[<tab>]` (the list's Enter uses its line; `preview`
+  while it shows the Preview),
   `gitview.views[<tab>]` on J/K, and `gitview.dirty` after s/u/x (the list
   refreshes and picks the next file); notes are `gitview.notes["<machine
   or ''>:<repo root>"]` (`{id, file, section, cached, start, end, text,
@@ -228,12 +278,13 @@ Spaces on other machines work the same way.
 - **mods/gitview-sidebar** (cmd-shift-g) and **mods/gitview-tab** (cmd-g):
   2×2 px frameless windows that act once and close (`modkit.js` `oneShot`).
 - Files shared between mod folders (`engine.js`, `model.js`, `shared.js`,
-  `nvim.js`, `scroller.js`, `chrome.js`, `modkit.js`, `actions.js`) are
+  `nvim.js`, `scroller.js`, `chrome.js`, `modkit.js`, `actions.js`,
+  `placement.js`, `keymap.js`) are
   symlinks in the repo; install copies them (`cp -L`): a mod can't import
   from another mod's folder.
 - **The binary** (`mods/gitview/bin/herdr-gitview`, built from this repo;
   paths in `mods/gitview/config.json`): `json
-  status|diff|stage|unstage|discard|commit|log|commit-files|notes|nvim|send|
+  status|diff|file|stage|unstage|discard|commit|log|commit-files|notes|nvim|send|
   sidebar` (every repo op takes `--on <machine>` and then runs git and file
   reads there through `hc exec --on`; the mods put `--` before paths,
   messages and text; in branch scope a poll passes the base it already
@@ -330,6 +381,11 @@ Spaces on other machines work the same way.
 - With nothing staged the commit row commits everything (with untracked
   files hidden, `add -u`: they stay out); with files in conflict it's
   refused and nothing is staged.
+- `?` in the list and in the pane opens the keys card; `?` or esc closes
+  it.
+- A markdown file opens in Preview, `m` switches to Diff, and the next
+  markdown file opens in Diff too, while an image still opens in Preview;
+  a changed PNG shows its index and worktree versions, byte for byte.
 - In Catppuccin Frappé a comment on an added line has at least 3.5
   contrast with its tint (drawn pixels when the window is drawn, and the
   color the pane's render code gives it).
