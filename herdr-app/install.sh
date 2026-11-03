@@ -11,9 +11,13 @@
 # What it does, in <app home> ($HERDR_APP_HOME, else ~/.config/herdr-app):
 #   - builds herdr-gitview (cargo build --release; or uses $GITVIEW_BIN) and
 #     copies it to mods/gitview/bin/herdr-gitview
-#   - copies every mod folder in herdr-app/mods (the gitview panel, its diff
-#     pane, send notes, the full TUI as panes, the popup)
+#   - copies every mod folder in herdr-app/mods: gitview (the file list, in
+#     the Changes panel and in cmd-g's tab), gitview-diff (the diff pane),
+#     gitview-agents (send notes to an agent), gitview-sidebar (cmd-shift-g:
+#     show or hide the Changes panel with gitview, its diff pane with it) and
+#     gitview-tab (cmd-g: gitview in a tab of its own)
 #   - writes mods/gitview/config.json: the binary, herdr-app and hc paths
+#     (herdr-app: $HERDR_APP_BIN, else found on PATH or in /Applications)
 #   - runs `herdr-app check` on each mod, before anything outside the mod
 #     folders changes
 #   - `herdr-gitview app-setup install`: adds the keys from keys.json
@@ -21,7 +25,10 @@
 #     slot of the person's personal layout at gitview (see src/appsetup.rs:
 #     on one of Herdr's own layouts, the person's copy of it is used, or it
 #     is cloned once as <name>-copy); it also drops what older installs
-#     added and nothing uses now (the TUI-in-the-app keys and mods)
+#     added and nothing uses now (the cmd-alt-g / cmd-alt-shift-g keys and
+#     the gitview-popup, gitview-tui-sidebar, gitview-tui-tab mods). It
+#     chooses the layout first: when that refuses (several copies), keys.json
+#     and the layouts are left as they were
 # The uninstall runs `app-setup uninstall` (our keys and our layout edits
 # only; no layout is deleted or switched) and removes our mod folders.
 #

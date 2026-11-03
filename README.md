@@ -119,17 +119,37 @@ Editing, commits, history diffs, and notes need the second pane, i.e. herdr.
 
 ### Herdr desktop app
 
-For the Herdr desktop app (herdr-app ≥ 0.1.11) gitview is a native mod that
-takes the place of the **Changes** panel, plus keys for a full-height sidebar
-and its own tab. With the app open:
+For the Herdr desktop app (herdr-app ≥ 0.1.11) gitview is a set of native
+mods: its file list takes the place of the **Changes** panel, and the
+selected file's diff opens in a full-height pane left of the panel. With the
+app open:
 
 ```bash
 herdr-app/install.sh               # builds, installs the mods, adds the keys
 herdr-app/install.sh --uninstall   # the stock Changes panel comes back
 ```
 
-`cmd-shift-g` sidebar, `cmd-g` tab, `cmd-alt-shift-g` / `cmd-alt-g` the TUI
-below as terminal panes. It reads the same `config.toml` as the plugin
+- **`cmd-shift-g`** (Linux: `ctrl-alt-shift-g`) shows or hides the Changes
+  panel with gitview in it, as the tab bar's Changes button does. Showing it
+  opens the selected file (else the first) in the diff pane; hiding it
+  closes the diff pane too.
+- **`cmd-g`** (Linux: `ctrl-alt-g`) opens gitview in a tab of its own for
+  the repo you're in: the diff on the left, the file list on the right. From
+  another tab it jumps there; inside it, it closes the tab and takes you
+  back.
+- In the list: `s`/`u`/`x` stage, unstage, discard; `w` switches between
+  the worktree and the branch; `t` tree view; `l` history; `n` notes; `c`
+  the commit box, which commits what's staged, or everything when nothing
+  is (never while files are in conflict). In the diff pane, `a` writes a note on the selected
+  lines, Enter opens nvim at the line (in herdr-nvim when it's installed),
+  and `p` sends the notes to an agent: Enter places them in its input,
+  shift+Enter sends them.
+- Remote spaces work too: git runs on that machine through `hc exec`.
+
+The install adds its keys only where they're free and keeps yours. It also
+removes what older installs added (the `cmd-alt-g` / `cmd-alt-shift-g` keys
+for the TUI inside the app, and those mods). gitview reads the same
+`config.toml` as the plugin
 (`$XDG_CONFIG_HOME/herdr/plugins/config/chmarax.gitview/`). What it looks
 like and how it's built: [herdr-app/RECIPE.md](herdr-app/RECIPE.md);
 `herdr-app/e2e/run.sh` checks it end to end in a private app.
