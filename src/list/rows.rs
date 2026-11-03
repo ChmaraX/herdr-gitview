@@ -48,7 +48,7 @@ impl Section {
         self == Section::Staged
     }
 
-    fn title(self) -> &'static str {
+    pub fn title(self) -> &'static str {
         match self {
             Section::Conflicts => "merge conflicts",
             Section::Staged => "staged changes",

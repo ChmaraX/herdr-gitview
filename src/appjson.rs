@@ -405,7 +405,7 @@ struct SectionOut<'a> {
 }
 
 impl<'a> SectionOut<'a> {
-    fn of(section: Section, title: &'static str, status: &'a AppStatus) -> Self {
+    fn of(section: Section, status: &'a AppStatus) -> Self {
         let id = match section {
             Section::Conflicts => "conflicts",
             Section::Staged => "staged",
@@ -414,7 +414,7 @@ impl<'a> SectionOut<'a> {
         };
         SectionOut {
             id,
-            title,
+            title: section.title(),
             cached: section.cached(),
             files: status
                 .entries
@@ -529,22 +529,18 @@ fn status(a: &Args) -> Result<Value> {
             head,
             scope: Scope::Branch,
             base: Some(base.clone()),
-            sections: vec![SectionOut::of(Section::Flat, "", &st)],
+            sections: vec![SectionOut::of(Section::Flat, &st)],
             editor: &cfg.editor,
             ignored_dirs: &st.ignored_dirs,
             ignore_submodules: false,
         });
     }
     let st = repo.app_worktree_status(cfg.show_untracked, a.flag("ignore-submodules"))?;
-    let sections = [
-        (Section::Conflicts, "merge conflicts"),
-        (Section::Staged, "staged changes"),
-        (Section::Changes, "changes"),
-    ]
-    .into_iter()
-    .map(|(s, title)| SectionOut::of(s, title, &st))
-    .filter(|s| !s.files.is_empty())
-    .collect();
+    let sections = [Section::Conflicts, Section::Staged, Section::Changes]
+        .into_iter()
+        .map(|s| SectionOut::of(s, &st))
+        .filter(|s| !s.files.is_empty())
+        .collect();
     reply(StatusOut {
         root: &repo.root,
         branch: st.branch.clone(),
