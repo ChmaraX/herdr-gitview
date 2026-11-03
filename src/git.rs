@@ -803,14 +803,44 @@ impl Repo {
     /// call, each with its object id. `None` = absent at that rev (or not a
     /// file). Paths containing a newline can't be sent this way: error.
     pub fn read_blobs(&self, specs: &[String]) -> Result<Vec<Option<Blob>>> {
-        use std::io::Write;
-        use std::process::Stdio;
         if specs.iter().any(|s| s.contains('\n')) {
             bail!("path contains a newline");
         }
+        let out = self.cat_file("--batch", &specs.join("\n"))?;
+        parse_batch(&out, specs.len())
+    }
+
+    /// The bytes of the blob `spec` (`rev:path`, `:path` = the index),
+    /// exact, unless it's over `max` bytes. Missing: no such path at that
+    /// rev, or not a file there (a folder, a submodule). Two git calls: the
+    /// size first, so a big blob is never read.
+    pub fn read_object(&self, spec: &str, max: u64) -> Result<Contents> {
+        if spec.contains('\n') {
+            bail!("path contains a newline");
+        }
+        let out = self.cat_file("--batch-check", spec)?;
+        // `<oid> <type> <size>`, or `<spec> missing` (exit 0 either way).
+        let header = String::from_utf8_lossy(&out);
+        let (oid, size) = match header.trim_end().rsplitn(3, ' ').collect::<Vec<_>>()[..] {
+            [size, "blob", oid] => (oid.to_string(), size.parse::<u64>().ok()),
+            _ => return Ok(Contents::Missing),
+        };
+        let size = size.context("git cat-file: a blob without a size")?;
+        if size > max {
+            return Ok(Contents::TooBig(size));
+        }
+        Ok(Contents::Bytes(self.git(&["cat-file", "blob", &oid])?))
+    }
+
+    /// `git cat-file <mode>` (`--batch`, `--batch-check`) answering the
+    /// specs in `lines` (one per line): its output. Its failure (on another
+    /// machine, hc's: it dropped) is an error that says so.
+    fn cat_file(&self, mode: &str, lines: &str) -> Result<Vec<u8>> {
+        use std::io::Write;
+        use std::process::Stdio;
         let mut child = self
             .git_command(
-                &["cat-file", "--batch"],
+                &["cat-file", mode],
                 Run {
                     stdin: true,
                     ..Run::default()
@@ -823,13 +853,11 @@ impl Repo {
             .context("spawning git cat-file")?;
         // A few short lines fit the pipe buffer, so writing them all before
         // reading can't deadlock against git's output.
-        let mut input = specs.join("\n");
-        input.push('\n');
         child
             .stdin
             .take()
             .context("git cat-file stdin")?
-            .write_all(input.as_bytes())?;
+            .write_all(format!("{lines}\n").as_bytes())?;
         let out = child.wait_with_output()?;
         if !out.status.success() {
             bail!(
@@ -837,55 +865,7 @@ impl Repo {
                 crate::remote::remote_error(&String::from_utf8_lossy(&out.stderr))
             );
         }
-        parse_batch(&out.stdout, specs.len())
-    }
-
-    /// The bytes of the blob `spec` (`rev:path`, `:path` = the index),
-    /// exact, unless it's over `max` bytes. Missing: no such path at that
-    /// rev, or not a file there (a folder, a submodule). Two git calls: the
-    /// size first, so a big blob is never read.
-    pub fn read_object(&self, spec: &str, max: u64) -> Result<Contents> {
-        use std::io::Write;
-        use std::process::Stdio;
-        if spec.contains('\n') {
-            bail!("path contains a newline");
-        }
-        let mut child = self
-            .git_command(
-                &["cat-file", "--batch-check"],
-                Run {
-                    stdin: true,
-                    ..Run::default()
-                },
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("spawning git cat-file")?;
-        child
-            .stdin
-            .take()
-            .context("git cat-file stdin")?
-            .write_all(format!("{spec}\n").as_bytes())?;
-        let out = child.wait_with_output()?;
-        if !out.status.success() {
-            bail!(
-                "git cat-file: {}",
-                crate::remote::remote_error(&String::from_utf8_lossy(&out.stderr))
-            );
-        }
-        // `<oid> <type> <size>`, or `<spec> missing` (exit 0 either way).
-        let header = String::from_utf8_lossy(&out.stdout);
-        let (oid, size) = match header.trim_end().rsplitn(3, ' ').collect::<Vec<_>>()[..] {
-            [size, "blob", oid] => (oid.to_string(), size.parse::<u64>().ok()),
-            _ => return Ok(Contents::Missing),
-        };
-        let size = size.context("git cat-file: a blob without a size")?;
-        if size > max {
-            return Ok(Contents::TooBig(size));
-        }
-        Ok(Contents::Bytes(self.git(&["cat-file", "blob", &oid])?))
+        Ok(out.stdout)
     }
 
     /// The working-tree content of a repo-relative path; `None` when
