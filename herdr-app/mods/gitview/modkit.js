@@ -343,6 +343,7 @@ export function commandLoop(cx, { loads, before, handle, flash, name }) {
           continue;
         }
         before?.(cx);
+        if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: name, command, busy: loads.names() })}`);
         const asked = Date.now();
         let said = false;
         await loads.idle(cx, () => {

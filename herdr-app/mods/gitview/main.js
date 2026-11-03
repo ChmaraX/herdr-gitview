@@ -227,6 +227,9 @@ export default class GitList extends View {
     for (const t of Object.keys(handoffs())) if (t !== tab) setHandoff(t, null); // the person left that tab
     const rec = handoffIn(tab);
     if (!rec) return;
+    // Another file shown meanwhile (not the same one written again: a :w
+    // there moves its rev, and the view is rewritten): nothing comes back.
+    if (!this.restorable(tab, rec)) return setHandoff(tab, null);
     const nvim = herdrNvimPanes(tab).length > 0;
     this.nvimSeen = nvim;
     if (!rec.seen) {
@@ -236,9 +239,7 @@ export default class GitList extends View {
     }
     if (nvim) return;
     setHandoff(tab, null);
-    // Another file shown meanwhile (not the same one written again: a :w
-    // there moves its rev, and the view is rewritten): nothing comes back.
-    if (diffPane(tab) || (viewIn(tab)?.showing ?? 0) !== rec.showing) return;
+    if (diffPane(tab)) return;
     const list = this.list();
     const row = list && list.where.root === rec.root && (list.where.commit ?? null) === rec.commit ? list.findFile(rec.path, rec.section) : null;
     // Back on the diff, the keys on the list (v1: :q came back to the list).
@@ -292,6 +293,11 @@ export default class GitList extends View {
     });
   }
 
+  // The handoff can still bring its diff back: no other file shown since.
+  restorable(tab, rec) {
+    return (viewIn(tab)?.showing ?? 0) === rec.showing;
+  }
+
   // A click or Enter on the handed-off row: the diff again in nvim's place.
   // nvim's pane closes; nvim keeps running (its daemon keeps the buffers,
   // unsaved edits and cursor), and Enter in the diff goes back to it.
@@ -312,8 +318,11 @@ export default class GitList extends View {
     if (!same || Date.now() - (this.statusAt ?? 0) > 1000) this.refresh(cx);
     else this.ctx = { ...this.ctx, ...this.context() };
     const tab = this.tab();
-    // A file handed to nvim comes back on its own (followHandoff).
-    if (!tab || diffPane(tab) || handoffIn(tab)) return;
+    // A file handed to nvim comes back on its own (followHandoff); a record
+    // that can't any more goes.
+    const rec = handoffIn(tab);
+    if (rec && !this.restorable(tab, rec)) setHandoff(tab, null);
+    if (!tab || diffPane(tab) || (rec && this.restorable(tab, rec))) return;
     // The list it kept while hidden: its file at once (the refresh corrects
     // it if it moved meanwhile: followSelection).
     const known = same && this.list()?.shownFile();
@@ -554,6 +563,7 @@ export default class GitList extends View {
   rowAction(op, row, cx) {
     const list = this.work;
     row = row ?? list?.row();
+    if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "list", rowAction: op, row: row?.key ?? null, mode: this.mode, scope: this.scope })}`);
     if (!row || !MODES[this.mode].actsOnWork || this.scope !== "worktree") return;
     const section = row.section.id;
     if (!allowed(op, section)) return this.flash.set(`can't ${op} in ${row.section.title}`);
