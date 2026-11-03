@@ -19,7 +19,7 @@ import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
   cursorIn, diffPane, dirty, liveView, notesKey, notesOf, onScreen, pump, setTreeMode, setView, takeKeyboard, treeMode, viewIn,
 } from "./shared.js";
-import { Flash, Loads, commandLoop, watch } from "./modkit.js";
+import { Flash, LOST_MS, Loads, commandLoop, watch } from "./modkit.js";
 import { FileList } from "./filelist.js";
 import { History, loadLog } from "./history.js";
 import { openNvim } from "./nvim.js";
@@ -111,7 +111,7 @@ export default class GitList extends View {
   refresh(cx, { poll = false } = {}) {
     const ctx = this.context();
     this.ctx = ctx;
-    if (this.loading) {
+    if (this.loading && Date.now() - this.loadingSince < LOST_MS) {
       this.again = true;
       return;
     }
@@ -121,6 +121,7 @@ export default class GitList extends View {
       return;
     }
     this.loading = true;
+    this.loadingSince = Date.now();
     this.loads.run(cx, async (cx) => {
       try {
         const base = poll && this.scope === "branch" && this.loadedKey === ctx.key ? this.work?.where.base : null;

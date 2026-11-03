@@ -5,36 +5,57 @@
 import { closeOverlay, nextCommand, notify, props, watchFolder } from "herdr";
 import { message } from "./engine.js";
 
-// Loads in flight. `run(cx, work)` counts one; `idle(cx)` resolves when none
-// runs (at most 10 s, so a lost task never blocks the commands).
+// Loads in flight. `run(cx, work)` counts one; `idle(cx)` resolves
+// when none runs. A load that hasn't finished after LOST_MS is taken as
+// lost (its task never came back) and no longer counts, so it can't hold
+// the commands or the spinner for good; the log names it.
+export const LOST_MS = 15000;
+
 export class Loads {
   constructor(onError) {
-    this.count = 0;
+    this.running = new Map(); // id → {what, at}
+    this.seq = 0;
     this.waiters = [];
     this.onError = onError;
   }
 
-  busy() {
-    return this.count > 0;
+  live() {
+    const now = Date.now();
+    for (const [id, l] of this.running) {
+      if (now - l.at > LOST_MS) {
+        console.warn(`gitview: a load (${l.what}) hasn't finished in ${LOST_MS / 1000} s; not waiting for it`);
+        this.running.delete(id);
+      }
+    }
+    return this.running.size;
   }
 
-  run(cx, work) {
-    this.count++;
+  busy() {
+    return this.live() > 0;
+  }
+
+  get count() {
+    return this.running.size;
+  }
+
+  run(cx, work, what = String(work).replace(/\s+/g, " ").slice(0, 80)) {
+    const id = ++this.seq;
+    this.running.set(id, { what, at: Date.now() });
     cx.spawn(async (cx) => {
       try {
         await work(cx);
       } catch (e) {
         this.onError?.(message(e));
       } finally {
-        if (--this.count === 0) this.waiters.splice(0).forEach((resolve) => resolve());
+        this.running.delete(id);
+        if (!this.busy()) this.waiters.splice(0).forEach((resolve) => resolve());
         cx.notify();
       }
     });
   }
 
-  idle(cx) {
-    if (this.count === 0) return Promise.resolve();
-    return Promise.race([new Promise((resolve) => this.waiters.push(resolve)), cx.sleep(10000)]);
+  async idle(cx) {
+    while (this.busy()) await Promise.race([new Promise((resolve) => this.waiters.push(resolve)), cx.sleep(1000)]);
   }
 }
 
@@ -101,7 +122,6 @@ export function commandLoop(cx, { loads, before, handle, flash, name }) {
       try {
         before?.(cx);
         await loads.idle(cx);
-        if (loads.busy()) console.warn(`${name}: ${command}: ran after waiting 10 s for ${loads.count} load(s)`);
         handle(command, cx);
         cx.notify();
       } catch (e) {
