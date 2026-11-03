@@ -1,19 +1,22 @@
 // How the gitview mods talk: shared state only (`setShared` / `shared`),
-// so the file list and the diff pane never call each other. Shared by
-// gitview and gitview-diff (linked; install copies it).
+// so the file list and the diff pane never call each other, and every key
+// is read and written here. Shared by the gitview mods (linked; install
+// copies it).
 //
 // - "gitview.views": {<tab>: view}: what the tab's diff pane shows (written
-//   by the list on a file click or j/k, by the pane on J/K). A view is
-//   model.js viewOf() plus `seq` (bumped on every write), `by` ("list" or
-//   "pane"), `files` (the list's file order, for J/K) and `line` (a note to
-//   jump to).
-// - "gitview.cursor": {<tab>: {seq, path, line, first}}: where the pane's
-//   cursor is (the list's Enter opens nvim there).
+//   by the list on a file click or j/k, by the pane on J/K and after s/u/x).
+//   A view is model.js viewOf() plus `seq` (bumped on every write), `by`
+//   ("list" or "pane"), `files` (the list's file order, for J/K) and `line`
+//   (a note to jump to); `{empty: true, seq}` when there's nothing to show.
+// - "gitview.cursor": {<tab>: {root, on, path, section, commit, line, row,
+//   first}}: where the pane's cursor is (the list's Enter opens nvim there).
 // - "gitview.notes": {"<machine or ''>:<repo root>": [note]}: review notes,
 //   kept until sent. A note is {id, file, start, end, text, snippet}.
 // - "gitview.dirty": {root, on, at}: the pane staged or discarded something.
-// - "gitview.own": {<space>: <tab>}: the space's gitview tab (cmd-g).
 // - "gitview.tree": the list shows folders as a tree.
+// - "gitview.own": {<space>: <tab>}: the space's gitview tab (cmd-g).
+// - "gitview.origins": {<space>: <tab>}: where cmd-g was pressed (it goes
+//   back there).
 
 import { focused, layout, panes, setShared, shared, spaces } from "herdr";
 
@@ -21,16 +24,23 @@ export function views() {
   return shared("gitview.views") ?? {};
 }
 
+// The tab's view as stored (with its seq), empty or not.
 export function viewIn(tab) {
   return tab ? views()[tab] ?? null : null;
 }
 
-// Every tab's view, without the tabs that are gone.
+// A view with something to show, or null.
+export const liveView = (view) => (view && !view.empty && view.path ? view : null);
+
+const liveTabs = () => new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)));
+
+// Every tab's view, without the tabs that are gone. `view` null: the pane
+// shows nothing.
 export function setView(tab, view) {
-  const live = new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)));
+  const live = liveTabs();
   const all = Object.fromEntries(Object.entries(views()).filter(([t]) => live.has(t)));
-  const before = all[tab];
-  all[tab] = { ...view, seq: (before?.seq ?? 0) + 1 };
+  const seq = (all[tab]?.seq ?? 0) + 1;
+  all[tab] = view ? { ...view, empty: false, seq } : { empty: true, seq };
   setShared("gitview.views", all);
   return all[tab];
 }
@@ -40,10 +50,40 @@ export function cursorIn(tab) {
 }
 
 export function setCursor(tab, cursor) {
-  const live = new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)));
+  const live = liveTabs();
   const all = Object.fromEntries(Object.entries(shared("gitview.cursor") ?? {}).filter(([t]) => live.has(t)));
   all[tab] = cursor;
   setShared("gitview.cursor", all);
+}
+
+export function dirty() {
+  return shared("gitview.dirty") ?? null;
+}
+
+export function setDirty(root, on) {
+  setShared("gitview.dirty", { root, on: on ?? null, at: Date.now() });
+}
+
+export function treeMode() {
+  return Boolean(shared("gitview.tree"));
+}
+
+export function setTreeMode(on) {
+  setShared("gitview.tree", Boolean(on));
+}
+
+export function origins() {
+  return shared("gitview.origins") ?? {};
+}
+
+export function setOrigin(space, tab) {
+  setShared("gitview.origins", { ...origins(), [space]: tab });
+}
+
+// The machine of an app address ("vps/tb12", "vps/t3"); null for this one.
+export function machineOf(address) {
+  const s = String(address ?? "");
+  return s.includes("/") ? s.split("/")[0] : null;
 }
 
 // ---- notes ------------------------------------------------------------------

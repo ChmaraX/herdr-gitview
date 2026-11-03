@@ -48,7 +48,7 @@ export default class SendNotes extends View {
     const { message, overlay, ids, key } = props();
     cx.spawn(async (cx) => {
       try {
-        await gv(["send", "--terminal", agent.address, ...(submit ? ["--submit"] : []), message]);
+        await gv(["send", "--terminal", agent.address, ...(submit ? ["--submit"] : []), "--", message]);
         if (key && ids?.length) removeNotes(key, ids);
         notify({ title: "gitview", body: `notes ${submit ? "sent" : "placed"}: ${agent.program?.name ?? agent.app ?? agent.address}`, level: "success" });
         closeOverlay(overlay);

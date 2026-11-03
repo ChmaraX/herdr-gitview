@@ -3,19 +3,40 @@
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { iconButton } from "./listview.js";
+import { iconButton, noteLines, pathLabel } from "./chrome.js";
+import { removeNotes } from "./shared.js";
 
 export const NOTE_ROW = 44;
 
-export const lines = (n) => (n.end === 0 ? "whole file" : n.start === n.end ? `${n.start}` : `${n.start}-${n.end}`);
+// ---- what the list does in it (v: the list's view) ---------------------
 
-// ctx: {t, selected (index), hover (id), focused, onClick, onHover, onDelete}
+export function noteMove(v, delta) {
+  const n = v.notes().length;
+  if (!n) return;
+  v.noteSel = Math.min(n - 1, Math.max(0, v.noteSel + delta));
+  v.reveal(v.noteSel, { margin: 8 });
+}
+
+export function deleteNote(v, note) {
+  if (note) removeNotes(v.notesKey(), [note.id]);
+}
+
+// The note's file in the diff pane, its cursor on the note.
+export function jumpToNote(v, note, cx) {
+  if (!note || !v.work) return;
+  v.mode = "files";
+  const row = v.work.findFile(note.file, "changes") ?? v.work.findFile(note.file);
+  if (!row) return v.flash.set(`${note.file} has no changes now`);
+  v.work.selected = row.key;
+  v.reveal(v.work.index(row.key), { center: true });
+  v.show(row, { open: true, cx, line: note.end || note.start || null });
+}
+
+// ctx: {t, selected (index), hover (id), focused, onClick(i, event, cx), onHover, onDelete}
 export function noteRow(n, i, ctx) {
   const { t } = ctx;
   const on = i === ctx.selected;
   const tools = on || ctx.hover === n.id;
-  const parts = n.file.split("/");
-  const name = parts.pop();
   return h_flex()
     .id(`note-${n.id}`)
     .h(NOTE_ROW)
@@ -36,14 +57,7 @@ export function noteRow(n, i, ctx) {
         .flex_1()
         .min_w(0)
         .gap(2)
-        .child(
-          h_flex()
-            .min_w(0)
-            .text_size(12)
-            .when(parts.length > 0, (e) => e.child(div().flex_shrink(100).min_w(0).truncate().text_color(t.dim).child(`${parts.join("/")}/`)))
-            .child(div().flex_shrink(1).min_w(24).truncate().text_color(t.foreground).child(name))
-            .child(div().flex_none().text_color(t.accent).child(`:${lines(n)}`)),
-        )
+        .child(h_flex().min_w(0).child(pathLabel(t, n.file, { size: 12, grow: false })).child(div().flex_none().text_size(12).text_color(t.accent).child(`:${noteLines(n)}`)))
         .child(div().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(n.text.split("\n")[0])),
     )
     .when(tools, (e) => e.child(iconButton(t, `note-del-${n.id}`, "x", "Delete note (d)", (cx) => ctx.onDelete(n, cx))));

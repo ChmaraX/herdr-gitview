@@ -1,0 +1,138 @@
+// The list's views, one entry each: which file list it acts on, its header,
+// body, the commit row under it, its keys and its key hints. The view looks
+// its mode up here instead of asking "which mode?" everywhere.
+//   files: the changed files · commit: one commit's files (from history)
+//   log: the history · notes: the review notes
+
+import { div } from "gpui-kit";
+import { commitBox, filesHeader, subHeader } from "./chrome.js";
+import { renderRow, rowSize } from "./listview.js";
+import { COMMIT_ROW, commitRow, logMove, openCommit, openLog, toggleLogFilter } from "./history.js";
+import { NOTE_ROW, deleteNote, jumpToNote, noteMove, noteRow } from "./notesview.js";
+
+const down = (v, cx) => v.move(1, cx);
+const up = (v, cx) => v.move(-1, cx);
+const back = (to) => (v, cx) => v.setMode(to, cx);
+// 6 px above and below the rows, like the stock panel.
+const padded = (sizes) => [6, ...sizes, 6];
+const empty = (t, text) => div().px(16).py(12).text_color(t.dim).child(text);
+
+// A list of file rows (the changed files or a commit's).
+function filesBody(v, t, focused, list) {
+  const rows = list?.rows ?? [];
+  if (!rows.length) return empty(t, v.error ?? (v.loads.busy() ? "Loading changes…" : list ? "No changes" : "No folder"));
+  v.scroll.measure(padded(rows.map(rowSize)));
+  const ctx = {
+    t, selected: list.selected, hover: v.hover, focused, tree: list.tree,
+    onClick: (row, e, cx) => v.clickRow(row, e, cx),
+    onHover: (row, h, cx) => v.hoverRow(row.key, h, cx),
+    onAction: (op, row, cx) => { v.handle.focus(); v.rowAction(op, row, cx); cx.notify(); },
+  };
+  return v.scroll.view(t, (i) => (i === 0 || i > rows.length ? div().h(6) : renderRow(rows[i - 1], ctx)));
+}
+
+export const MODES = {
+  files: {
+    list: (v) => v.work,
+    hints: "j/k · enter nvim · s/u/x stage/unstage/discard · t tree · l log · n notes · p send · c commit · w scope",
+    header: (v, t, notes) => filesHeader(t, {
+      status: v.work?.status,
+      files: v.work?.files() ?? 0,
+      notes: notes.length,
+      loading: v.loads.busy(),
+      wide: v.width >= 340,
+      tree: v.tree(),
+      onNotes: (cx) => { v.setMode("notes", cx); cx.notify(); },
+      onTree: (cx) => v.toggleTree(cx),
+      onLog: (cx) => { openLog(v, cx); cx.notify(); },
+    }),
+    body: (v, t, focused) => filesBody(v, t, focused, v.work),
+    under: (v, t) => (v.scope === "worktree" && v.work
+      ? commitBox(t, v.commitInput, v.typing, v.work.status.sections.some((s) => s.id === "staged"), v.committing, (cx) => v.commit(cx))
+      : null),
+    keys: {
+      j: down, down, k: up, up,
+      enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx),
+      h: (v, cx) => v.fold(true, cx), left: (v, cx) => v.fold(true, cx), right: (v, cx) => v.fold(false, cx),
+      s: (v, cx) => v.rowAction("stage", null, cx),
+      u: (v, cx) => v.rowAction("unstage", null, cx),
+      x: (v, cx) => v.rowAction("discard", null, cx),
+      c: (v) => v.commitInput.focus(),
+      w: (v, cx) => v.toggleScope(cx),
+      t: (v, cx) => v.toggleTree(cx),
+      l: (v, cx) => openLog(v, cx),
+      n: back("notes"),
+      g: (v, cx) => v.edge(false, cx), G: (v, cx) => v.edge(true, cx),
+    },
+  },
+  commit: {
+    list: (v) => v.commit,
+    hints: "j/k · enter nvim · t tree · esc back",
+    header: (v, t) => {
+      const c = v.commit;
+      const n = c?.files() ?? 0;
+      return subHeader(t, { title: c?.where.short ?? "", detail: c?.where.subject, pill: `${n} file${n === 1 ? "" : "s"}`, onBack: (cx) => { v.setMode("log", cx); cx.notify(); } });
+    },
+    body: (v, t, focused) => filesBody(v, t, focused, v.commit),
+    keys: {
+      j: down, down, k: up, up,
+      enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx),
+      t: (v, cx) => v.toggleTree(cx),
+      escape: back("log"), h: back("log"), left: back("log"),
+    },
+  },
+  log: {
+    list: () => null,
+    hints: "j/k · enter files · w branch/all · esc back",
+    header: (v, t) => subHeader(t, {
+      title: "History",
+      detail: v.history.filter ? `since ${v.work?.where.base?.label ?? "the base"}` : v.work?.status.branch ?? "",
+      pill: v.history.filter ? "branch" : "all",
+      onPill: (cx) => { toggleLogFilter(v, cx); cx.notify(); },
+      loading: v.history.loading,
+      onBack: (cx) => { v.setMode("files", cx); cx.notify(); },
+    }),
+    body: (v, t, focused) => {
+      const commits = v.history.commits;
+      if (!commits.length) return empty(t, v.history.loading ? "Loading history…" : "No commits");
+      v.scroll.measure(padded(commits.map(() => COMMIT_ROW)));
+      const ctx = { t, selected: v.history.selected, focused, onClick: (i, cx) => { v.handle.focus(); v.history.selected = i; openCommit(v, commits[i], cx); cx.notify(); } };
+      return v.scroll.view(t, (i) => (i === 0 || i > commits.length ? div().h(6) : commitRow(commits[i - 1], i - 1, ctx)));
+    },
+    keys: {
+      j: (v) => logMove(v, 1), down: (v) => logMove(v, 1), k: (v) => logMove(v, -1), up: (v) => logMove(v, -1),
+      enter: (v, cx) => openCommit(v, v.history.current(), cx), right: (v, cx) => openCommit(v, v.history.current(), cx),
+      w: (v, cx) => toggleLogFilter(v, cx),
+      escape: back("files"), h: back("files"), left: back("files"), l: back("files"),
+    },
+  },
+  notes: {
+    list: () => null,
+    hints: "j/k · enter go · d delete · p send · esc back",
+    header: (v, t, notes) => subHeader(t, {
+      title: "Notes",
+      detail: v.work?.where.root?.split("/").pop(),
+      pill: String(notes.length),
+      onBack: (cx) => { v.setMode("files", cx); cx.notify(); },
+      onSend: notes.length ? (cx) => { v.send(cx); cx.notify(); } : null,
+    }),
+    body: (v, t, focused, notes) => {
+      if (!notes.length) return empty(t, "No notes. In the diff: select lines (v or drag), then a.");
+      v.noteSel = Math.min(v.noteSel, notes.length - 1);
+      v.scroll.measure(padded(notes.map(() => NOTE_ROW)));
+      const ctx = {
+        t, selected: v.noteSel, hover: v.hover, focused,
+        onClick: (i, e, cx) => { v.handle.focus(); v.noteSel = i; if (e.click_count >= 2) jumpToNote(v, notes[i], cx); cx.notify(); },
+        onHover: (n, h, cx) => v.hoverRow(n.id, h, cx),
+        onDelete: (n, cx) => { deleteNote(v, n); cx.notify(); },
+      };
+      return v.scroll.view(t, (i) => (i === 0 || i > notes.length ? div().h(6) : noteRow(notes[i - 1], i - 1, ctx)));
+    },
+    keys: {
+      j: (v) => noteMove(v, 1), down: (v) => noteMove(v, 1), k: (v) => noteMove(v, -1), up: (v) => noteMove(v, -1),
+      enter: (v, cx) => jumpToNote(v, v.notes()[v.noteSel], cx),
+      d: (v) => deleteNote(v, v.notes()[v.noteSel]), x: (v) => deleteNote(v, v.notes()[v.noteSel]),
+      escape: back("files"), h: back("files"), left: back("files"), n: back("files"),
+    },
+  },
+};

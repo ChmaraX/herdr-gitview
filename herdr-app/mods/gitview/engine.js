@@ -4,6 +4,7 @@
 // copies it).
 
 import { appHome, exec, focused, panes, readTextFile, spaces } from "herdr";
+import { machineOf } from "./shared.js";
 
 let config = null;
 
@@ -25,7 +26,8 @@ export function hostEnv(cfg) {
 }
 
 // Runs one `json` op here (it reaches another machine itself, `--on`);
-// resolves with its object, rejects with its error.
+// resolves with its object, rejects with its error. Callers put "--" before
+// paths, messages and text, so one starting with "--" stays an argument.
 export async function gv(args) {
   const cfg = await loadConfig();
   const r = await exec("/usr/bin/env", [...hostEnv(cfg), cfg.bin, "json", ...args]);
@@ -48,7 +50,7 @@ export function location(keep) {
   const f = focused();
   const space = spaces().find((s) => s.active);
   const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-  const on = f?.pane === null ? (f?.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : space?.machine ?? null;
+  const on = f?.pane === null ? machineOf(f?.terminal) : space?.machine ?? null;
   if (pane && !pane.terminal && keep && keep.tab === f?.tab) return keep;
   return {
     cwd: pane?.cwd || f?.cwd || space?.folder || null,

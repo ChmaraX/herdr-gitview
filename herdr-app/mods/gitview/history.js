@@ -1,12 +1,94 @@
-// The history view's rows: one commit each, subject over "sha · when ·
-// author", refs (branches, tags) as small pills. Rows in, elements out.
+// The history view: its commits (from `json log`), the selection, the
+// "branch only" filter, and how a commit row draws: the subject over
+// "sha · when · author", refs (branches, tags) as small pills.
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
+import { gv, onArgs } from "./engine.js";
+import { FileList } from "./filelist.js";
 
 export const COMMIT_ROW = 44;
 
-// ctx: {t, selected (index), focused, onClick(i, event, cx)}
+export class History {
+  // filter: only the branch's own commits (merge-base..HEAD).
+  constructor(filter) {
+    this.commits = [];
+    this.selected = 0;
+    this.filter = filter;
+    this.loading = false;
+  }
+
+  // where: the working tree's {root, on, base}.
+  async load(where) {
+    this.loading = true;
+    try {
+      const args = ["log", "--repo", where.root, "--limit", "200", ...onArgs(where.on)];
+      if (this.filter) {
+        let base = where.base?.merge_base;
+        if (!base) base = (await gv(["status", "--repo", where.root, "--scope", "branch", ...onArgs(where.on)])).base?.merge_base;
+        if (base) args.push("--merge-base", base);
+        else this.filter = false;
+      }
+      this.commits = (await gv(args)).commits ?? [];
+      this.selected = Math.min(this.selected, Math.max(0, this.commits.length - 1));
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  move(delta) {
+    const n = this.commits.length;
+    if (n) this.selected = Math.min(n - 1, Math.max(0, this.selected + delta));
+  }
+
+  current() {
+    return this.commits[this.selected] ?? null;
+  }
+}
+
+// ---- what the list does in it (v: the list's view) ---------------------
+
+export function openLog(v, cx) {
+  v.history = new History(v.scope === "branch");
+  v.setMode("log", cx);
+}
+
+export function loadLog(v, cx) {
+  const where = v.work?.where;
+  const history = v.history;
+  if (where) v.loads.run(cx, () => history.load(where));
+}
+
+export function toggleLogFilter(v, cx) {
+  v.history.filter = !v.history.filter;
+  v.history.selected = 0;
+  loadLog(v, cx);
+}
+
+export function logMove(v, delta) {
+  v.history.move(delta);
+  v.reveal(v.history.selected, { margin: COMMIT_ROW });
+}
+
+// A commit's files, as a file list of their own; the first one's diff shows.
+export function openCommit(v, c, cx) {
+  const where = v.work?.where;
+  if (!c || !where) return;
+  v.loads.run(cx, async () => {
+    const r = await gv(["commit-files", "--repo", where.root, "--sha", c.sha, ...onArgs(where.on)]);
+    const list = new FileList({ sections: [{ id: "commit", title: "", cached: false, files: r.files ?? [] }] },
+      { ...where, base: null, commit: c.sha, short: c.short, subject: c.subject });
+    list.rebuild(v.tree());
+    list.selected = list.rows.find((x) => x.kind === "file")?.key ?? null;
+    v.commit = list;
+    v.mode = "commit";
+    v.scroll.top = 0;
+    const first = list.row();
+    if (first) v.show(first, { open: true, cx });
+  });
+}
+
+// ctx: {t, selected (index), focused, onClick(i, cx)}
 export function commitRow(c, i, ctx) {
   const { t } = ctx;
   const on = i === ctx.selected;
@@ -23,7 +105,7 @@ export function commitRow(c, i, ctx) {
     .cursor_pointer()
     .when(on, (e) => e.bg(ctx.focused ? t.selected : t.hover))
     .when(!on, (e) => e.hover((s) => s.bg(t.hover)))
-    .on_click((e, cx) => ctx.onClick(i, e, cx))
+    .on_click((_e, cx) => ctx.onClick(i, cx))
     .child(
       h_flex()
         .gap(6)

@@ -8,20 +8,26 @@
 // writes a note on the selection (enter saves, esc cancels); enter opens
 // nvim at the cursor (on a fold: unfolds); s/u/x stage, unstage, discard the
 // file; J/K next/previous file of the list; p sends the notes; esc clears.
-// Commands: `gitview-diff.key:<key>`, `gitview-diff.note:<text>`.
+// Commands: `gitview-diff.key:<key>`, `gitview-diff.note:<text>`,
+// `gitview-diff.drag:<line>:<line>`, `gitview-diff.close`.
 
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
-import { agents, nextCommand, notify, openOverlay, props, run, setShared, settings, spaces, theme, watchFolder } from "herdr";
+import { props, run, settings, spaces, theme, notify } from "herdr";
 import { gv, message, onArgs } from "./engine.js";
-import { diffArgs, isDark, sameFile, scopeLabel, viewOf } from "./model.js";
-import { addNote, diffPane, notesKey, notesOf, onScreen, ownTab, pump, removeNotes, setCursor, setView, takeKeyboard, viewIn } from "./shared.js";
+import { diffArgs, fileOrder, isDark, sameFile, scopeLabel, viewOf } from "./model.js";
+import { allowed, confirmDiscard, entryOf, sendNotes, takeDiscard } from "./actions.js";
+import {
+  addNote, cursorIn, diffPane, liveView, notesKey, notesOf, onScreen, ownTab, pump, removeNotes, setCursor, setDirty, setView, takeKeyboard, treeMode, viewIn,
+} from "./shared.js";
+import { Flash, Loads, commandLoop, keyEvent, keyName, watch } from "./modkit.js";
 import { openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
+import { diffHeader, footer } from "./chrome.js";
 import * as diffs from "./diffview.js";
-import { footer, header } from "./parts.js";
 
 const EMPTY = { rows: [] };
+const HINTS = "j/k · v or drag select · a note · enter nvim · s/u/x · J/K file · p send · esc";
 
 export default class GitDiff extends View {
   init(_props, cx) {
@@ -29,7 +35,7 @@ export default class GitDiff extends View {
     this.scroll = new Scroller("gitview-diff-rows");
     this.composer = TextareaState.new({ placeholder: "Note for the agent", rows: 3 });
     this.composer.on("submit", (_e, cx) => this.saveNote(this.composer.value(), cx));
-    this.view = null; // what's shown (a view from the list)
+    this.view = null; // what's shown (a view from the list), null: nothing
     this.seq = 0;
     this.diff = EMPTY;
     this.cursor = 0;
@@ -37,39 +43,14 @@ export default class GitDiff extends View {
     this.dragging = false;
     this.unfold = false;
     this.dark = isDark(theme().background);
-    // What render() notices (a new view, a theme switch) loads from here.
-    this.kick = pump(cx, (cx) => {
-      if (this.retheme) {
-        this.retheme = false;
-        this.reload(cx);
-      }
-      this.sync(cx);
-    });
-    // The list's writes are seen on the next draw; this also catches them
-    // while the window doesn't draw (covered): a cheap look, twice a second.
-    cx.timer.every(500, () => this.look());
+    this.flash = new Flash(cx);
+    this.loads = new Loads((m) => this.flash.set(m));
+    this.watcher = {};
+    // What render notices (a new view, a theme switch) loads from here.
+    this.kick = pump(cx, (cx) => this.sync(cx));
+    this.sync(cx);
     cx.timer.every(4000, (cx) => { if (this.view?.on && onScreen(this.tab())) this.reload(cx); });
-    // A message in the footer goes after a few seconds.
-    cx.timer.every(2000, (cx) => {
-      if (this.flashText && Date.now() - this.flashAt > 5000) {
-        this.flashText = null;
-        cx.notify();
-      }
-    });
-    cx.spawn(async (cx) => {
-      for (;;) {
-        const command = await nextCommand();
-        try {
-          this.sync(cx); // a view the list just wrote, before this draws again
-          await this.idle(cx);
-          this.command(command, cx);
-        } catch (e) {
-          console.error(`gitview-diff: ${command}: ${message(e)}\n${e?.stack ?? ""}`);
-          this.flash(message(e));
-        }
-        cx.notify();
-      }
-    });
+    commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview-diff", before: (cx) => this.sync(cx), handle: (c, cx) => this.command(c, cx) });
   }
 
   tab() {
@@ -77,29 +58,26 @@ export default class GitDiff extends View {
     return p.tab ?? (p.space ? ownTab(p.space) : null);
   }
 
-  // Resolves once no load runs (at most 10 s: a lost task never blocks).
-  idle(cx) {
-    if (!this.loading) return Promise.resolve();
-    return Promise.race([new Promise((resolve) => (this.waiters ??= []).push(resolve)), cx.sleep(10000)]);
-  }
-
-  // A load or an action finished: commands waiting for it go on.
-  settled() {
-    this.loading = false;
-    (this.waiters ?? []).splice(0).forEach((resolve) => resolve());
-  }
-
-  flash(text) {
-    this.flashText = text;
-    this.flashAt = Date.now();
+  // The space of this pane's tab.
+  space() {
+    const tab = this.tab();
+    return spaces().find((s) => s.tabs.some((x) => x.id === tab))?.id ?? null;
   }
 
   // ---- what to show -----------------------------------------------------------
 
-  // A new view from the list (or J/K here): same file keeps the cursor,
-  // another starts at its first change (or the note the list jumped to).
-  take(view, cx) {
-    this.seq = view?.seq ?? 0;
+  // A new view from the list (or J/K here), or a theme switch: same file
+  // keeps the cursor, another starts at its first change (or at the note
+  // the list jumped to).
+  sync(cx) {
+    if (isDark(theme().background) !== this.dark) {
+      this.dark = !this.dark;
+      this.reload(cx);
+    }
+    const stored = viewIn(this.tab());
+    if ((stored?.seq ?? 0) === this.seq) return;
+    this.seq = stored?.seq ?? 0;
+    const view = liveView(stored);
     const same = sameFile(view, this.view);
     this.view = view;
     if (!same) {
@@ -109,64 +87,40 @@ export default class GitDiff extends View {
       this.pendingNote = null;
       this.scroll.top = 0;
     }
-    if (view) this.loadDiff(cx, { keep: same && !view.line, line: view.line });
-    if (view && !view.on) this.watch(view.root, cx);
+    if (!view) return;
+    this.loadDiff(cx, { keep: same && !view.line, line: view.line });
+    if (!view.on) watch(this.watcher, view.root, cx, (cx) => { if (onScreen(this.tab())) this.reload(cx); });
   }
 
   reload(cx) {
-    if (this.view && !this.loading) this.loadDiff(cx, { keep: true });
+    if (this.view && !this.loads.busy()) this.loadDiff(cx, { keep: true });
   }
 
   loadDiff(cx, { keep, line }) {
     const view = this.view;
-    this.loading = true;
-    cx.spawn(async (cx) => {
+    this.loads.run(cx, async () => {
+      let diff;
       try {
-        const diff = await gv(diffArgs(view, { dark: this.dark, unfold: this.unfold }));
-        if (this.view !== view) return;
-        this.diff = diff;
-        const n = diff.rows.length;
-        if (line) {
-          const at = diff.rows.findIndex((r) => r.n === line);
-          this.cursor = Math.max(0, at);
-          this.scroll.reveal(this.displayIndex(this.cursor), { center: true });
-        } else if (!keep) {
-          const first = diff.rows.findIndex((r) => r.k === "add" || r.k === "del");
-          this.cursor = Math.max(0, first);
-          this.scroll.reveal(this.displayIndex(this.cursor), { center: true });
-        }
-        this.cursor = Math.min(this.cursor, Math.max(0, n - 1));
-        if (this.anchor !== null) this.anchor = Math.min(this.anchor, Math.max(0, n - 1));
-        this.publishCursor();
+        diff = await gv(diffArgs(view, { dark: this.dark, unfold: this.unfold }));
       } catch (e) {
-        if (this.view === view) {
-          this.diff = EMPTY;
-          this.flash(message(e));
-        }
-      } finally {
-        this.settled();
-        cx.notify();
+        if (this.view === view) this.diff = EMPTY;
+        throw e;
       }
+      if (this.view !== view) return;
+      this.diff = diff;
+      const n = diff.rows.length;
+      if (line || !keep) {
+        const at = line ? diff.rows.findIndex((r) => r.n === line) : diff.rows.findIndex((r) => r.k === "add" || r.k === "del");
+        this.cursor = Math.max(0, at);
+        this.pendingReveal = { row: this.cursor, center: true }; // once `display` has these rows
+      }
+      this.cursor = Math.min(this.cursor, Math.max(0, n - 1));
+      if (this.anchor !== null) this.anchor = Math.min(this.anchor, Math.max(0, n - 1));
+      this.publishCursor();
     });
   }
 
-  // A local repo's diff follows saves (remote ones: the 4 s timer).
-  watch(root, cx) {
-    if (this.watched === root) return;
-    this.watched = root;
-    cx.spawn(async (cx) => {
-      try {
-        while (this.watched === root) {
-          await watchFolder(root);
-          if (this.watched === root && onScreen(this.tab())) this.reload(cx);
-        }
-      } catch {
-        this.watched = null;
-      }
-    });
-  }
-
-  // Where the cursor is, for the list's Enter.
+  // The line under row i (a deleted line: the next line that's there).
   lineAt(i) {
     const rows = this.diff.rows;
     for (let j = i; j < rows.length; j++) if (rows[j]?.n) return rows[j].n;
@@ -174,28 +128,24 @@ export default class GitDiff extends View {
     return this.diff.first_change ?? 1;
   }
 
+  // Where the cursor is, for the list's Enter.
   publishCursor() {
     const v = this.view;
     const tab = this.tab();
     if (!v || !tab || !this.diff.rows.length) return;
     const line = this.lineAt(this.cursor);
-    const was = this.published;
+    const was = cursorIn(tab);
     if (was && was.line === line && was.row === this.cursor && sameFile(was, v)) return;
-    this.published = { root: v.root, on: v.on, path: v.path, section: v.section, commit: v.commit, line, row: this.cursor, first: this.diff.first_change ?? 1 };
-    setCursor(tab, this.published);
+    setCursor(tab, { root: v.root, on: v.on, path: v.path, section: v.section, commit: v.commit, line, row: this.cursor, first: this.diff.first_change ?? 1 });
   }
 
   // ---- moving -------------------------------------------------------------------
-
-  displayIndex(rowIndex) {
-    return Math.max(0, (this.display ?? []).findIndex((d) => d.index === rowIndex));
-  }
 
   line(delta) {
     const n = this.diff.rows.length;
     if (!n) return;
     this.cursor = Math.min(n - 1, Math.max(0, this.cursor + delta));
-    this.scroll.reveal(this.displayIndex(this.cursor), { margin: diffs.ROW * 2 });
+    this.pendingReveal = { row: this.cursor, margin: diffs.ROW * 2 };
     this.publishCursor();
   }
 
@@ -203,76 +153,47 @@ export default class GitDiff extends View {
   nextFile(delta) {
     const v = this.view;
     const files = v?.files ?? [];
-    if (!files.length) return;
-    const at = files.findIndex((f) => f.path === v.path && f.section === v.section);
-    const next = files[Math.min(files.length - 1, Math.max(0, at + delta))];
-    if (!next || at + delta < 0 || at + delta >= files.length) return this.flash(delta > 0 ? "last file" : "first file");
+    const at = files.findIndex((f) => f.path === v?.path && f.section === v?.section);
+    const next = at >= 0 ? files[at + delta] : null;
+    if (!next) return this.flash.set(delta > 0 ? "last file" : "first file");
     setView(this.tab(), { ...v, ...next, scope: scopeLabel(next, v), base: next.section === "branch" ? v.base : null, by: "pane", line: null });
   }
 
   // ---- actions --------------------------------------------------------------
 
-  edit(cx) {
+  edit() {
     const v = this.view;
     if (!v) return;
-    if (v.kind === "deleted") return this.flash(`${v.path} is deleted`);
+    if (v.kind === "deleted") return this.flash.set(`${v.path} is deleted`);
     openNvim({ root: v.root, on: v.on, path: v.path, line: this.lineAt(this.cursor), tab: this.tab(), space: this.space(), editor: v.editor, own: Boolean(props()?.own) });
   }
 
-  // The space of this pane's tab.
-  space() {
-    const tab = this.tab();
-    return spaces().find((s) => s.tabs.some((x) => x.id === tab))?.id ?? null;
-  }
-
-  // s / u / x on the shown file, then show where it went (staged), or the
-  // next file when it's gone.
+  // s / u / x on the shown file (x asks first).
   act(op, cx) {
     const v = this.view;
-    if (!v || v.commit || v.section === "branch") return;
-    const ok = { stage: ["changes", "conflicts"], unstage: ["staged"], discard: ["changes"] }[op];
-    if (!ok.includes(v.section)) return this.flash(`can't ${op} it: it's ${v.scope}`);
-    if (op === "discard") {
-      openOverlay({
-        mod: "confirm",
-        kind: "dialog",
-        modal: true,
-        width: 420,
-        height: 190,
-        props: { title: "Discard changes?", detail: `${v.path}: this can't be undone.`, command: { name: "gitview-diff.discard" } },
-      });
-      this.pendingDiscard = v;
-      return;
-    }
-    this.run(op, v, cx);
+    if (!v || v.commit) return;
+    if (!allowed(op, v.section)) return this.flash.set(`can't ${op} it: it's ${v.scope}`);
+    if (op === "discard") this.pendingDiscard = confirmDiscard("gitview-diff", v.path, { view: v });
+    else this.run(op, v, cx);
   }
 
+  // The op, then the file where it went (staged), or the next file when
+  // it's gone, in the list's order from the new status.
   run(op, v, cx) {
     const tab = this.tab();
-    this.loading = true;
-    cx.spawn(async (cx) => {
+    this.loads.run(cx, async () => {
       try {
-        await gv([op, "--repo", v.root, ...onArgs(v.on), ...(op === "discard" ? ["--section", v.section] : []), v.path]);
-        setShared("gitview.dirty", { root: v.root, on: v.on, at: Date.now() });
+        await gv([op, "--repo", v.root, ...onArgs(v.on), "--section", v.section, "--", v.path]);
+        setDirty(v.root, v.on);
         const status = await gv(["status", "--repo", v.root, ...onArgs(v.on)]);
-        const entries = status.sections.flatMap((s) => s.files.map((file) => ({ file, section: s })));
+        const files = fileOrder(status, treeMode()).map(entryOf);
         const want = op === "stage" ? "staged" : op === "unstage" ? "changes" : null;
-        const found = entries.find((e) => e.file.path === v.path && e.section.id === want) ?? entries.find((e) => e.file.path === v.path);
-        const files = (v.files ?? []).filter((f) => !(f.path === v.path && f.section === v.section));
-        if (found) {
-          const entry = { path: found.file.path, orig: found.file.orig ?? null, kind: found.file.kind, letter: found.file.letter, add: found.file.add, del: found.file.del, cached: Boolean(found.section.cached), section: found.section.id };
-          setView(tab, { ...viewOf(entry, v), files: [...files, entry], by: "pane", line: null });
-        } else {
-          const at = (v.files ?? []).findIndex((f) => f.path === v.path && f.section === v.section);
-          const next = files[Math.min(at, files.length - 1)];
-          if (next) setView(tab, { ...viewOf(next, v), files, by: "pane", line: null });
-          else setView(tab, null);
-        }
+        const found = files.find((f) => f.path === v.path && f.section === want) ?? files.find((f) => f.path === v.path);
+        const at = (v.files ?? []).findIndex((f) => f.path === v.path && f.section === v.section);
+        const next = found ?? files.find((f) => (v.files ?? []).slice(at + 1).some((g) => g.path === f.path)) ?? files[files.length - 1];
+        setView(tab, next ? { ...viewOf(next, v), files, by: "pane", line: null } : null);
       } catch (e) {
         notify({ title: "gitview", body: message(e), level: "error" });
-      } finally {
-        this.settled();
-        cx.notify();
       }
     });
   }
@@ -293,15 +214,19 @@ export default class GitDiff extends View {
     return this.anchor === null ? null : [Math.min(this.anchor, this.cursor), Math.max(this.anchor, this.cursor)];
   }
 
+  // As the TUI: notes are about staged or unstaged changes, the lines as
+  // they are now; not a commit's or the branch's.
   annotate() {
-    if (!this.view) return;
+    const v = this.view;
+    if (!v) return;
+    if (v.commit || v.section === "branch") return this.flash.set("notes work on staged/unstaged changes only");
     const [a, b] = this.selection() ?? [this.cursor, this.cursor];
     const range = diffs.noteRange(this.diff, a, b);
-    if (!range) return this.flash("select some code to note (v or drag)");
-    this.pendingNote = { file: this.view.path, ...range, after: b };
+    if (!range) return this.flash.set("select some code to note (v or drag)");
+    this.pendingNote = { file: v.path, ...range, after: b };
     this.composer.set_value("");
     this.composer.focus();
-    this.scroll.reveal(this.displayIndex(b) + 1, { margin: 8 });
+    this.pendingReveal = { row: b, margin: diffs.COMPOSER + 8, after: true };
   }
 
   saveNote(value, cx) {
@@ -314,58 +239,41 @@ export default class GitDiff extends View {
     cx.notify();
   }
 
-  cancelNote() {
-    this.pendingNote = null;
-    this.handle.focus();
-  }
-
   send(cx) {
     const key = this.notesKey();
-    const notes = key ? notesOf(key) : [];
-    if (!notes.length) return this.flash("no notes yet: select lines (v or drag), then a");
     const space = this.space();
-    cx.spawn(async () => {
-      try {
-        const { message: text } = await gv(["notes", JSON.stringify(notes.map(({ id, ...note }) => note))]);
-        const height = Math.min(420, 140 + 32 * Math.max(1, agents().length));
-        openOverlay({ mod: "gitview-agents", kind: "dialog", modal: true, width: 460, height, props: { message: text, count: notes.length, space, key, ids: notes.map((n) => n.id) } });
-      } catch (e) {
-        notify({ title: "gitview", body: message(e), level: "error" });
-      }
+    this.loads.run(cx, async () => {
+      if (!(await sendNotes(key, space))) this.flash.set("no notes yet: select lines (v or drag), then a");
     });
   }
 
   // ---- keys -----------------------------------------------------------------
 
   key(e, cx) {
-    const m = e.modifiers ?? {};
-    if (m.platform || m.control || m.alt) return false;
-    const k = m.shift && /^[a-z]$/.test(e.key) ? e.key.toUpperCase() : e.key;
+    const k = keyName(e);
+    if (!k) return false;
     if (this.pendingNote) {
       if (k !== "escape") return false; // the composer types
-      this.cancelNote();
+      this.pendingNote = null;
+      this.handle.focus();
       return true;
     }
     const page = Math.max(1, Math.floor((this.scroll.height || 360) / diffs.ROW) - 2);
-    if (k === "j" || k === "down") this.line(1);
-    else if (k === "k" || k === "up") this.line(-1);
-    else if (k === "pagedown" || k === "space") this.line(page);
-    else if (k === "pageup") this.line(-page);
-    else if (k === "g" || k === "home") this.line(-Infinity);
-    else if (k === "G" || k === "end") this.line(Infinity);
-    else if (k === "v") this.anchor = this.anchor === null ? this.cursor : null;
-    else if (k === "a") this.annotate();
-    else if (k === "enter" && this.diff.rows[this.cursor]?.k === "fold") this.unfoldAll(cx);
-    else if (k === "enter" || k === "e") this.edit(cx);
-    else if (k === "s") this.act("stage", cx);
-    else if (k === "u") this.act("unstage", cx);
-    else if (k === "x") this.act("discard", cx);
-    else if (k === "J") this.nextFile(1);
-    else if (k === "K") this.nextFile(-1);
-    else if (k === "p") this.send(cx);
-    else if (k === "r") this.reload(cx);
-    else if (k === "escape") this.anchor = null;
-    else return false;
+    const fold = this.diff.rows[this.cursor]?.k === "fold";
+    const KEYS = {
+      j: () => this.line(1), down: () => this.line(1), k: () => this.line(-1), up: () => this.line(-1),
+      pagedown: () => this.line(page), space: () => this.line(page), pageup: () => this.line(-page),
+      g: () => this.line(-Infinity), home: () => this.line(-Infinity), G: () => this.line(Infinity), end: () => this.line(Infinity),
+      v: () => { this.anchor = this.anchor === null ? this.cursor : null; },
+      a: () => this.annotate(),
+      enter: () => (fold ? this.unfoldAll(cx) : this.edit()), e: () => this.edit(),
+      s: () => this.act("stage", cx), u: () => this.act("unstage", cx), x: () => this.act("discard", cx),
+      J: () => this.nextFile(1), K: () => this.nextFile(-1),
+      p: () => this.send(cx), r: () => this.reload(cx),
+      escape: () => { this.anchor = null; },
+    };
+    if (!KEYS[k]) return false;
+    KEYS[k]();
     return true;
   }
 
@@ -375,27 +283,25 @@ export default class GitDiff extends View {
   }
 
   command(command, cx) {
+    const [what, ...rest] = command.split(":");
     if (command === "focus") takeKeyboard(this, cx);
     else if (command === "close") this.closePane(); // the × button, for scripts
-    else if (command === "discard") {
-      const v = this.pendingDiscard;
+    else if (what === "discard") {
+      const p = takeDiscard(this.pendingDiscard, command);
+      if (!p) return;
       this.pendingDiscard = null;
-      if (v && sameFile(v, this.view)) this.run("discard", v, cx);
-    } else if (command.startsWith("key:")) {
-      const k = command.slice(4);
-      const one = k.length === 1;
-      this.key({ key: one ? k.toLowerCase() : k, modifiers: { shift: one && k !== k.toLowerCase() } }, cx);
-    } else if (command.startsWith("drag:")) {
+      if (sameFile(p.view, this.view)) this.run("discard", p.view, cx);
+    } else if (what === "key") this.key(keyEvent(rest.join(":")), cx);
+    else if (what === "drag") {
       // A mouse drag over new-side lines <a> to <b>, for scripts.
-      const [a, b] = command.slice(5).split(":").map(Number);
-      const row = (n) => this.diff.rows.findIndex((r) => r.n === n);
-      if (row(a) < 0 || row(b) < 0) return this.flash(`no lines ${a}-${b}`);
-      this.down(row(a), { click_count: 1, modifiers: {} }, cx);
-      this.over(row(b), cx);
+      const [a, b] = rest.map(Number).map((n) => this.diff.rows.findIndex((r) => r.n === n));
+      if (a < 0 || b < 0) return this.flash.set(`no lines ${rest.join("-")}`);
+      this.down(a, { click_count: 1, modifiers: {} }, cx);
+      this.over(b, cx);
       this.up(cx);
-    } else if (command.startsWith("note:")) {
+    } else if (what === "note") {
       this.annotate();
-      if (this.pendingNote) this.saveNote(command.slice(5), cx);
+      if (this.pendingNote) this.saveNote(rest.join(":"), cx);
     }
   }
 
@@ -403,21 +309,15 @@ export default class GitDiff extends View {
 
   down(index, e, cx) {
     this.handle.focus();
-    this.flashText = null;
-    if (this.diff.rows[index]?.k === "fold") {
-      this.unfoldAll(cx);
-      return;
-    }
-    if (e.click_count >= 2) {
-      this.cursor = index;
-      this.anchor = null;
-      this.edit(cx);
-      return;
-    }
-    if (e.modifiers?.shift) {
-      if (this.anchor === null) this.anchor = this.cursor;
-    } else this.anchor = index;
+    this.flash.clear();
+    if (this.diff.rows[index]?.k === "fold") return this.unfoldAll(cx);
     this.cursor = index;
+    if (e.click_count >= 2) {
+      this.anchor = null;
+      return this.edit();
+    }
+    if (!e.modifiers?.shift) this.anchor = index;
+    else if (this.anchor === null) this.anchor = index;
     this.dragging = true;
     this.publishCursor();
     cx.notify();
@@ -439,31 +339,21 @@ export default class GitDiff extends View {
 
   // ---- view -----------------------------------------------------------------
 
-  sync(cx) {
-    const view = viewIn(this.tab());
-    if ((view?.seq ?? 0) !== this.seq || (!view && this.view)) this.take(view, cx);
-  }
-
-  // Anything new in shared state or the theme: loaded by the pump.
-  look() {
-    const view = viewIn(this.tab());
-    if ((view?.seq ?? 0) !== this.seq || (!view && this.view)) this.kick();
-    if (isDark(theme().background) !== this.dark) {
-      this.dark = !this.dark;
-      this.retheme = true;
-      this.kick();
-    }
-  }
-
   render(cx) {
     const t = theme();
-    this.look();
+    if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(t.background) !== this.dark) this.kick();
     const focused = this.handle.is_focused();
     const key = this.notesKey();
-    const all = key ? notesOf(key) : [];
-    const notes = this.view ? all.filter((n) => n.file === this.view.path) : [];
+    const notes = key ? notesOf(key).filter((n) => n.file === this.view.path) : [];
     this.display = diffs.displayRows(this.diff, notes, this.pendingNote ? this.pendingNote.after : -1);
     this.scroll.measure(this.display.map(diffs.rowSize));
+    if (this.pendingReveal) {
+      // Rows and their display places now agree: scroll to the one asked for.
+      const r = this.pendingReveal;
+      this.pendingReveal = null;
+      const at = Math.max(0, this.display.findIndex((d) => d.index === r.row)) + (r.after ? 1 : 0);
+      this.scroll.reveal(at, r);
+    }
     const ctx = {
       t,
       cursor: this.cursor,
@@ -487,7 +377,7 @@ export default class GitDiff extends View {
           .font_family(settings().font_family ?? "JetBrains Mono")
           .text_size(12)
           .child(this.scroll.view(t, (i) => diffs.renderRow(display[i], ctx)))
-          .when(Boolean(this.diff.empty || this.diff.binary) && !this.loading, (e) =>
+          .when(Boolean(this.diff.empty || this.diff.binary) && !this.loads.busy(), (e) =>
             e.child(div().absolute().top(10).px(14).text_color(t.dim).child(this.diff.binary ? "Binary file" : "No text changes")),
           )
       : v_flex().flex_1().items_center().justify_center().gap(4).text_color(t.dim)
@@ -505,12 +395,12 @@ export default class GitDiff extends View {
       .on_mouse_up("left", (_e, cx) => this.up(cx))
       .on_key_down((e, cx) => {
         if (!this.key(e, cx)) return;
-        this.flashText = null;
+        this.flash.clear();
         cx.stop_propagation();
         cx.notify();
       })
-      .child(header(t, this.view, { loading: this.loading, onClose: props()?.own ? null : () => this.closePane() }))
+      .child(diffHeader(t, this.view, { loading: this.loads.busy(), onClose: props()?.own ? null : () => this.closePane() }))
       .child(body)
-      .child(footer(t, this.flashText, Boolean(this.pendingNote)));
+      .child(footer(t, this.flash.text, this.pendingNote ? "enter saves the note · esc cancels" : HINTS));
   }
 }

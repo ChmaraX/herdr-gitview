@@ -75,21 +75,6 @@ export function parentDirs(row) {
   return out;
 }
 
-// One file of the list, as the diff pane needs it.
-export function entryOf(row) {
-  const { file, section } = row;
-  return {
-    path: file.path,
-    orig: file.orig ?? null,
-    kind: file.kind,
-    letter: file.letter,
-    add: file.add,
-    del: file.del,
-    cached: Boolean(section.cached),
-    section: section.id,
-  };
-}
-
 // The pane header's scope tag.
 export function scopeLabel(entry, where) {
   if (where.commit) return `commit ${where.short}`;

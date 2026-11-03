@@ -5,7 +5,7 @@
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex, Textarea } from "gpui-base";
-import { iconButton } from "./listview.js";
+import { iconButton, noteLines } from "./chrome.js";
 
 export const ROW = 18;
 const NOTE_LINE = 16;
@@ -79,8 +79,6 @@ export function renderRow(item, ctx) {
     );
 }
 
-export const where = (n) => (n.end === 0 ? "whole file" : n.start === n.end ? `line ${n.start}` : `lines ${n.start}-${n.end}`);
-
 function noteCard(note, ctx) {
   const { t } = ctx;
   return v_flex()
@@ -104,7 +102,7 @@ function noteCard(note, ctx) {
           h_flex()
             .h(20)
             .items_center()
-            .child(div().flex_1().text_size(11).text_color(t.accent).child(`note · ${where(note)}`))
+            .child(div().flex_1().text_size(11).text_color(t.accent).child(`note · ${noteLines(note, true)}`))
             .child(iconButton(t, `note-x-${note.id}`, "x", "Delete note", (cx) => ctx.onDeleteNote(note, cx), { size: 18 })),
         )
         .children(note.text.split("\n").map((l) => div().h(NOTE_LINE).text_size(12).text_color(t.foreground).truncate().child(l || " "))),
@@ -132,7 +130,7 @@ function composer(ctx) {
         .py(6)
         .gap(4)
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .child(div().text_size(11).text_color(t.accent).child(`new note · ${where(ctx.pending)} · enter saves · esc cancels`))
+        .child(div().text_size(11).text_color(t.accent).child(`new note · ${noteLines(ctx.pending, true)} · enter saves · esc cancels`))
         .child(Textarea.new(ctx.composer).h(52).text_size(12).text_color(t.foreground)),
     );
 }
