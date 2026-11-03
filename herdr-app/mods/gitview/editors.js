@@ -7,15 +7,17 @@
 //
 // shared "gitview.editors": {<tab>: {terminal, kind, name, bin, sock, file}}.
 
-import { appHome, exec, openOverlay, setShared, shared, terminals } from "herdr";
+import { appHome, exec, openOverlay, setShared, shared, spaces, terminals } from "herdr";
 import * as fs from "fs/promises";
 
 export function editorIn(tab) {
   return (shared("gitview.editors") ?? {})[tab] ?? null;
 }
 
+// Tabs that are gone go too (shared.json stays bounded).
 export function setEditor(tab, rec) {
-  const all = { ...(shared("gitview.editors") ?? {}) };
+  const live = new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)));
+  const all = Object.fromEntries(Object.entries(shared("gitview.editors") ?? {}).filter(([t]) => live.has(t) || t === tab));
   if (rec) all[tab] = rec;
   else if (tab in all) delete all[tab];
   else return;

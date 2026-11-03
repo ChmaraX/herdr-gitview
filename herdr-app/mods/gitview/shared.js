@@ -64,6 +64,11 @@ export const liveView = (view) => (view && !view.empty && view.path ? view : nul
 
 const liveTabs = () => new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)));
 
+// A per-tab (or per-space) map without the tabs (spaces) that are gone, so
+// shared.json stays bounded.
+const onlyLive = (all, live) => Object.fromEntries(Object.entries(all ?? {}).filter(([k]) => live.has(k)));
+const liveSpaces = () => new Set(spaces().map((s) => s.id));
+
 // Every tab's view, without the tabs that are gone. `view` null: the pane
 // shows nothing.
 export function setView(tab, view) {
@@ -83,8 +88,8 @@ export function askIn(tab) {
 
 // Returns the ask's seq.
 export function ask(tab, op, view) {
-  const all = shared("gitview.ask") ?? {};
-  const seq = (all[tab]?.seq ?? 0) + 1;
+  const all = onlyLive(shared("gitview.ask"), liveTabs());
+  const seq = ((shared("gitview.ask") ?? {})[tab]?.seq ?? 0) + 1;
   setShared("gitview.ask", { ...all, [tab]: { seq, op, view } });
   return seq;
 }
@@ -94,7 +99,7 @@ export function answerIn(tab) {
 }
 
 export function answer(tab, seq, msg = null) {
-  setShared("gitview.answer", { ...(shared("gitview.answer") ?? {}), [tab]: { seq, msg } });
+  setShared("gitview.answer", { ...onlyLive(shared("gitview.answer"), liveTabs()), [tab]: { seq, msg } });
 }
 
 export function cursorIn(tab) {
@@ -121,7 +126,7 @@ export function origins() {
 }
 
 export function setOrigin(space, tab) {
-  setShared("gitview.origins", { ...origins(), [space]: tab });
+  setShared("gitview.origins", { ...onlyLive(origins(), liveSpaces()), [space]: tab });
 }
 
 // The machine of an app address ("vps/tb12", "vps/t3"); null for this one.
@@ -151,9 +156,12 @@ export function ignoredDirs(root) {
 
 export function setIgnoredDirs(root, dirs) {
   const key = notesKey(null, root);
-  const all = shared("gitview.ignored") ?? {};
+  const all = { ...(shared("gitview.ignored") ?? {}) };
   if (JSON.stringify(all[key] ?? []) === JSON.stringify(dirs)) return;
-  setShared("gitview.ignored", { ...all, [key]: dirs });
+  // The 20 repos written last (newest last; a write moves its repo there).
+  delete all[key];
+  all[key] = dirs;
+  setShared("gitview.ignored", Object.fromEntries(Object.entries(all).slice(-20)));
 }
 
 // ---- the diff pane's Diff | Preview ------------------------------------------------
@@ -245,7 +253,7 @@ export function ownTab(space) {
 }
 
 export function setOwnTab(space, tab) {
-  setShared("gitview.own", { ...(shared("gitview.own") ?? {}), [space]: tab });
+  setShared("gitview.own", { ...onlyLive(shared("gitview.own"), liveSpaces()), [space]: tab });
 }
 
 // The layout path to the block whose mod is `name` (not a floating one).
