@@ -153,6 +153,9 @@ expect 'git -C "$S" status --short | grep -q "^M  config.toml"' "the row's + but
 shot 03-staged
 do_ gitview.button:discard:notes.md
 expect 'overlay_open confirm' "↺ asks first (the app's confirm dialog)"
+do_ mod.open --name gitview-sidebar # cmd-shift-g while it asks
+sleep 1.5
+[ "$(panel_state)" = "open changes" ] && overlay_open confirm && ok "cmd-shift-g waits while the confirm is open (as v1's modal took every key)" || fail "cmd-shift-g acted under the confirm: $(panel_state)"
 shot 04-confirm
 confirm_discard gitview # what the dialog's Confirm button runs
 expect '[ ! -e "$S/notes.md" ]' "confirmed discard removes the untracked file"
