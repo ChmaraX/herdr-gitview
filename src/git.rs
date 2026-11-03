@@ -65,6 +65,10 @@ pub struct FileEntry {
 /// ignored folders.
 #[derive(Debug, Clone)]
 pub struct AppStatus {
+    /// HEAD's commit (`None` before the first) and branch (`None` when
+    /// detached); in worktree scope only (`None` in branch scope).
+    pub head: Option<String>,
+    pub branch: Option<String>,
     pub entries: Vec<FileEntry>,
     /// Per path: changes when what the index or HEAD say about it changes,
     /// or the worktree file does.
@@ -476,18 +480,23 @@ impl Repo {
     /// answer, still listing the submodule path itself as changed; only its
     /// internal dirtiness is hidden. Without this the whole pane had nothing
     /// to show and died.
-    /// `git status --porcelain=v2 -z`; `ignored`: with the ignored paths
+    ///
+    /// `app`: the app's status, with the ignored paths too
     /// (`--ignored=matching`: an ignored folder as one `folder/` record; it
-    /// needs `show_untracked`).
-    fn status_raw(&self, show_untracked: bool, ignored: bool) -> Result<Vec<u8>> {
+    /// needs `show_untracked`) and the branch headers (`--branch`: HEAD's
+    /// commit and branch, so the app asks no one else).
+    fn status_raw(&self, show_untracked: bool, app: bool) -> Result<Vec<u8>> {
         let untracked = if show_untracked {
             "--untracked-files=all"
         } else {
             "--untracked-files=no"
         };
         let mut args = vec!["status", "--porcelain=v2", "-z", untracked];
-        if ignored && show_untracked {
-            args.push("--ignored=matching");
+        if app {
+            args.extend(["--branch", "--no-ahead-behind"]);
+            if show_untracked {
+                args.push("--ignored=matching");
+            }
         }
         let out = self.git_lenient(&args)?;
         if out.status.success() {
@@ -505,16 +514,43 @@ impl Repo {
     }
 
     pub fn worktree_status(&self, show_untracked: bool) -> Result<Vec<FileEntry>> {
-        let raw = self.status_raw(show_untracked, false)?;
-        self.worktree_entries(&raw)
+        let numstats = self.start_numstats();
+        let raw = self.status_raw(show_untracked, false);
+        // Status's own failure is the one to tell (the numstats fail too).
+        let numstats = finish_numstats(numstats);
+        self.worktree_entries(&raw?, &numstats?)
+    }
+
+    /// The unstaged and the staged `diff --numstat`, started now so they run
+    /// beside the status; see [`finish_numstats`].
+    fn start_numstats(
+        &self,
+    ) -> [(
+        &'static [&'static str],
+        std::io::Result<std::process::Child>,
+    ); 2] {
+        use std::process::Stdio;
+        NUMSTATS.map(|args| {
+            let child = self
+                .git_command(args, Run::default())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn();
+            (args, child)
+        })
     }
 
     /// [`Repo::worktree_status`] with what the app's list needs on top: a
     /// rev per file and the ignored folders (see [`AppStatus`]).
     pub fn app_worktree_status(&self, show_untracked: bool) -> Result<AppStatus> {
-        let raw = self.status_raw(show_untracked, true)?;
-        let entries = self.worktree_entries(&raw)?;
+        let numstats = self.start_numstats();
+        let raw = self.status_raw(show_untracked, true);
+        let numstats = finish_numstats(numstats);
+        let (raw, numstats) = (raw?, numstats?);
+        let entries = self.worktree_entries(&raw, &numstats)?;
         let records = porcelain_records(&raw);
+        let (head, branch) = branch_headers(&raw);
         let dirty: Vec<&Path> = records
             .iter()
             .filter(|r| r.worktree_dirty)
@@ -546,6 +582,8 @@ impl Repo {
             self.ignored_dirs()?
         };
         Ok(AppStatus {
+            head,
+            branch,
             entries,
             revs,
             ignored_dirs: cap(ignored_dirs),
@@ -574,6 +612,8 @@ impl Repo {
             );
         }
         Ok(AppStatus {
+            head: None,
+            branch: None,
             entries,
             revs,
             ignored_dirs: cap(self.ignored_dirs()?),
@@ -600,16 +640,13 @@ impl Repo {
 
     /// `git status`'s porcelain v2 `raw` as the list's entries, with their
     /// line counts, sorted.
-    fn worktree_entries(&self, raw: &[u8]) -> Result<Vec<FileEntry>> {
+    fn worktree_entries(&self, raw: &[u8], numstats: &[Vec<u8>; 2]) -> Result<Vec<FileEntry>> {
         let mut entries = parse_porcelain_v2(raw)?;
 
         // Merge line stats from numstat (unstaged + staged, summed per path).
         let mut stats: HashMap<PathBuf, Option<(u32, u32)>> = HashMap::new();
-        for args in [
-            &["diff", "--numstat", "-z", "-M"][..],
-            &["diff", "--numstat", "-z", "-M", "--cached"][..],
-        ] {
-            for (path, stat) in parse_numstat(&self.git(args)?) {
+        for numstat in numstats {
+            for (path, stat) in parse_numstat(numstat) {
                 merge_stat(&mut stats, path, stat);
             }
         }
@@ -1080,6 +1117,50 @@ fn parse_porcelain_v2(raw: &[u8]) -> Result<Vec<FileEntry>> {
 
 /// Split an ordinary/rename/unmerged record: field 1 is XY, the path is
 /// everything from field index `path_field` on (paths may contain spaces).
+/// The two `diff --numstat` calls of a worktree status: unstaged, staged.
+const NUMSTATS: [&[&str]; 2] = [
+    &["diff", "--numstat", "-z", "-M"],
+    &["diff", "--numstat", "-z", "-M", "--cached"],
+];
+
+/// The outputs of [`Repo::start_numstats`]'s calls; a call that failed is
+/// an error, as [`Repo::git`] has it.
+fn finish_numstats(
+    started: [(
+        &'static [&'static str],
+        std::io::Result<std::process::Child>,
+    ); 2],
+) -> Result<[Vec<u8>; 2]> {
+    let [unstaged, staged] = started.map(|(args, child)| -> Result<Vec<u8>> {
+        let out = child
+            .with_context(|| format!("spawning git {args:?}"))?
+            .wait_with_output()?;
+        if !out.status.success() {
+            bail!(
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(out.stdout)
+    });
+    Ok([unstaged?, staged?])
+}
+
+/// `--branch`'s headers in a porcelain v2 status: HEAD's commit (`None`
+/// before the first) and its branch (`None` when detached).
+fn branch_headers(raw: &[u8]) -> (Option<String>, Option<String>) {
+    let text = String::from_utf8_lossy(raw);
+    let (mut head, mut branch) = (None, None);
+    for record in text.split('\0') {
+        if let Some(oid) = record.strip_prefix("# branch.oid ") {
+            head = (oid != "(initial)").then(|| oid.to_string());
+        } else if let Some(name) = record.strip_prefix("# branch.head ") {
+            branch = (name != "(detached)").then(|| name.to_string());
+        }
+    }
+    (head, branch)
+}
+
 /// What a status record says about one path, for its rev.
 struct Record {
     path: PathBuf,

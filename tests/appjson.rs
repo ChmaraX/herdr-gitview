@@ -16,6 +16,8 @@
 //!   files the list hides, or takes unstaged changes while something is
 //!   staged;
 //! - a branch base passed back by the caller kept after HEAD moved;
+//! - HEAD's commit or branch misread: before the first commit, on a branch,
+//!   detached;
 //! - diff rows without their markers, numbers or tint roles; history, a
 //!   commit's files or a commit's own diff (the root commit's too) wrong.
 
@@ -545,4 +547,21 @@ fn a_branch_base_passed_back_is_resolved_again_once_head_moved() {
     assert_eq!(moved["base"]["merge_base"], main.trim(), "resolved again");
     assert_eq!(section(&moved, "branch"), ["mine.txt"]);
     assert_ne!(moved["head"], head.as_str());
+}
+
+#[test]
+fn status_names_heads_commit_and_branch_as_git_has_them() {
+    let repo = fixture("json-head");
+    let d = &repo.dir;
+    let st = gv(d, &["status"]);
+    assert_eq!(st["branch"], "main");
+    assert_eq!(st["head"], git_out(d, &["rev-parse", "HEAD"]).trim());
+    common::git(d, &["checkout", "-q", "--detach"]);
+    let st = gv(d, &["status"]);
+    assert_eq!(st["branch"], Value::Null, "detached");
+    assert_eq!(st["head"], git_out(d, &["rev-parse", "HEAD"]).trim());
+    common::git(d, &["checkout", "-q", "--orphan", "fresh"]);
+    let st = gv(d, &["status"]);
+    assert_eq!(st["branch"], "fresh");
+    assert_eq!(st["head"], Value::Null, "before the first commit");
 }

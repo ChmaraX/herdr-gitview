@@ -460,9 +460,9 @@ struct DiffOut {
 fn status(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
     let cfg = config();
-    let branch = repo.head_branch();
-    let head = repo.head_sha();
     if a.value("scope") == Some("branch") {
+        let branch = repo.head_branch();
+        let head = repo.head_sha();
         // The caller may pass back the base it got last time: base detection
         // costs a dozen git calls, too many for every poll. It holds only
         // while HEAD is where it was resolved for: after a rebase or a merge
@@ -504,8 +504,8 @@ fn status(a: &Args) -> Result<Value> {
     .collect();
     reply(StatusOut {
         root: &repo.root,
-        branch,
-        head,
+        branch: st.branch.clone(),
+        head: st.head.clone(),
         scope: Scope::Worktree,
         base: None,
         sections,
