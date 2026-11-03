@@ -50,6 +50,16 @@ export async function labelled(label) {
   }
 }
 
+// Ends a terminal through herdr-core itself (`hc kill`): its pane goes.
+export async function endTerminal(address) {
+  try {
+    const cfg = await loadConfig();
+    await exec(cfg.hc || "hc", ["kill", address]);
+  } catch {
+    // gone already
+  }
+}
+
 // `--on <machine>` for a repo on another machine, nothing here.
 export const onArgs = (on) => (on ? ["--on", on] : []);
 

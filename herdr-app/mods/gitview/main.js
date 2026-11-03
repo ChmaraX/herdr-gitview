@@ -14,7 +14,7 @@
 import { View } from "gpui-kit";
 import { v_flex, InputState } from "gpui-base";
 import { notify, run, shared, theme } from "herdr";
-import { gv, labelled, message, onArgs } from "./engine.js";
+import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
@@ -277,7 +277,9 @@ export default class GitList extends View {
       const known = new Set(panes.map((p) => p.terminal).filter(Boolean));
       const local = tab.includes("/") ? null : tab;
       if (!local) return;
-      for (const t of await labelled(`herdr-nvim.sidebar=${local}`)) if (!known.has(t)) run("terminal.kill", { terminal: t });
+      // Ones the app doesn't list yet end through herdr-core (the app can be
+      // a moment behind it, and then doesn't know the terminal to kill).
+      for (const t of await labelled(`herdr-nvim.sidebar=${local}`)) if (!known.has(t)) await endTerminal(t);
     });
   }
 
