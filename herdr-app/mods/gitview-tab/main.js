@@ -12,6 +12,18 @@ import { origins, ownTab, setOrigin, setOwnTab } from "./shared.js";
 
 const LIST_PERCENT = 29;
 
+// What `herdr-app status` says (its focused space and tab), or null.
+async function appStatus() {
+  try {
+    const cfg = await loadConfig();
+    if (!cfg.herdr_app) return null;
+    const r = await exec("/usr/bin/env", [...hostEnv(cfg), cfg.herdr_app, "status"]);
+    return JSON.parse(r.stdout);
+  } catch {
+    return null;
+  }
+}
+
 // The spaces as the app has them now (`herdr-app ls`).
 async function appSpaces() {
   const cfg = await loadConfig();
@@ -27,7 +39,11 @@ async function appSpaces() {
 export default class GitviewTab extends View {
   init(_props, cx) {
     oneShot(cx, async (cx) => {
-      const f = focused();
+      // Where the person is, as the app has it now (`herdr-app status`): a
+      // window that isn't drawn can leave this copy's focused() a step
+      // behind (a tab just selected).
+      const now = await appStatus();
+      const f = { ...focused(), ...(now?.space && now?.tab ? { space: now.space, tab: now.tab } : {}) };
       const space = spaces().find((s) => s.id === f?.space);
       if (!space) return notify({ title: "gitview", body: "Open a space first.", level: "warning" });
       const own = ownTab(space.id);
