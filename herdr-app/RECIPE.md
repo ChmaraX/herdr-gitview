@@ -26,8 +26,10 @@ Spaces on other machines work the same way.
     branch icon and the branch in 12 px `muted` (it gives way first), an
     `N notes` pill (`accent` on `accent_foreground`, 10.5 px, 5 px corners;
     a click opens the notes), a bordered `N files` pill, a braille spinner in
-    `dim` while loading; from 340 px wide two 22 px icon buttons: tree/flat
-    and history;
+    `dim` in a 10 px place that's always there (showing it moves nothing),
+    only for a load that has taken 250 ms and never for polls or a watch's
+    refresh; from 340 px wide two 22 px icon buttons: tree/flat and
+    history;
   - the list, 6 px padding above and below:
     - section headers, 28 px: the title in 11 px semibold uppercase `muted`
       and a count chip (`raised`, 8 px corners);
@@ -95,7 +97,15 @@ Spaces on other machines work the same way.
   With nothing selected: "No file selected / Click a file in the gitview
   list." centered in `dim`.
 - **cmd-g's tab** "gitview": the diff pane on the left, the list on the right
-  (29 %), both framed by the app like any pane.
+  (29 %), both framed by the app like any pane; its first file shows at
+  once, and the Changes panel steps aside while the tab shows (back when
+  you leave it), so there's one list. Under 320 px the commit button just
+  says "Commit".
+- **Between files** the diff pane never blanks: the old diff or preview
+  stays until the new one is there (dimmed to 55 % after 150 ms), and Diff
+  or Preview is decided from the file's name, not when it arrives. A
+  reload of the same file (an agent's edit, unfold) keeps the cursor and
+  the view on their lines.
 - **Send notes**: a 460 px modal dialog on `popover`, "Send N notes to…",
   one 30 px row per agent (status dot, name, status, space / tab, address),
   this space's first.
@@ -110,8 +120,11 @@ Spaces on other machines work the same way.
 
 - The panel follows the shown space: the focused terminal's folder, else the
   space's (focusing gitview's own diff pane keeps the repo). cmd-g's list
-  keeps the repo it was opened for. Local repos refresh on a folder watch
-  and every 10 s; a space on another machine every 4 s while the panel shows.
+  keeps the repo it was opened for (lists are keyed by repo, not folder).
+  Local repos refresh on a folder watch (batches of git's objects, logs and
+  locks or ignored folders are no change; a list's own op's batch is
+  shown by the refresh after the op), with a poll after 30 s without a
+  status; a space on another machine every 4 s while the panel shows.
 - **List keys** (once it has the keyboard: a click anywhere in it, `pane.go`,
   cmd-shift-g): `j`/`k` or arrows move and the diff follows; `enter` or a
   double-click opens nvim (on a folder: folds it); `h`/`←` folds or goes to
@@ -198,10 +211,11 @@ Spaces on other machines work the same way.
   Shift/ctrl/cmd+enter submits them. Sent notes leave the list; notes are
   kept per machine and repo until sent or deleted, across restarts.
 - **cmd-shift-g** shows the panel on gitview (and gives it the keyboard), or
-  hides it when it already shows gitview. However the panel hides
-  (cmd-shift-g, the Changes or Files button, a space whose panel is
-  closed), the diff panes it opened close with it, in every tab (not in
-  cmd-g's tabs); when it shows again, its selected (else first) file opens
+  hides it when it already shows gitview. When the person hides it
+  (cmd-shift-g, the Changes or Files button) the diff panes it opened in
+  the shown space's tabs close with it (not in cmd-g's tabs); going to a
+  space whose panel is closed isn't a hide (the tab bar puts each space's
+  panel back), so the diff is there when you come back; when it shows again, its selected (else first) file opens
   in the shown tab's diff pane, from a fresh status, unless the tab already
   has one, as the TUI's toggle did. **cmd-g** opens the gitview tab for
   the repo you're in, jumps to it from another tab, and from inside closes it
@@ -275,17 +289,22 @@ Spaces on other machines work the same way.
 - **mods/gitview-keys**: the keys card, a dialog with props `{title,
   groups}` made from the key tables; `gitview.keys` in shared state while
   it's open (the mods' `?` closes it then).
-- **The two talk only through shared state**: the list writes
-  `gitview.views[<tab>]` (the file, its section and scope, the base or
-  commit, the list's file order for J/K, a `seq` bumped on every write and
-  a `showing` bumped when another file is shown: the pane starts that one
-  afresh; `{empty: true}` when there's nothing to show); the pane writes
-  `gitview.cursor[<tab>]` (the list's Enter uses its line; `preview`
-  while it shows the Preview),
-  `gitview.views[<tab>]` on J/K, and `gitview.dirty` after s/u/x (the list
-  refreshes and picks the next file); notes are `gitview.notes["<machine
+- **The two talk only through shared state**, and the list is the one
+  writer of the tab's view: `gitview.views[<tab>]` (the file, its section
+  and scope, the base or commit, its `rev` from the status, which moves
+  when its diff can: the pane reloads then, asking the engine `--unless`
+  the rows' hash; a `seq` bumped on every write and a `showing` bumped when
+  another file is shown: the pane starts that one afresh; `{empty: true}`
+  when there's nothing to show). The pane asks (`gitview.ask[<tab>]`: s/u/x
+  on its file, J/K) and waits for the list's `gitview.answer[<tab>]` (5 s at
+  most) before its next key; it writes `gitview.cursor[<tab>]` (the file
+  and line for the list's Enter, at most every 250 ms; `preview` while it
+  shows the Preview); `gitview.previewOff` the kinds of file the person
+  switched to Diff; `gitview.paneWidth` the last pane's width (a new pane
+  lays out at it); notes are `gitview.notes["<machine
   or ''>:<repo root>"]` (`{id, file, section, cached, start, end, text,
-  snippet}`; the engine gets `cached`); `gitview.changed` a folder watch saw a repo change; `gitview.handoff[<tab>]`
+  snippet}`; the engine gets `cached`); `gitview.changed` a list's folder watch saw a repo change (with the batch's
+  paths), `gitview.ignored` the repo's ignored folders; `gitview.handoff[<tab>]`
   the file Enter handed to herdr-nvim (the diff comes back when its pane
   goes); `gitview.tree` the list mode; `gitview.own[<space>]`
   cmd-g's tab; `gitview.origins[<space>]` where cmd-g came from.
@@ -352,11 +371,18 @@ Spaces on other machines work the same way.
   exec's own 30 s), the log names it, and a reply that comes after a newer
   status load started is dropped.
 - With two copies waiting on `watchFolder` for the same folder, only the
-  newest wakes (herdr-app 0.1.12), and the list and the diff pane watch the
-  same repo: the copy that wakes stamps shared `gitview.changed["<machine
-  or ''>:<root>"]` (at most every 250 ms; a batch inside that waits for
-  the next stamp), and every copy refreshes when its repo's stamp moves. A
-  refresh never stamps, so nothing loops.
+  newest wakes (herdr-app 0.1.12). Only lists watch (the panel and cmd-g's
+  can show one repo): the copy that wakes stamps shared
+  `gitview.changed["<machine or ''>:<root>"]` with the paths (at most every
+  250 ms; a batch inside that waits for the next stamp), and every list
+  refreshes when its repo's stamp moves. A refresh never stamps, so
+  nothing loops.
+- A window started in the background (the e2e's `open -g -n`, so the
+  person's app keeps the front) never renders on its own: no frames, no
+  `render()`. With shared `gitview.debug` (the e2e's `GITVIEW_DEBUG=1`)
+  each copy logs what it draws whenever that changes (`GVTRACE` lines) and
+  looks every 25 ms from a timer as its render would; `jank.sh` counts
+  blank bodies, flashes and spinner blinks from that, and the json runs.
 - A hidden copy (the panel's list while the panel is hidden) and every copy
   in a covered window aren't drawn, so `render()` can't notice the panel
   hiding or a change from the pane: the list also looks from a 300 ms timer
@@ -428,4 +454,8 @@ Spaces on other machines work the same way.
 - Uninstall brings back the stock Changes panel; with herdr-nvim installed
   too, either can go first and each uninstall leaves the layout and keys
   byte-identical to before its install.
-- `herdr-app/e2e/run.sh` and `herdr-app/e2e/coexist.sh` pass.
+- `herdr-app/e2e/run.sh`, `herdr-app/e2e/coexist.sh` and
+  `herdr-app/e2e/jank.sh` pass: no blank diff body on j/k, s, u, discard,
+  commit or an agent's write; one status and one diff per s/u/x; no diff
+  for an agent's write to another file; back from history the worktree's
+  file.
