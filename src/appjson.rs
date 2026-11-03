@@ -15,6 +15,12 @@
 //! Nothing of the repo is read on this machine, and the replies have the
 //! same shape as for a local repo.
 //!
+//! **Environment.** `GITVIEW_HC` (the `hc` binary), `GITVIEW_HERDR_APP`
+//! (the `herdr-app` binary), `HERDR_APP_HOME` (the app home, else
+//! `$HOME/.config/herdr-app`), `GITVIEW_CONFIG_DIR` (the folder of
+//! `config.toml`, else the TUI plugin's own,
+//! `~/.config/herdr/plugins/config/chmarax.gitview`).
+//!
 //! **Arguments.** `--key value` and `--flag`; after `--` everything is
 //! positional, so callers put `--` before paths, messages and text (one may
 //! start with `--`).
@@ -77,8 +83,8 @@
 //!   send") and nothing is typed. `--submit`: send it with `hc send`, which
 //!   presses Enter.
 //! - `sidebar --tab T --mod NAME [--props JSON] [--percent N]` → `{pane}`: a
-//!   mod pane at the tab's right edge, N percent of the tab wide (default:
-//!   `view_width_percent`). It's split off the tab's root, spanning the
+//!   mod pane at the tab's right edge, N percent of the tab wide (5–95;
+//!   default: `view_width_percent`). It's split off the tab's root, spanning the
 //!   tab's full height, when the layout document has the tab: this
 //!   machine's, or for a remote tab `MACHINE/…` that machine's (`doc.get
 //!   {on}`); otherwise off the tab's focused pane (`herdr-app status`).
