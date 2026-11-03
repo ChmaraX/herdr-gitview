@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
 
-use crate::remote::{FileFacts, Machine, Run};
+use crate::remote::{Contents, FileFacts, Machine, Run};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -634,6 +634,54 @@ impl Repo {
             .read_to_end(&mut out)?;
         child.wait()?;
         parse_batch(&out, specs.len())
+    }
+
+    /// The bytes of the blob `spec` (`rev:path`, `:path` = the index),
+    /// exact, unless it's over `max` bytes. Missing: no such path at that
+    /// rev, or not a file there (a folder, a submodule). Two git calls: the
+    /// size first, so a big blob is never read.
+    pub fn read_object(&self, spec: &str, max: u64) -> Result<Contents> {
+        use std::io::Write;
+        use std::process::Stdio;
+        if spec.contains('\n') {
+            bail!("path contains a newline");
+        }
+        let mut child = self
+            .git_command(
+                &["cat-file", "--batch-check"],
+                Run {
+                    stdin: true,
+                    ..Run::default()
+                },
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawning git cat-file")?;
+        child
+            .stdin
+            .take()
+            .context("git cat-file stdin")?
+            .write_all(format!("{spec}\n").as_bytes())?;
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            bail!(
+                "git cat-file: {}",
+                crate::remote::remote_error(&String::from_utf8_lossy(&out.stderr))
+            );
+        }
+        // `<oid> <type> <size>`, or `<spec> missing` (exit 0 either way).
+        let header = String::from_utf8_lossy(&out.stdout);
+        let (oid, size) = match header.trim_end().rsplitn(3, ' ').collect::<Vec<_>>()[..] {
+            [size, "blob", oid] => (oid.to_string(), size.parse::<u64>().ok()),
+            _ => return Ok(Contents::Missing),
+        };
+        let size = size.context("git cat-file: a blob without a size")?;
+        if size > max {
+            return Ok(Contents::TooBig(size));
+        }
+        Ok(Contents::Bytes(self.git(&["cat-file", "blob", &oid])?))
     }
 
     /// The working-tree content of a repo-relative path; `None` when

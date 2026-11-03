@@ -67,6 +67,28 @@
 //!   staged: just that. Else everything, staged first: `git add -A`, or
 //!   `git add -u` when `show_untracked` is off (`all: true`). `summary`:
 //!   `<short sha> <subject>`.
+//! - `file --repo DIR --path P [--side S] [--out DIR] [--max-bytes N] [--on
+//!   M]` → one side of a file, for the diff pane's preview. S:
+//!   `worktree` (default; the file), `index` (`:P`), `head` (`HEAD:P`),
+//!   `commit:SHA` (`SHA:P`), `parent:SHA` (`SHA^:P`, a history file's
+//!   before), `base:SHA` (`SHA:P`, the branch's merge-base); SHA is a
+//!   commit id (hex). P stays inside the repo (relative, no `..`). The
+//!   reply's `kind`:
+//!   - `{kind: "image", path, bytes, ext}` for `png jpg jpeg gif webp bmp
+//!     ico svg` (by extension, any case; `ext` lowercased): the exact bytes
+//!     are written to `DIR/<sha256 of them>.<ext>` (`--out` is required
+//!     then; the folder is made), through a temp file and a rename, and not
+//!     written again when that file is there; `path` is that file;
+//!   - `{kind: "text", text, bytes}`: valid UTF-8 without a NUL;
+//!   - `{kind: "binary", bytes}`: anything else;
+//!   - `{kind: "too_big", bytes}`: over N bytes (default 1 MiB, 16 MiB for
+//!     an image); the size is checked before anything is read;
+//!   - `{kind: "missing"}`: the path isn't a file on that side (deleted,
+//!     not added yet, a folder, a root commit's parent).
+//!
+//!   `bytes` is the file's size. On `--on M` the bytes come through `hc
+//!   exec` unchanged (it passes stdout through as is); a failed call is an
+//!   error, never `missing`.
 //! - `log --repo DIR [--merge-base SHA] [--limit N] [--on M]` →
 //!   `{commits: [{sha, short, subject, author, when, refs}]}`, newest first,
 //!   at most N (200). `--merge-base`: only `SHA..HEAD`. `when`: relative
@@ -173,6 +195,7 @@ fn dispatch(args: &[String]) -> Result<Value> {
         "log" => log(&a),
         "commit-files" => commit_files(&a),
         "commit" => commit(&a),
+        "file" => file(&a),
         "notes" => {
             let message = notes(a.positional.first().context("notes: no JSON")?)?;
             Ok(json!({ "message": message }))
@@ -666,6 +689,23 @@ fn commit(a: &Args) -> Result<Value> {
     let message = a.positional.first().context("commit: no message")?;
     let all = repo.commit(message, config().show_untracked)?;
     Ok(json!({ "ok": true, "all": all, "summary": repo.last_commit_summary() }))
+}
+
+/// One side of a file, for the diff pane's preview (see [`crate::appfile`]).
+fn file(a: &Args) -> Result<Value> {
+    let repo = a.repo()?;
+    let side = crate::appfile::Side::parse(a.value("side").unwrap_or("worktree"))?;
+    let max = match a.value("max-bytes") {
+        Some(n) => Some(n.parse().context("--max-bytes")?),
+        None => None,
+    };
+    reply(crate::appfile::file(
+        &repo,
+        a.value("path").context("file: --path")?,
+        &side,
+        a.value("out").map(Path::new),
+        max,
+    )?)
 }
 
 // ---- history ------------------------------------------------------------------

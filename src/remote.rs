@@ -52,6 +52,21 @@ const MEASURE_BATCH: usize = 200;
 const MISSING: i32 = 44;
 const READ: &str = r#"[ -e "$1" ] || exit 44; exec cat -- "$1""#;
 
+/// Exit code of [`READ_AT_MOST`] for a file over the limit (its size on
+/// stdout).
+const TOO_BIG: i32 = 45;
+const READ_AT_MOST: &str = r#"[ -f "$1" ] || exit 44; n=$(($(wc -c < "$1"))) || exit 1; [ "$n" -le "$2" ] || { echo "$n"; exit 45; }; exec cat -- "$1""#;
+
+/// A file's bytes, read only up to a limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Contents {
+    /// No such file (or not a regular file) there.
+    Missing,
+    /// Over the limit: its size, nothing read.
+    TooBig(u64),
+    Bytes(Vec<u8>),
+}
+
 /// One process for sizes, one for line counts, however many files: `wc -c`
 /// gives sizes, `grep -c -I` counts lines (an unterminated last one too)
 /// and gives 0 for a binary file. Rust lines the answers up by name.
@@ -131,6 +146,56 @@ impl Machine {
                 match out.status.code() {
                     Some(0) => Ok(Some(out.stdout)),
                     Some(MISSING) => Ok(None),
+                    _ => bail!(
+                        "reading {} on {m}: {}",
+                        path.display(),
+                        remote_error(&String::from_utf8_lossy(&out.stderr))
+                    ),
+                }
+            }
+        }
+    }
+
+    /// The bytes of the regular file `path` (relative to `dir`) there, exact,
+    /// unless it's over `max` bytes. There it's one call, which checks the
+    /// size before reading; a failed call is an error.
+    pub fn read_at_most(&self, dir: &Path, path: &Path, max: u64) -> Result<Contents> {
+        match self {
+            Machine::Local => {
+                let full = dir.join(path);
+                let Ok(meta) = std::fs::metadata(&full) else {
+                    return Ok(Contents::Missing);
+                };
+                if !meta.is_file() {
+                    return Ok(Contents::Missing);
+                }
+                if meta.len() > max {
+                    return Ok(Contents::TooBig(meta.len()));
+                }
+                let bytes =
+                    std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?;
+                Ok(match bytes.len() as u64 {
+                    n if n > max => Contents::TooBig(n), // grew meanwhile
+                    _ => Contents::Bytes(bytes),
+                })
+            }
+            Machine::On(m) => {
+                let name = path.to_string_lossy();
+                let max = max.to_string();
+                let argv = ["sh", "-c", READ_AT_MOST, "sh", &name, &max];
+                let out = self.output(
+                    Machine::hc_exec(m, dir, Run::default(), &argv),
+                    "a file read",
+                )?;
+                match out.status.code() {
+                    Some(0) => Ok(Contents::Bytes(out.stdout)),
+                    Some(MISSING) => Ok(Contents::Missing),
+                    Some(TOO_BIG) => Ok(Contents::TooBig(
+                        String::from_utf8_lossy(&out.stdout)
+                            .trim()
+                            .parse()
+                            .context("the size of a file over the limit")?,
+                    )),
                     _ => bail!(
                         "reading {} on {m}: {}",
                         path.display(),

@@ -1,4 +1,5 @@
 pub mod annotate;
+pub mod appfile;
 pub mod apphost;
 pub mod appjson;
 pub mod applayout;

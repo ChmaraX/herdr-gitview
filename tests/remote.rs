@@ -24,7 +24,10 @@
 //!   falling back to this one;
 //! - a branch-scope base passed back after HEAD moved on the machine (a
 //!   rebase, a merge of the base) kept as is, or base detection run on every
-//!   poll while HEAD stays put.
+//!   poll while HEAD stays put;
+//! - `json file` there: an image that doesn't arrive byte for byte (from
+//!   the worktree or from git), or text, binary, too big and missing told
+//!   apart differently from here, or a failed read there taken as missing.
 
 mod common;
 
@@ -613,4 +616,96 @@ fn branch_scope_on_a_machine_resolves_the_base_again_once_head_moved_there() {
     );
     assert_ne!(moved["head"], head.as_str());
     assert_eq!(w.trap_log(), "");
+}
+
+#[test]
+fn a_file_for_the_preview_arrives_from_the_machine_byte_for_byte() {
+    let w = world("file");
+    // Every byte value, plus what a text-mode or lossy read would change.
+    let mut before: Vec<u8> = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    before.extend(0..=255u8);
+    before.extend(b"\r\n\xff\xfe\xc3(");
+    let after: Vec<u8> = before.iter().rev().copied().collect();
+    for dir in [&w.here, &w.remote_real] {
+        write(dir, "logo.png", &before);
+        write(dir, "notes.md", "# notes ✓\r\n".as_bytes());
+        git(dir, &["add", "logo.png", "notes.md"]);
+        git(dir, &["commit", "-q", "-m", "logo"]);
+        write(dir, "logo.png", &after);
+    }
+    for (side, bytes) in [("worktree", &after), ("head", &before)] {
+        let mut replies = Vec::new();
+        for on_box in [false, true] {
+            let out = w.tmp.join(format!("cache-{side}-{on_box}"));
+            let reply = w.run(
+                &[
+                    "file",
+                    "--path",
+                    "logo.png",
+                    "--side",
+                    side,
+                    "--out",
+                    out.to_str().unwrap(),
+                ],
+                on_box,
+            );
+            assert_eq!(reply["kind"], "image", "{reply}");
+            let path = PathBuf::from(reply["path"].as_str().unwrap());
+            assert_eq!(path.parent().unwrap(), out);
+            assert_eq!(
+                &std::fs::read(&path).unwrap(),
+                bytes,
+                "{side} (on box: {on_box}) byte for byte"
+            );
+            replies.push((path.file_name().unwrap().to_owned(), reply["bytes"].clone()));
+        }
+        assert_eq!(replies[0], replies[1], "{side}: here vs on box");
+    }
+
+    // The other kinds come out the same as here.
+    let text = w.both(&["file", "--path", "notes.md", "--side", "head"]);
+    assert_eq!(text["text"], "# notes ✓\r\n");
+    assert_eq!(w.both(&["file", "--path", "blob.bin"])["kind"], "binary");
+    assert_eq!(
+        w.both(&["file", "--path", "base.txt", "--max-bytes", "4"]),
+        serde_json::json!({"kind": "too_big", "bytes": 14})
+    );
+    assert_eq!(
+        w.both(&[
+            "file",
+            "--path",
+            "base.txt",
+            "--side",
+            "index",
+            "--max-bytes",
+            "4"
+        ])["kind"],
+        "too_big"
+    );
+    assert_eq!(w.both(&["file", "--path", "gone.txt"])["kind"], "missing");
+    assert_eq!(
+        w.both(&["file", "--path", "new.txt", "--side", "head"])["kind"],
+        "missing"
+    );
+    assert_eq!(w.both(&["file", "--path", "dir"])["kind"], "missing");
+
+    // A read that fails there is an error, not a missing file.
+    let mut cmd = common::gitview();
+    cmd.args(["json", "file", "--path", "notes.md"]);
+    let (ok, reply) = w.run_with(cmd, &[("SHIM_FAIL_READS", "1")]);
+    assert!(!ok, "{reply}");
+    assert!(
+        reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("the connection dropped"),
+        "{reply}"
+    );
+
+    assert!(!w.remote.exists());
+    assert_eq!(w.trap_log(), "", "a local git ran");
+    let prefix = format!("exec --on box --cwd {}", w.remote.display());
+    for call in w.shim_log() {
+        assert!(call.starts_with(&prefix), "unexpected hc call: {call}");
+    }
 }
