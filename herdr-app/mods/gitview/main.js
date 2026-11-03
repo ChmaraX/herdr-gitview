@@ -20,7 +20,7 @@ import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
   cursorIn, diffPane, dirty, liveView, notesKey, notesOf, pump, setTreeMode, setView, takeKeyboard, treeMode, viewIn,
 } from "./shared.js";
-import { Flash, Loads, commandLoop, watch } from "./modkit.js";
+import { Flash, Loads, ModPanes, commandLoop, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
 import { FileList } from "./filelist.js";
 import { History } from "./history.js";
@@ -55,6 +55,7 @@ export default class GitList extends View {
     this.seen = { views: {}, dirty: dirty()?.at ?? 0 };
     this.flash = new Flash(cx);
     this.loads = new Loads((m) => this.flash.set(m));
+    this.modPanes = new ModPanes();
     this.watcher = {};
     // What render notices (another repo or space, the pane changed the
     // repo or moved, the panel showed) is acted on from a task of this
@@ -95,6 +96,7 @@ export default class GitList extends View {
   // Whether something notice() acts on changed (render and the timer ask;
   // no side effects).
   stale() {
+    if (this.modPanes.changed()) return true;
     if (this.cycle && this.cycle.shown !== this.place.shown()) return true;
     if (!this.place.shown()) return false;
     const ctx = this.context();
@@ -104,9 +106,10 @@ export default class GitList extends View {
   }
 
   // The panel showed; another repo or space or tab; the pane changed the
-  // repo or moved (J/K). Before every command, and from the pump or the
+  // repo or moved (J/K); a mod pane closed (Loads.revive). Before every command, and from the pump or the
   // timer after stale().
   notice(cx) {
+    if (this.modPanes.gone()) this.loads.revive(cx);
     if (this.cycle?.look() === "shown") this.openOnShow(cx);
     if (!this.place.shown()) return;
     const ctx = this.context();

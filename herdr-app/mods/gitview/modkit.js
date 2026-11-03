@@ -2,7 +2,7 @@
 // wait for them), a footer message that fades, the folder watch, the
 // command loop and key names. Shared (linked; install copies it).
 
-import { closeOverlay, nextCommand, notify, props, watchFolder } from "herdr";
+import { closeOverlay, nextCommand, notify, panes, props, watchFolder } from "herdr";
 import { message } from "./engine.js";
 
 // Loads in flight. `run(cx, what, work)` counts one; `latest(cx, what,
@@ -69,6 +69,7 @@ export class Loads {
     const seq = ++slot.started;
     slot.at = Date.now();
     slot.next = null;
+    slot.work = work;
     this.run(cx, what, async (cx) => {
       try {
         await work(cx, () => slot.started === seq);
@@ -81,8 +82,52 @@ export class Loads {
     });
   }
 
+  // Every load running now is taken as lost, and each `latest` one runs
+  // again (a late reply of the old run is ignored). For when a mod pane
+  // closed: herdr-app 0.1.12 can drop an exec another copy is waiting on
+  // then (the list's `status` never settled when the diff pane closed for
+  // herdr-nvim's nvim), which held the commands for LOST_MS.
+  revive(cx) {
+    if (!this.running.size) return;
+    console.warn(`gitview: a mod pane closed during ${[...this.running.values()].map((l) => l.what).join(", ")}: not waiting for that, loading again`);
+    this.running.clear();
+    for (const [what, slot] of this.slots) {
+      if (!slot.at) continue;
+      const work = slot.next ?? slot.work;
+      slot.at = 0;
+      slot.next = null;
+      if (work) this.latest(cx, what, work);
+    }
+    if (!this.busy()) this.waiters.splice(0).forEach((resolve) => resolve());
+  }
+
   async idle(cx) {
     while (this.busy()) await Promise.race([new Promise((resolve) => this.waiters.push(resolve)), cx.sleep(1000)]);
+  }
+}
+
+// Whether a mod pane went since the last look (any mod's: the app's drop
+// of in-flight execs isn't limited to ours); `changed()` only peeks.
+export class ModPanes {
+  constructor() {
+    this.ids = new Set(this.now());
+  }
+
+  now() {
+    return panes().filter((p) => p.mod).map((p) => p.pane);
+  }
+
+  changed() {
+    const now = new Set(this.now());
+    return [...this.ids].some((id) => !now.has(id)) || now.size !== this.ids.size;
+  }
+
+  // True when one went; remembers the panes now.
+  gone() {
+    const now = new Set(this.now());
+    const gone = [...this.ids].some((id) => !now.has(id));
+    this.ids = now;
+    return gone;
   }
 }
 
