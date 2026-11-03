@@ -86,6 +86,11 @@ cleanup() {
   for s in "$BASE"/nvrun/app/*.sock; do
     [ -S "$s" ] && nvim --headless --server "$s" --remote-send '<cmd>qa!<cr>' >/dev/null 2>&1
   done
+  # And any of this run's nvims still running (herdr-nvim's headless
+  # daemons): their environment names this run's folder.
+  for p in $(pgrep -f nvim); do
+    ps eww -o command= -p "$p" 2>/dev/null | grep -qE "=(/private)?${BASE//./\\.}/" && kill "$p" 2>/dev/null
+  done
   cp "$GV_LOG" "$ART/gitview-debug.log" 2>/dev/null; cp "$BASE/app.log" "$ART/app.log" 2>/dev/null
   rm -rf "$BASE"
   echo "artifacts: $ART"
