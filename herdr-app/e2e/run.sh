@@ -640,7 +640,9 @@ node "$E2E/colors.mjs" "$HERDR_APP_HOME/mods/gitview-diff/diffview.js" "$CT/diff
 COMPUTED=$("$PY" "$E2E/contrast.py" computed "$CT/colors.jsonl" "$E2E/catppuccin-frappe.json") && ok "the pane gives the comment a color that reads: $COMPUTED" || fail "the comment's color doesn't read: $COMPUTED"
 echo "$COMPUTED" | python3 -c 'import json,sys; sys.exit(0 if all(o["engine_contrast"] < 3.5 for o in json.load(sys.stdin)) else 1)' \
   && ok "(the engine's own comment color wouldn't: the lift is what the check sees)" || fail "the engine's comment color already reads here: the check proves nothing"
-if until_ drawn 5; then
+# Pixels need frames: only a window started in front (E2E_FOREGROUND=1)
+# draws; a background-started one never renders on its own.
+if [ -n "${E2E_FOREGROUND:-}" ] && until_ drawn 5; then
   PIXELS=
   for i in 1 2 3; do
     shot "23-frappe-probe-$i" 1.5
@@ -650,7 +652,7 @@ if until_ drawn 5; then
   "$PY" "$E2E/contrast.py" pixels "$ART/23-frappe-probe-$i.png" "$E2E/catppuccin-frappe.json" >/dev/null \
     && ok "drawn: the comment's pixels on the tint reach 3.5: $PIXELS" || fail "drawn comment pixels: $PIXELS"
 else
-  skip "the drawn pixels of the comment (the window is covered: no new frame to probe)"
+  skip "the drawn pixels of the comment (no frames: the window started in the background; E2E_FOREGROUND=1)"
 fi
 echo '{"zoom": 1, "theme": "graphite", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
 rm -f "$S/probe.rs"
