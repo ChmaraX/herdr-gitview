@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
+
+use crate::remote::{FileFacts, Machine, Run};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,86 +64,9 @@ pub struct FileEntry {
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub root: PathBuf,
-    /// The machine the repo lives on (`hc machine ls`), `None` = here. A
-    /// remote repo is never touched locally: every git command and file read
-    /// runs there through `hc exec --on <machine> --cwd <dir> -- …` (see
-    /// [`remote_command`]); `root` is a path on that machine.
-    pub on: Option<String>,
-}
-
-/// The `hc` binary: `GITVIEW_HC`, else `hc` on `PATH`.
-pub fn hc_bin() -> std::ffi::OsString {
-    std::env::var_os("GITVIEW_HC").unwrap_or_else(|| "hc".into())
-}
-
-/// `hc exec --on <on> --cwd <cwd> [-i] -- <argv…>`: run `argv` on that
-/// machine, with exactly its output and exit code. `stdin`: feed it what we
-/// pipe in (else its stdin is closed). `timeout`: seconds (hc's default is
-/// 60).
-pub fn remote_command(
-    on: &str,
-    cwd: &Path,
-    stdin: bool,
-    timeout: Option<u32>,
-    argv: &[&str],
-) -> Command {
-    let mut cmd = Command::new(hc_bin());
-    cmd.args(["exec", "--on", on]).arg("--cwd").arg(cwd);
-    if let Some(secs) = timeout {
-        cmd.args(["--timeout", &secs.to_string()]);
-    }
-    if stdin {
-        cmd.arg("-i");
-    }
-    cmd.arg("--").args(argv);
-    cmd
-}
-
-/// What went wrong in a remote call, in one line: hc's own errors come as
-/// JSON (`{"error": {"message", "hint"}}`), the program's as plain text.
-fn remote_error(stderr: &str) -> String {
-    let parsed: Option<serde_json::Value> = serde_json::from_str(stderr.trim()).ok();
-    let message = parsed.as_ref().and_then(|v| {
-        let err = v.get("error")?;
-        let message = err.get("message")?.as_str()?;
-        Some(match err.get("hint").and_then(|h| h.as_str()) {
-            Some(hint) => format!("{message} ({hint})"),
-            None => message.to_string(),
-        })
-    });
-    match message {
-        Some(m) => m,
-        None if stderr.trim().is_empty() => "not a git repository there".to_string(),
-        None => first_line(stderr),
-    }
-}
-
-/// Line counts for untracked files on another machine, in one `hc exec`: a
-/// POSIX `sh` loop printing, per file, its line count or `x` where
-/// [`untracked_stats`] gives none (missing, over 1 MiB, binary).
-const REMOTE_UNTRACKED_STATS: &str = r#"for f do
-  if [ ! -f "$f" ] || [ ! -r "$f" ]; then echo x; continue; fi
-  s=$(($(wc -c < "$f")))
-  if [ "$s" -gt 1048576 ]; then echo x; continue; fi
-  if [ $(($(head -c 8192 < "$f" | tr -d '\000' | wc -c))) -ne $(($(head -c 8192 < "$f" | wc -c))) ]; then echo x; continue; fi
-  l=$(($(wc -l < "$f")))
-  if [ "$s" -gt 0 ] && [ $(($(tail -c 1 < "$f" | wc -l))) -eq 0 ]; then l=$((l + 1)); fi
-  echo "$l"
-done"#;
-
-/// Untracked files per `hc exec` call (keeps the argv well under limits).
-const REMOTE_STATS_BATCH: usize = 200;
-
-fn parse_remote_stats(out: &str, count: usize) -> Vec<(Option<u32>, Option<u32>)> {
-    let mut lines = out.lines();
-    (0..count)
-        .map(
-            |_| match lines.next().and_then(|l| l.trim().parse::<u32>().ok()) {
-                Some(n) => (Some(n), Some(0)),
-                None => (None, None),
-            },
-        )
-        .collect()
+    /// Where the repo lives: here, or another machine whose git commands
+    /// and file reads all run there (`root` is a path on it).
+    pub machine: Machine,
 }
 
 /// A git object read by [`Repo::read_blobs`].
@@ -189,40 +114,32 @@ fn parse_batch(out: &[u8], count: usize) -> Result<Vec<Option<Blob>>> {
 impl Repo {
     /// A repo on this machine whose top level is `root`.
     pub fn local(root: PathBuf) -> Repo {
-        Repo { root, on: None }
+        Repo {
+            root,
+            machine: Machine::Local,
+        }
     }
 
     pub fn discover(dir: &Path) -> Result<Repo> {
-        Repo::discover_on(dir, None)
+        Repo::discover_on(dir, Machine::Local)
     }
 
-    /// The repo holding `dir` on machine `on` (`None` or `""` = here).
-    pub fn discover_on(dir: &Path, on: Option<&str>) -> Result<Repo> {
-        let on = on.filter(|m| !m.is_empty()).map(str::to_string);
-        let argv = ["git", "rev-parse", "--show-toplevel"];
-        let out = match &on {
-            None => Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(&argv[1..])
-                .output()
-                .context("spawning git")?,
-            Some(m) => remote_command(m, dir, false, None, &argv)
-                .output()
-                .with_context(|| format!("spawning {}", hc_bin().to_string_lossy()))?,
-        };
+    /// The repo holding `dir` on `machine`.
+    pub fn discover_on(dir: &Path, machine: Machine) -> Result<Repo> {
+        let cmd = machine.git(dir, &["rev-parse", "--show-toplevel"], Run::default());
+        let out = machine.output(cmd, "git")?;
         if !out.status.success() {
-            match &on {
+            match machine.name() {
                 None => bail!("{} is not inside a git repository", dir.display()),
                 Some(m) => bail!(
                     "{} on {m}: {}",
                     dir.display(),
-                    remote_error(&String::from_utf8_lossy(&out.stderr))
+                    crate::remote::remote_error(&String::from_utf8_lossy(&out.stderr))
                 ),
             }
         }
         let root = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-        Ok(Repo { root, on })
+        Ok(Repo { root, machine })
     }
 
     // ---- command wrappers -------------------------------------------------
@@ -241,47 +158,18 @@ impl Repo {
 
     /// Run git, return the raw Output regardless of exit code.
     fn git_lenient(&self, args: &[&str]) -> Result<Output> {
-        self.git_command(args, false, None)
+        self.git_command(args, Run::default())
             .output()
             .with_context(|| format!("spawning git {args:?}"))
     }
 
-    /// `git <args>` in this repo: here, or on its machine through `hc exec`
-    /// (`stdin`: we pipe input in; `timeout`: seconds there).
-    ///
-    /// Reads never take the index lock to refresh stat info: a poll holding
-    /// it made the user's own merge/commit fail ("Unable to write index").
-    /// Status honors optional locks being off; diff ignores that and needs
-    /// its auto-refresh off instead (see branch_changes for what that costs).
-    /// Writes (add, restore) still lock.
-    fn git_command(&self, args: &[&str], stdin: bool, timeout: Option<u32>) -> Command {
-        const NO_REFRESH: [&str; 2] = ["-c", "diff.autoRefreshIndex=false"];
-        match &self.on {
-            None => {
-                let mut cmd = Command::new("git");
-                cmd.arg("-C")
-                    .arg(&self.root)
-                    .env("GIT_OPTIONAL_LOCKS", "0")
-                    .args(NO_REFRESH)
-                    .args(args);
-                cmd
-            }
-            Some(machine) => {
-                let mut argv = vec!["git", "--no-optional-locks"];
-                argv.extend(NO_REFRESH);
-                argv.extend(args);
-                remote_command(machine, &self.root, stdin, timeout, &argv)
-            }
-        }
-    }
-
-    /// A program other than git, run in the repo's top level on its machine
-    /// (`hc exec`); `None` for a local repo.
-    fn remote_tool(&self, argv: &[&str]) -> Option<Output> {
-        let machine = self.on.as_deref()?;
-        remote_command(machine, &self.root, false, None, argv)
-            .output()
-            .ok()
+    /// `git <args>` in this repo, on its machine. Diff ignores the optional
+    /// locks being off and needs its index auto-refresh off too (see
+    /// branch_changes for what that costs). Writes (add, restore) still lock.
+    fn git_command(&self, args: &[&str], run: Run) -> Command {
+        let mut argv = vec!["-c", "diff.autoRefreshIndex=false"];
+        argv.extend(args);
+        self.machine.git(&self.root, &argv, run)
     }
 
     /// `git commit -m <message>` (`all`: `git add -A` first). Hooks may take
@@ -289,7 +177,13 @@ impl Repo {
     pub fn commit(&self, message: &str, all: bool) -> Result<()> {
         let run = |args: &[&str]| -> Result<()> {
             let out = self
-                .git_command(args, false, Some(600))
+                .git_command(
+                    args,
+                    Run {
+                        timeout: Some(600),
+                        ..Run::default()
+                    },
+                )
                 .output()
                 .with_context(|| format!("spawning git {args:?}"))?;
             if !out.status.success() {
@@ -303,28 +197,14 @@ impl Repo {
         run(&["commit", "-m", message])
     }
 
-    /// `(adds, dels)` for untracked files, as [`untracked_stats`] counts
-    /// them: read here, or counted on the repo's machine in one call per
-    /// batch.
+    /// `(adds, dels)` for untracked files: every line is an add; none for
+    /// binaries and files over 1 MiB (see [`untracked_stats`]).
     fn untracked_stats_many(&self, paths: &[&Path]) -> Vec<(Option<u32>, Option<u32>)> {
-        if self.on.is_none() {
-            return paths
-                .iter()
-                .map(|p| untracked_stats(&self.root.join(p)))
-                .collect();
-        }
-        let mut stats = Vec::with_capacity(paths.len());
-        for batch in paths.chunks(REMOTE_STATS_BATCH) {
-            let names: Vec<String> = batch.iter().map(|p| p.to_string_lossy().into()).collect();
-            let mut argv = vec!["sh", "-c", REMOTE_UNTRACKED_STATS, "sh"];
-            argv.extend(names.iter().map(String::as_str));
-            let out = self
-                .remote_tool(&argv)
-                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-                .unwrap_or_default();
-            stats.extend(parse_remote_stats(&out, batch.len()));
-        }
-        stats
+        self.machine
+            .measure(&self.root, paths)
+            .into_iter()
+            .map(untracked_stats)
+            .collect()
     }
 
     // ---- branch / base ----------------------------------------------------
@@ -714,7 +594,13 @@ impl Repo {
             bail!("path contains a newline");
         }
         let mut child = self
-            .git_command(&["cat-file", "--batch"], true, None)
+            .git_command(
+                &["cat-file", "--batch"],
+                Run {
+                    stdin: true,
+                    ..Run::default()
+                },
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -739,20 +625,13 @@ impl Repo {
         parse_batch(&out, specs.len())
     }
 
-    /// The working-tree content of a repo-relative path; `None` when missing.
-    pub fn file_in_worktree(&self, path: &Path) -> Option<String> {
-        let bytes = match &self.on {
-            None => std::fs::read(self.root.join(path)).ok()?,
-            Some(_) => {
-                let path = path.to_string_lossy();
-                let out = self.remote_tool(&["cat", "--", &path])?;
-                if !out.status.success() {
-                    return None;
-                }
-                out.stdout
-            }
-        };
-        Some(String::from_utf8_lossy(&bytes).into_owned())
+    /// The working-tree content of a repo-relative path; `None` when
+    /// missing. A remote read that fails is an error, not a missing file.
+    pub fn file_in_worktree(&self, path: &Path) -> Result<Option<String>> {
+        Ok(self
+            .machine
+            .read(&self.root, path)?
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
     }
 
     // ---- history ----------------------------------------------------------
@@ -1179,25 +1058,14 @@ fn merge_stat(
     };
 }
 
-/// Untracked file "stats": every line is an add. Skip binaries (NUL byte in
-/// the first chunk) and files > 1 MiB.
-fn untracked_stats(path: &Path) -> (Option<u32>, Option<u32>) {
-    const MAX: u64 = 1024 * 1024;
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.len() <= MAX => {}
-        _ => return (None, None),
+/// Untracked file "stats": every line is an add. None for an unreadable
+/// file, a binary (NUL byte in the first chunk) and one over 1 MiB, however
+/// the machine measured it.
+fn untracked_stats(facts: Option<FileFacts>) -> (Option<u32>, Option<u32>) {
+    match facts.and_then(|f| f.lines) {
+        Some(lines) => (Some(lines), Some(0)),
+        None => (None, None),
     }
-    let Ok(bytes) = std::fs::read(path) else {
-        return (None, None);
-    };
-    if bytes.iter().take(8192).any(|b| *b == 0) {
-        return (None, None); // binary
-    }
-    let mut lines = bytes.iter().filter(|b| **b == b'\n').count() as u32;
-    if !bytes.is_empty() && bytes.last() != Some(&b'\n') {
-        lines += 1; // unterminated last line still counts
-    }
-    (Some(lines), Some(0))
 }
 
 /// Conflicted first, then directory-grouped lexicographic by path.
@@ -1213,33 +1081,6 @@ fn sort_entries(entries: &mut [FileEntry]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn remote_errors_read_hcs_json_or_the_programs_text() {
-        assert_eq!(
-            remote_error(
-                r#"{"error":{"hint":"hc machine add <ssh-target>","kind":"machine_unknown","message":"unknown machine \"x\""}}"#
-            ),
-            "unknown machine \"x\" (hc machine add <ssh-target>)"
-        );
-        assert_eq!(
-            remote_error("fatal: not a git repository (or any parent)\nmore"),
-            "fatal: not a git repository (or any parent)"
-        );
-    }
-
-    #[test]
-    fn remote_stats_read_one_line_per_file() {
-        assert_eq!(
-            parse_remote_stats("3\nx\n0\n", 4),
-            [
-                (Some(3), Some(0)),
-                (None, None),
-                (Some(0), Some(0)),
-                (None, None)
-            ]
-        );
-    }
 
     #[test]
     fn porcelain_ordinary_records() {

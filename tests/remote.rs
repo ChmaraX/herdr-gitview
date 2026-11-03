@@ -10,6 +10,18 @@
 //! machine, the `git` on `PATH` is a trap that records any call, and the
 //! child runs in an empty folder: anything that reached the repo except
 //! through the shim fails or shows.
+//!
+//! Failure modes this catches:
+//! - any local git call or local file read of the remote repo (the trap
+//!   `git`, the path that doesn't exist here, the empty working folder);
+//! - a reply that differs between here and there (untracked counts, diffs,
+//!   commit ids), or an hc call outside `exec --on box --cwd <remote>`;
+//! - stdin not fed (`-i`) to `cat-file --batch`, or a commit cut at hc's
+//!   60 s default;
+//! - untracked files measured with a process per file instead of one call
+//!   per batch;
+//! - a failed remote read shown as a deleted file, an unknown machine
+//!   falling back to this one.
 
 mod common;
 
@@ -40,6 +52,9 @@ esac
 [ "$1" = git ] && { shift; set -- "$SHIM_GIT" "$@"; }
 cd "$cwd" || exit 94
 [ -n "$stdin" ] || exec </dev/null
+if [ -n "$SHIM_FAIL_READS" ] && [ "$1" = sh ] && [[ "$3" == *"exit 44"* ]]; then
+  echo "shim: the connection dropped" >&2; exit 255
+fi
 if [[ " $* " == *" rev-parse --show-toplevel "* ]]; then
   out=$("$@") || exit $?
   printf '%s\n' "$SHIM_FAKE${out#"$SHIM_REAL"}"
@@ -191,6 +206,28 @@ impl World {
         let remote = self.run(args, true);
         assert_eq!(local, remote, "json {args:?}: here vs --on box");
         local
+    }
+
+    /// `cmd` (a `json` op) against the remote repo, with `extra` env for
+    /// the shim; (succeeded, reply).
+    fn run_with(&self, mut cmd: Command, extra: &[(&str, &str)]) -> (bool, Value) {
+        cmd.args(["--on", "box", "--repo", &self.remote.display().to_string()])
+            .envs(GIT_ENV)
+            .envs(extra.iter().copied())
+            .env("GITVIEW_CONFIG_DIR", self.tmp.join("no-config"))
+            .env("HERDR_APP_HOME", self.tmp.join("no-app"))
+            .env("GITVIEW_HC", &self.hc)
+            .env("SHIM_LOG", self.tmp.join("shim.log"))
+            .env("SHIM_MACHINE", "box")
+            .env("SHIM_FAKE", self.fake_prefix())
+            .env("SHIM_REAL", self.remote_real.parent().unwrap())
+            .env("SHIM_GIT", &self.git)
+            .current_dir(self.tmp.join("empty"));
+        let out = cmd.output().unwrap();
+        (
+            out.status.success(),
+            serde_json::from_slice(&out.stdout).unwrap(),
+        )
     }
 
     fn run(&self, args: &[&str], on_box: bool) -> Value {
@@ -451,4 +488,56 @@ fn an_unknown_machine_is_an_error_not_a_local_fallback() {
     assert!(!out.status.success());
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(v["error"].as_str().unwrap().contains("on elsewhere"), "{v}");
+}
+
+#[test]
+fn untracked_files_are_counted_alike_in_one_call_per_status() {
+    let w = world("untracked");
+    let big: String = "x\n".repeat(600 * 1024);
+    for dir in [&w.here, &w.remote_real] {
+        write(dir, "empty.txt", b"");
+        write(dir, "big.txt", big.as_bytes());
+        write(dir, "a name: with spaces.txt", b"1\n2\n3");
+        write(dir, "-dash.txt", b"d\n");
+    }
+    let calls_before = w.shim_log().len();
+    let status = w.both(&["status"]);
+    let measuring: Vec<String> = w.shim_log()[calls_before..]
+        .iter()
+        .filter(|c| c.contains("wc -c"))
+        .cloned()
+        .collect();
+    assert_eq!(measuring.len(), 1, "one call measures all: {measuring:?}");
+    let add = |p: &str| {
+        status["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|s| s["files"].as_array().unwrap().iter())
+            .find(|f| f["path"] == p)
+            .unwrap_or_else(|| panic!("{p} not listed"))["add"]
+            .clone()
+    };
+    assert_eq!(add("empty.txt"), 0);
+    assert_eq!(add("big.txt"), Value::Null, "over 1 MiB: not counted");
+    assert_eq!(add("a name: with spaces.txt"), 3);
+    assert_eq!(add("-dash.txt"), 1);
+    assert_eq!(add("blob.bin"), Value::Null);
+    assert_eq!(w.trap_log(), "");
+}
+
+#[test]
+fn a_failed_remote_read_is_an_error_not_a_deleted_file() {
+    let w = world("read-fails");
+    let mut cmd = common::gitview();
+    cmd.args(["json", "diff", "--path", "base.txt", "--kind", "modified"]);
+    let (ok, reply) = w.run_with(cmd, &[("SHIM_FAIL_READS", "1")]);
+    assert!(!ok, "a diff against nothing: {reply}");
+    assert!(
+        reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("the connection dropped"),
+        "{reply}"
+    );
 }

@@ -411,8 +411,8 @@ fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
         }
     };
     let mut blobs = blobs.into_iter();
-    let mut side = |src: &Source| -> (String, Stamp) {
-        match src {
+    let mut side = |src: &Source| -> Result<(String, Stamp), String> {
+        Ok(match src {
             Source::Rev(revs) => {
                 // Consume this side's answers in full, first present wins.
                 let answers: Vec<_> = blobs.by_ref().take(revs.len()).collect();
@@ -422,11 +422,11 @@ fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
                     None => (String::new(), Stamp::Absent),
                 }
             }
-            Source::Worktree(path) => worktree_side(repo, path),
-        }
+            Source::Worktree(path) => worktree_side(repo, path)?,
+        })
     };
-    let (old, old_stamp) = side(&old_src);
-    let (new, new_stamp) = side(&new_src);
+    let (old, old_stamp) = side(&old_src)?;
+    let (new, new_stamp) = side(&new_src)?;
     Ok(Fetched {
         old,
         new,
@@ -437,16 +437,23 @@ fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
 /// A worktree file, stamped by a hash of the content read: it is in hand
 /// anyway, and unlike mtime+size it can't miss a same-size edit landing
 /// within one timestamp tick.
-fn worktree_side(repo: &Repo, path: &std::path::Path) -> (String, Stamp) {
+fn worktree_side(repo: &Repo, path: &std::path::Path) -> Result<(String, Stamp), String> {
     use std::hash::{Hash, Hasher};
-    match repo.file_in_worktree(path) {
+    Ok(match worktree_file(repo, path)? {
         Some(content) => {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             content.hash(&mut h);
             (content, Stamp::File(h.finish()))
         }
         None => (String::new(), Stamp::Absent),
-    }
+    })
+}
+
+/// A worktree file's text; a read that failed (on another machine) is an
+/// error, never an empty file.
+fn worktree_file(repo: &Repo, path: &std::path::Path) -> Result<Option<String>, String> {
+    repo.file_in_worktree(path)
+        .map_err(|e| first_line(&format!("{e:#}")))
 }
 
 /// The per-side `git show` route, for paths `cat-file --batch` can't take.
@@ -464,7 +471,7 @@ fn fetch_uncached(repo: &Repo, old: &Source, new: &Source) -> Result<Fetched, St
                 }
                 Ok(String::new())
             }
-            Source::Worktree(path) => Ok(repo.file_in_worktree(path).unwrap_or_default()),
+            Source::Worktree(path) => Ok(worktree_file(repo, path)?.unwrap_or_default()),
         }
     };
     Ok(Fetched {

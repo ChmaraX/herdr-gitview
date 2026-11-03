@@ -212,7 +212,7 @@ impl Args {
     fn repo(&self) -> Result<Repo> {
         Repo::discover_on(
             Path::new(self.value("repo").context("--repo")?),
-            self.value("on"),
+            crate::remote::Machine::parse(self.value("on")),
         )
     }
 
@@ -669,7 +669,7 @@ fn nvim(a: &Args) -> Result<Value> {
     let file = repo.root.join(a.value("path").context("--path")?);
     let line = a.value("line").and_then(|l| l.parse().ok()).unwrap_or(1);
     let (tab, space) = (a.value("tab"), a.value("space"));
-    if repo.on.is_some() {
+    if repo.machine != crate::remote::Machine::Local {
         // A remote repo's file only exists there: herdr-nvim with the space
         // (whose machine it is), never an nvim of this machine.
         let terminal = match (tab, space) {

@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::logx::log;
 
-pub use crate::git::hc_bin;
+pub use crate::remote::hc_bin;
 
 /// The `herdr-app` binary: `GITVIEW_HERDR_APP`, else `herdr-app` on `PATH`.
 pub fn app_bin() -> OsString {

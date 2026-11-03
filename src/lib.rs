@@ -18,5 +18,6 @@ pub mod nvim;
 pub mod orchestrate;
 pub mod popup;
 pub mod preview;
+pub mod remote;
 pub mod term;
 pub mod textarea;

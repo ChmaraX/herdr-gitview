@@ -262,7 +262,10 @@ fn file_at_reads_index_head_and_commits() {
         Some("staged version\n")
     );
     assert_eq!(
-        t.repo.file_in_worktree(Path::new("base.txt")).as_deref(),
+        t.repo
+            .file_in_worktree(Path::new("base.txt"))
+            .unwrap()
+            .as_deref(),
         Some("worktree version\n")
     );
     // missing path at a rev → None, not an error
