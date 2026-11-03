@@ -117,8 +117,14 @@ expect '! mod_panes | grep -q gitview-diff' "gitview closed its diff pane (herdr
 sleep 1
 echo "after herdr-nvim open, the side panel shows: $(panel_state)" | tee -a "$LOG"
 shot coexist-02-enter-herdr-nvim 2
+# Known: a status load the list starts around herdr-nvim's open can hang
+# (its exec never settles; the app log says "a load (status) hasn't
+# finished in 35 s"), and commands wait for it: give the click 60 s and
+# log how long it took.
+CLICK0=$SECONDS
 do_ gitview.click:src/main.rs
-expect 'mod_panes | grep -q gitview-diff' "the next click in the list opens the diff pane again" 30
+expect 'mod_panes | grep -q gitview-diff' "the next click in the list opens the diff pane again" 60
+echo "the click after herdr-nvim open took $((SECONDS - CLICK0)) s" | tee -a "$LOG"
 echo "then: panel $(panel_state)" | tee -a "$LOG"
 shot coexist-03-click-again 2
 

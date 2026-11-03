@@ -41,6 +41,10 @@ git -C "$S" rm -q gone.txt
 printf 'brand new\n' >"$S/added.txt" && git -C "$S" add added.txt
 printf 'untracked\n' >"$S/notes.md"
 staged() { git -C "$S" diff --cached --name-only | tr '\n' ' '; }
+# The tab has its diff pane, on that file: the pane takes its commands then.
+# (A space switch can hide the panel a moment, as the tab bar restores the
+# space's own panel; its diff panes close with it and open again.)
+pane_on() { mod_panes | grep -q "^$1 .* gitview-diff$" && [ "$(view_of "$1" path)" = "$2" ]; }
 
 MADE=$("$APP" do space.new --name scratch --folder "$S")
 TAB=$(echo "$MADE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
@@ -284,7 +288,7 @@ printf 'one\ntwo\n' >"$PL/p.txt"
 "$APP" do space.new --name plain --folder "$PL" --argv "[\"/usr/bin/env\",\"DUMMY_PLAIN=1\",\"DUMMY_LOG=$BASE/plain.log\",\"python3\",\"-u\",\"$E2E/dummy-agent.py\"]" >>"$LOG"
 expect '[ -e "$BASE/plain.log.json" ]' "a dummy agent without bracketed paste, in a space of its own"
 expect panel_up "the panel is up in the plain space" 20
-expect '"$APP" do gitview.file:p.txt >/dev/null && [ "$(view_of "$(tab_id)" path)" = p.txt ]' "the panel shows its repo; p.txt in the pane"
+expect '"$APP" do gitview.file:p.txt >/dev/null && pane_on "$(tab_id)" p.txt' "the panel shows its repo; p.txt in the pane"
 PKEY=":$(cd "$PL" && pwd -P)"
 pnotes() { shared "len(s.get('gitview.notes',{}).get('$PKEY',[]))"; }
 do_ "gitview-diff.note:the message has several lines"
@@ -302,6 +306,7 @@ do_ space.select --index 1
 
 step "enter → nvim (no herdr-nvim): a new nvim right of the diff pane"
 do_ gitview.click:src/main.rs
+expect 'pane_on $TAB src/main.rs' "src/main.rs in the diff pane"
 do_ gitview-diff.key:G
 do_ gitview-diff.key:k
 do_ gitview-diff.key:enter
@@ -438,7 +443,7 @@ printf 'two\n' >"$L/only.txt"
 LTAB=$("$APP" do space.new --name last --folder "$L" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
 expect panel_up "the panel shows the one-file repo" 20
 do_ gitview.click:only.txt
-expect '[ "$(view_of $LTAB path)" = only.txt ]' "only.txt in the pane"
+expect 'pane_on $LTAB only.txt' "only.txt in the pane"
 do_ gitview-diff.key:x
 confirm_discard gitview-diff
 expect '[ -z "$(git -C "$L" status --short)" ]' "it's discarded"
