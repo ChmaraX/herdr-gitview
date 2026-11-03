@@ -27,6 +27,7 @@ LOG="$ART/run.log"
 # --- a private instance --------------------------------------------------------
 BASE="$(mktemp -d /tmp/gve.XXXX)"
 for v in $(env | grep -oE '^(HERDR_[A-Z_]+|HC_[A-Z_]+)=' | tr -d =); do unset "$v"; done
+unset VISUAL EDITOR # Enter's editor is the engine's pick from the config, then nvim
 [ -z "${HERDR_APP_BIN_E2E:-}" ] || HERDR_APP_BIN="$HERDR_APP_BIN_E2E"
 export HERDR_APP_HOME="$BASE/home" HC_SESSION="gve$(printf %s "${BASE: -4}" | tr A-Z a-z)$$" XDG_STATE_HOME="$BASE/state"
 export XDG_CONFIG_HOME="$BASE/config" XDG_DATA_HOME="$BASE/data" HERDR_APP_NO_SOUND=1 HERDR_TELEMETRY=0 DO_NOT_TRACK=1

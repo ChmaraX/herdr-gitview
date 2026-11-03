@@ -361,6 +361,24 @@ do_ gitview.click:src/app/a.rs
 expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "the next file click opens the diff pane again"
 rm -rf "$STAND"
 
+step "enter → the editor the engine picks: config.toml's editor (a vim), started with +line file"
+ED="$BASE/edrepo"
+mkdir -p "$ED" && git -C "$ED" init -q -b main && printf 'one\ntwo\nthree\n' >"$ED/e.txt"
+git -C "$ED" -c user.email=e2e@test -c user.name=e2e add -A && git -C "$ED" -c user.email=e2e@test -c user.name=e2e commit -qm init
+printf 'one\ntwo\nthree, changed\n' >"$ED/e.txt"
+FAKE="$BASE/fakebin" && mkdir -p "$FAKE"
+printf '#!/bin/sh\necho "$@" >>"%s/vim.args"\n' "$BASE" >"$FAKE/vim" && chmod +x "$FAKE/vim"
+GVCONF="$XDG_CONFIG_HOME/herdr/plugins/config/chmarax.gitview"
+mkdir -p "$GVCONF" && printf 'editor = ["%s/vim"]\n' "$FAKE" >"$GVCONF/config.toml"
+ETAB=$("$APP" do space.new --name ed --folder "$ED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+expect panel_up "the panel shows the editor repo" 20
+expect '"$APP" do gitview.file:e.txt >/dev/null && pane_on $ETAB e.txt' "e.txt in the diff pane" 15
+do_ gitview-diff.key:enter
+expect '[ -s "$BASE/vim.args" ]' "enter starts the config's editor"
+grep -qx "+3 $(cd "$ED" && pwd -P)/e.txt\|+3 $ED/e.txt" "$BASE/vim.args" && ok "with +3 and the file (a vim kind gets the line)" || fail "the editor got: $(cat "$BASE/vim.args")"
+rm -f "$GVCONF/config.toml"
+do_ space.select --index 1
+
 # Keys need the window drawn: macOS doesn't draw a covered window, and a mod
 # takes the keyboard only when drawn. Covered (your windows in front; it's
 # never raised), the keys' checks are skipped and their commands run
