@@ -325,11 +325,19 @@ Spaces on other machines work the same way.
   that wasn't waiting on `nextCommand()` when a command came never got
   another (herdr-app 0.1.12): one task only takes commands and queues them;
   another runs them.
-- A load whose task never comes back (seen once around herdr-nvim's `open`:
-  no process left, the promise never settled) would hold commands and the
-  refresh; after 35 s (above exec's own 30 s, so a slow load is never taken
-  as lost) it no longer counts, the log names it, and a reply that comes
-  after a newer status load started is dropped.
+- herdr-app 0.1.12 can drop an exec that one copy is waiting on when a mod
+  pane closes (seen every time the diff pane closed for herdr-nvim's nvim
+  while the list's `status` ran: the program ended in 150 ms, the promise
+  never settled, and commands waited for it). Both mods watch the mod
+  panes (`modkit.js` `ModPanes`); when one goes, every load running is
+  taken as lost and each `latest` load runs again (`Loads.revive`). A
+  load that never comes back otherwise stops counting after 35 s (above
+  exec's own 30 s), the log names it, and a reply that comes after a newer
+  status load started is dropped.
+- With two copies waiting on `watchFolder` for the same folder, only the
+  newest wakes (herdr-app 0.1.12): the list's local watch goes quiet while
+  a diff pane watches the same repo, and the list leans on the pane's
+  `gitview.dirty`, its 10 s timer and its other looks.
 - A hidden copy (the panel's list while the panel is hidden) and every copy
   in a covered window aren't drawn, so `render()` can't notice the panel
   hiding or a change from the pane: the list also looks from a 300 ms timer
