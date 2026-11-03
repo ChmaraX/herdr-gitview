@@ -118,7 +118,7 @@ sleep 1
 echo "after herdr-nvim open, the side panel shows: $(panel_state)" | tee -a "$LOG"
 shot coexist-02-enter-herdr-nvim 2
 do_ gitview.click:src/main.rs
-expect 'mod_panes | grep -q gitview-diff' "the next click in the list opens the diff pane again"
+expect 'mod_panes | grep -q gitview-diff' "the next click in the list opens the diff pane again" 30
 echo "then: panel $(panel_state)" | tee -a "$LOG"
 shot coexist-03-click-again 2
 

@@ -85,7 +85,7 @@ cleanup() {
   for s in "$BASE"/nvrun/app/*.sock; do
     [ -S "$s" ] && nvim --headless --server "$s" --remote-send '<cmd>qa!<cr>' >/dev/null 2>&1
   done
-  cp "$GV_LOG" "$ART/gitview-debug.log" 2>/dev/null
+  cp "$GV_LOG" "$ART/gitview-debug.log" 2>/dev/null; cp "$BASE/app.log" "$ART/app.log" 2>/dev/null
   rm -rf "$BASE"
   echo "artifacts: $ART"
 }
