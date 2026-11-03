@@ -58,7 +58,18 @@ export default class GitviewTab extends View {
       if (!tab) throw new Error("the gitview tab didn't open");
       setOwnTab(space.id, tab);
       const props = JSON.stringify({ cwd, on, space: space.id, tab, own: true });
-      const { pane } = await gv(["sidebar", "--tab", tab, "--mod", "gitview", "--percent", String(LIST_PERCENT), "--props", props]);
+      // Right after it shows up, the window may not have the tab's panes
+      // yet ("no pane …"): again for a few seconds.
+      let pane = null;
+      for (let i = 0; ; i++) {
+        try {
+          ({ pane } = await gv(["sidebar", "--tab", tab, "--mod", "gitview", "--percent", String(LIST_PERCENT), "--props", props]));
+          break;
+        } catch (e) {
+          if (i >= 10 || !/no pane/.test(String(e?.message ?? e))) throw e;
+          await cx.sleep(500);
+        }
+      }
       run("pane.focus", { pane });
     });
   }
