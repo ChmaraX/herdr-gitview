@@ -210,10 +210,24 @@ Spaces on other machines work the same way.
   paste mode, …; use shift+enter to send") and nothing is typed.
   Shift/ctrl/cmd+enter submits them. Sent notes leave the list; notes are
   kept per machine and repo until sent or deleted, across restarts.
+- **One focus.** The list takes the keyboard the way the app moves its own
+  focus onto a layout block (`pane.go right` from the pane beside it), so
+  the app's focus ring leaves the diff pane; the list draws its frame in
+  `accent` only then. One thing looks focused at a time.
+- **The editor is part of gitview** (as v1): quitting it (`:q`, `ZZ`)
+  comes back to the refreshed diff with the keys on the list.
 - **cmd-shift-g** shows the panel on gitview (and gives it the keyboard), or
-  hides it when it already shows gitview. When the person hides it
-  (cmd-shift-g, the Changes or Files button) the diff panes it opened in
-  the shown space's tabs close with it (not in cmd-g's tabs); going to a
+  hides it when it already shows gitview; while one of gitview's questions
+  is open (a discard's confirm, unsaved changes) it waits. When the person
+  hides it (cmd-shift-g, the Changes or Files button) the whole unit in the
+  shown space's tabs closes with it (not in cmd-g's tabs): the diff panes,
+  the herdr-nvim pane gitview handed a file to (its daemon keeps buffers,
+  unsaved edits and cursor; shown again, that file's diff comes back, the
+  keys on the list), and an editor gitview started (a clean nvim quits;
+  with unsaved changes a dialog asks "Save them?": Save `:wqa`, Discard
+  `:qa!`, Cancel brings the panel back and the editor stays; another editor
+  stays open and says so). A herdr-nvim pane the person opened stays.
+  Closing cmd-g's tab closes its editor the same way; going to a
   space whose panel is closed isn't a hide (the tab bar puts each space's
   panel back), so the diff is there when you come back; when it shows again, its selected (else first) file opens
   in the shown tab's diff pane, from a fresh status, unless the tab already
@@ -286,6 +300,14 @@ Spaces on other machines work the same way.
   no mod; the newest 50 files and 50 MB are kept) and are drawn with
   `image("mods/gitview-diff/.cache/<name>")`, a path relative to the app
   home, as Herdr's own mods draw theirs.
+- **mods/gitview-ask**: a question dialog whose buttons do their own steps
+  (exec a program, run a command, a toast): the list asking may be hidden by
+  then, and hidden copies get no commands; Esc is the last button (Cancel).
+- `editors.js` (shared): the editors gitview started, per tab, in shared
+  `gitview.editors` (terminal, kind, the nvim and its socket); a local nvim
+  also listens on a socket of gitview's (`--cmd serverstart(…)`, under
+  `<app home>/data/gitview/`), keeping its own for the engine to find, so
+  it can be asked for unsaved buffers and told to quit.
 - **mods/gitview-keys**: the keys card, a dialog with props `{title,
   groups}` made from the key tables; `gitview.keys` in shared state while
   it's open (the mods' `?` closes it then).
@@ -424,8 +446,15 @@ Spaces on other machines work the same way.
   input without submitting and leaves the clipboard as it was; into a
   program without bracketed paste it says why and types nothing;
   shift+enter submits. A note can't be written on a commit's diff.
+- One focus shows after every e2e step (`focus_check`).
+- Without herdr-nvim, hiding the panel quits a clean nvim; with unsaved
+  changes it asks, Discard quits without saving, Cancel brings the panel
+  back with the editor open; cmd-shift-g waits while a confirm is open.
+- With herdr-nvim, cmd-shift-g closes nvim's pane with the unit while its
+  daemon keeps an unsaved edit, and again shows that file's diff with the
+  keys on the list.
 - With herdr-nvim, quitting nvim brings the diff pane back on the file with
-  the keyboard; a click on the row does too, closing nvim's pane while
+  the keys on the list; a click on the row does too, closing nvim's pane while
   nvim keeps the buffer and an unsaved edit; after leaving the tab, nothing
   comes back.
 - Enter opens nvim at the line (one nvim, reused); with config.toml's
