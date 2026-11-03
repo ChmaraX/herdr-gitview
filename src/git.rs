@@ -521,6 +521,15 @@ impl Repo {
         self.worktree_entries(&raw?, &numstats?)
     }
 
+    /// [`Repo::worktree_status`]'s entries without their line counts (no
+    /// numstat, no untracked file read): one git call, for what only needs
+    /// the paths, kinds and stages.
+    pub fn status_entries(&self, show_untracked: bool) -> Result<Vec<FileEntry>> {
+        let mut entries = parse_porcelain_v2(&self.status_raw(show_untracked, false)?)?;
+        sort_entries(&mut entries);
+        Ok(entries)
+    }
+
     /// The unstaged and the staged `diff --numstat`, started now so they run
     /// beside the status; see [`finish_numstats`].
     fn start_numstats(

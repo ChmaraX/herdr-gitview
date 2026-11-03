@@ -707,7 +707,7 @@ fn change_index(a: &Args, op: IndexOp) -> Result<Value> {
         IndexOp::Unstage => Section::Staged,
     });
     let cfg = config();
-    let entries = repo.worktree_status(cfg.show_untracked)?;
+    let entries = repo.status_entries(cfg.show_untracked)?;
     let mut others: Vec<PathBuf> = Vec::new();
     let found = resolve(
         &entries,
@@ -745,7 +745,7 @@ fn discard(a: &Args) -> Result<Value> {
     let raws = a.paths()?;
     let section = a.section()?;
     let cfg = config();
-    let entries = repo.worktree_status(cfg.show_untracked)?;
+    let entries = repo.status_entries(cfg.show_untracked)?;
     let holds = |e: &FileEntry| match section {
         Some(s) => s.holds(e),
         None => Section::Changes.holds(e) || Section::Staged.holds(e),
