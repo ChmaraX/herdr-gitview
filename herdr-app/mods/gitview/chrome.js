@@ -117,9 +117,39 @@ export function subHeader(t, h) {
     .when(Boolean(h.onSend), (e) => e.child(iconButton(t, "gitview-send", "send", "Send to an agent (p)", h.onSend)));
 }
 
-// The diff pane's: the file, its change, the scope tag, ×. `view` null:
+// Diff | Preview, the shown one raised; `onPick(preview, cx)`; `compact`:
+// icons (diff, eye) instead of the words.
+function segmented(t, preview, onPick, compact) {
+  const seg = (label, on, value) =>
+    div()
+      .id(`gitview-show-${label.toLowerCase()}`)
+      .px(compact ? 4 : 7)
+      .h(20)
+      .flex()
+      .items_center()
+      .rounded(5)
+      .text_size(11)
+      .cursor_pointer()
+      .when(on, (e) => e.bg(t.raised).text_color(t.foreground))
+      .when(!on, (e) => e.text_color(t.muted).hover((s) => s.text_color(t.foreground)))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => onPick(value, cx));
+  return h_flex()
+    .flex_none()
+    .p(1)
+    .gap(1)
+    .rounded(6)
+    .border_1()
+    .border_color(t.border)
+    .tooltip("Diff or Preview (m)")
+    .child(seg("Diff", !preview, false).child(compact ? icon("diff", 13, !preview ? t.foreground : t.muted) : "Diff"))
+    .child(seg("Preview", preview, true).child(compact ? icon("eye", 13, preview ? t.foreground : t.muted) : "Preview"));
+}
+
+// The diff pane's: the file, its change, the scope tag, Diff | Preview
+// for a file that previews (`rich`: {preview, onPick, compact}), ×. `view` null:
 // "Diff". `onClose` null hides ×.
-export function diffHeader(t, view, { loading, onClose }) {
+export function diffHeader(t, view, { loading, onClose, rich }) {
   return bar(t)
     .when(!view, (e) => e.child(div().flex_1().font_semibold().text_color(t.muted).child("Diff")))
     .when(Boolean(view), (e) =>
@@ -130,6 +160,7 @@ export function diffHeader(t, view, { loading, onClose }) {
         .when(view.del > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi1).child(`−${view.del}`)))
         .child(pill(t, view.scope)),
     )
+    .when(Boolean(view && rich), (e) => e.child(segmented(t, rich.preview, rich.onPick, rich.compact)))
     .when(loading, (e) => e.child(spinner(t)))
     .when(Boolean(onClose), (e) => e.child(iconButton(t, "gitview-diff-close", "x", "Close the diff", onClose)));
 }
@@ -178,17 +209,89 @@ export function commitBox(t, state, typing, staged, busy, onCommit) {
     );
 }
 
-// The key hints, or a message (`flash`) for a moment.
-export function footer(t, flash, hint) {
+// ---- keys ---------------------------------------------------------------------
+
+const SYMBOL = {
+  enter: "⏎", escape: "esc", tab: "⇥", up: "↑", down: "↓", left: "←", right: "→",
+  space: "␣", pageup: "PgUp", pagedown: "PgDn", home: "Home", end: "End",
+};
+export const capText = (k) => SYMBOL[k] ?? k;
+const MONO = "JetBrains Mono";
+// Letters in the mono font; the symbols (⏎ ↑ ←) read better in the UI's.
+const symbolic = (k) => k.length > 1 && capText(k).length === 1;
+
+// One key as a keycap: a small rounded box, the key in the mono font.
+export function keycap(t, k, { size = 10.5 } = {}) {
   return div()
-    .h(26)
+    .flex_none()
+    .min_w(16)
+    .h(16)
+    .px(4)
+    .flex()
+    .items_center()
+    .justify_center()
+    .rounded(4)
+    .border_1()
+    .border_color(t.border)
+    .bg(t.raised)
+    .when(!symbolic(k), (e) => e.font_family(MONO))
+    .text_size(symbolic(k) ? size + 1 : size)
+    .text_color(t.foreground)
+    .child(capText(k));
+}
+
+// A key table entry's keycaps then its label.
+export function keyChip(t, entry) {
+  return h_flex()
+    .flex_none()
+    .gap(4)
+    .items_center()
+    .child(h_flex().flex_none().gap(2).children(entry.caps.map((k) => keycap(t, k))))
+    .child(div().flex_none().text_size(11).text_color(t.dim).child(entry.label));
+}
+
+// About how wide a chip draws (mono ~6.4 px, labels ~6 px a character).
+const chipWidth = (e) => e.caps.reduce((w, k) => w + Math.max(16, capText(k).length * 6.4 + 10) + 2, 0) + 4 + e.label.length * 6;
+
+// The footer: a message (`flash`) for a moment, else the most useful keys
+// of the view as keycaps, as many as fit `width`; always a `?` keycap at the
+// right edge that opens every key (`onKeys(cx)`).
+export function footer(t, { flash, chips = [], width = 0, onKeys, id = "gitview-keys-button" }) {
+  let room = (width || 300) - 28 - 30;
+  const shown = [];
+  for (const c of chips) {
+    const w = chipWidth(c) + 12;
+    if (w > room) break;
+    room -= w;
+    shown.push(c);
+  }
+  return h_flex()
+    .h(28)
     .flex_none()
     .px(14)
-    .flex()
+    .gap(12)
     .items_center()
     .border_t(1)
     .border_color(t.border)
     .text_size(11)
-    .text_color(flash ? t.blocked : t.dim)
-    .child(div().min_w(0).truncate().child(flash ?? hint));
+    .child(
+      flash
+        ? div().flex_1().min_w(0).truncate().text_color(t.blocked).child(flash)
+        : h_flex().flex_1().min_w(0).gap(12).overflow_hidden().children(shown.map((c) => keyChip(t, c))),
+    )
+    .child(
+      div()
+        .id(id)
+        .flex_none()
+        .cursor_pointer()
+        .rounded(4)
+        .hover((s) => s.bg(t.hover))
+        .tooltip("All keys (?)")
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          onKeys?.(cx);
+        })
+        .child(keycap(t, "?")),
+    );
 }

@@ -163,6 +163,7 @@ export function commandLoop(cx, { loads, before, handle, flash, name }) {
 export function keyName(e) {
   const m = e.modifiers ?? {};
   if (m.platform || m.control || m.alt) return null;
+  if (m.shift && e.key === "/") return "?";
   return m.shift && /^[a-z]$/.test(e.key) ? e.key.toUpperCase() : e.key;
 }
 

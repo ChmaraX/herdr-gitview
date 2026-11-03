@@ -11,7 +11,9 @@
 //   (the list's file order, for J/K) and `line` (a note to jump to);
 //   `{empty: true, seq, showing}` when there's nothing to show.
 // - "gitview.cursor": {<tab>: {root, on, path, section, commit, line, row,
-//   first}}: where the pane's cursor is (the list's Enter opens nvim there).
+//   first, preview}}: where the pane's cursor is (the list's Enter opens
+//   nvim there); `preview`: the pane shows the file's Preview.
+// - "gitview.keys": {overlay}: the keys card is open (keymap.js).
 // - "gitview.notes": {"<machine or ''>:<repo root>": [note]}: review notes,
 //   kept until sent. A note is {id, file, section, cached, start, end,
 //   text, snippet}; `cached`: written on the staged diff.

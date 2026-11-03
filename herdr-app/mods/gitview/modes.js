@@ -1,6 +1,7 @@
-// The list's views, one entry each: which file list it acts on, what
-// entering it does, its header, body, the commit row under it, its keys and
-// its key hints. The view looks its mode up here instead of asking "which
+// The list's views, one entry each: its title, which file list it acts
+// on, what entering it does, its header, body, the commit row under it and
+// its key table (keymap.js: the keys, the footer's keycaps and the keys
+// card). The view looks its mode up here instead of asking "which
 // mode?" everywhere; only the list's setMode() changes the mode, and it
 // runs the entry's `enter(v, cx, how)`.
 //   files: the changed files · commit: one commit's files (from history)
@@ -36,13 +37,13 @@ function filesBody(v, t, focused, list) {
 
 export const MODES = {
   files: {
+    title: "Changes",
     list: (v) => v.work,
     // s/u/x, the commit row and following the repo act on it.
     actsOnWork: true,
     // `row`: show that one (a note's file, `line`: the note); else the diff
     // pane goes back from a commit's file to the list's.
     enter: (v, cx, { row, line } = {}) => (row ? v.select(row, cx, { line }) : v.reshowWork(cx)),
-    hints: "j/k · enter nvim · s/u/x stage/unstage/discard · t tree · l log · n notes · p send · c commit · w scope",
     header: (v, t, notes) => filesHeader(t, {
       status: v.work?.status,
       files: v.work?.files() ?? 0,
@@ -58,22 +59,23 @@ export const MODES = {
     under: (v, t) => (v.scope === "worktree" && v.work
       ? commitBox(t, v.commitInput, v.typing, v.work.status.sections.some((s) => s.id === "staged"), v.committing, (cx) => v.commit(cx))
       : null),
-    keys: {
-      j: down, down, k: up, up,
-      enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx),
-      h: (v, cx) => v.fold(true, cx), left: (v, cx) => v.fold(true, cx), right: (v, cx) => v.fold(false, cx),
-      s: (v, cx) => v.rowAction("stage", null, cx),
-      u: (v, cx) => v.rowAction("unstage", null, cx),
-      x: (v, cx) => v.rowAction("discard", null, cx),
-      c: (v) => v.commitInput.focus(),
-      w: (v, cx) => v.toggleScope(cx),
-      t: (v, cx) => v.toggleTree(cx),
-      l: (v, cx) => openLog(v, cx),
-      n: back("notes"),
-      g: (v, cx) => v.edge(false, cx), G: (v, cx) => v.edge(true, cx),
-    },
+    keys: [
+      { caps: ["j", "k"], label: "move", on: { j: down, down, k: up, up } },
+      { caps: ["s"], label: "stage", rank: 1, on: { s: (v, cx) => v.rowAction("stage", null, cx) } },
+      { caps: ["u"], label: "unstage", rank: 2, on: { u: (v, cx) => v.rowAction("unstage", null, cx) } },
+      { caps: ["enter"], label: "nvim", rank: 3, on: { enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx) } },
+      { caps: ["x"], label: "discard", rank: 4, on: { x: (v, cx) => v.rowAction("discard", null, cx) } },
+      { caps: ["c"], label: "commit", rank: 5, on: { c: (v) => v.commitInput.focus() } },
+      { caps: ["l"], label: "history", rank: 6, on: { l: (v, cx) => openLog(v, cx) } },
+      { caps: ["t"], label: "tree", rank: 7, on: { t: (v, cx) => v.toggleTree(cx) } },
+      { caps: ["n"], label: "notes", rank: 8, on: { n: back("notes") } },
+      { caps: ["w"], label: "uncommitted / vs base", on: { w: (v, cx) => v.toggleScope(cx) } },
+      { caps: ["h", "right"], label: "fold / unfold a folder", on: { h: (v, cx) => v.fold(true, cx), left: (v, cx) => v.fold(true, cx), right: (v, cx) => v.fold(false, cx) } },
+      { caps: ["g", "G"], label: "first / last", on: { g: (v, cx) => v.edge(false, cx), G: (v, cx) => v.edge(true, cx) } },
+    ],
   },
   commit: {
+    title: "A commit's files",
     list: (v) => v.commitFiles,
     // `list`: the commit's files; the first one shows.
     enter: (v, cx, { list } = {}) => {
@@ -83,28 +85,27 @@ export const MODES = {
       const first = list.shownFile();
       if (first) v.select(first, cx);
     },
-    hints: "j/k · enter nvim · t tree · esc back",
     header: (v, t) => {
       const c = v.commitFiles;
       const n = c?.files() ?? 0;
       return subHeader(t, { title: c?.where.short ?? "", detail: c?.where.subject, pill: `${n} file${n === 1 ? "" : "s"}`, onBack: (cx) => { v.setMode("log", cx); cx.notify(); } });
     },
     body: (v, t, focused) => filesBody(v, t, focused, v.commitFiles),
-    keys: {
-      j: down, down, k: up, up,
-      enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx),
-      t: (v, cx) => v.toggleTree(cx),
-      escape: back("log"), h: back("log"), left: back("log"),
-    },
+    keys: [
+      { caps: ["j", "k"], label: "move", on: { j: down, down, k: up, up } },
+      { caps: ["enter"], label: "nvim", rank: 1, on: { enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx) } },
+      { caps: ["t"], label: "tree", rank: 2, on: { t: (v, cx) => v.toggleTree(cx) } },
+      { caps: ["escape"], label: "back", rank: 3, on: { escape: back("log"), h: back("log"), left: back("log") } },
+    ],
   },
   log: {
+    title: "History",
     list: () => null,
     // `history`: a fresh one (`l`); loaded when it has no commits yet.
     enter: (v, cx, { history } = {}) => {
       if (history) v.history = history;
       if (!v.history.commits.length) loadLog(v, cx);
     },
-    hints: "j/k · enter files · w branch/all · esc back",
     header: (v, t) => subHeader(t, {
       title: "History",
       detail: v.history.filter ? `since ${v.work?.where.base?.label ?? "the base"}` : v.work?.status.branch ?? "",
@@ -120,17 +121,17 @@ export const MODES = {
       const ctx = { t, selected: v.history.selected, focused, onClick: (i, cx) => { v.handle.focus(); v.history.selected = i; openCommit(v, commits[i], cx); cx.notify(); } };
       return v.scroll.view(t, (i) => (i === 0 || i > commits.length ? div().h(6) : commitRow(commits[i - 1], i - 1, ctx)));
     },
-    keys: {
-      j: (v) => logMove(v, 1), down: (v) => logMove(v, 1), k: (v) => logMove(v, -1), up: (v) => logMove(v, -1),
-      enter: (v, cx) => openCommit(v, v.history.current(), cx), right: (v, cx) => openCommit(v, v.history.current(), cx),
-      w: (v, cx) => toggleLogFilter(v, cx),
-      escape: back("files"), h: back("files"), left: back("files"), l: back("files"),
-    },
+    keys: [
+      { caps: ["j", "k"], label: "move", on: { j: (v) => logMove(v, 1), down: (v) => logMove(v, 1), k: (v) => logMove(v, -1), up: (v) => logMove(v, -1) } },
+      { caps: ["enter"], label: "files", rank: 1, on: { enter: (v, cx) => openCommit(v, v.history.current(), cx), right: (v, cx) => openCommit(v, v.history.current(), cx) } },
+      { caps: ["w"], label: "branch / all", rank: 2, on: { w: (v, cx) => toggleLogFilter(v, cx) } },
+      { caps: ["escape"], label: "back", rank: 3, on: { escape: back("files"), h: back("files"), left: back("files"), l: back("files") } },
+    ],
   },
   notes: {
+    title: "Notes",
     list: () => null,
     enter: (v) => { v.noteSel = Math.min(v.noteSel, Math.max(0, v.notes().length - 1)); },
-    hints: "j/k · enter go · d delete · p send · esc back",
     header: (v, t, notes) => subHeader(t, {
       title: "Notes",
       detail: v.work?.where.root?.split("/").pop(),
@@ -150,11 +151,11 @@ export const MODES = {
       };
       return v.scroll.view(t, (i) => (i === 0 || i > notes.length ? div().h(6) : noteRow(notes[i - 1], i - 1, ctx)));
     },
-    keys: {
-      j: (v) => noteMove(v, 1), down: (v) => noteMove(v, 1), k: (v) => noteMove(v, -1), up: (v) => noteMove(v, -1),
-      enter: (v, cx) => jumpToNote(v, v.notes()[v.noteSel], cx),
-      d: (v) => deleteNote(v, v.notes()[v.noteSel]), x: (v) => deleteNote(v, v.notes()[v.noteSel]),
-      escape: back("files"), h: back("files"), left: back("files"), n: back("files"),
-    },
+    keys: [
+      { caps: ["j", "k"], label: "move", on: { j: (v) => noteMove(v, 1), down: (v) => noteMove(v, 1), k: (v) => noteMove(v, -1), up: (v) => noteMove(v, -1) } },
+      { caps: ["enter"], label: "go to it", rank: 1, on: { enter: (v, cx) => jumpToNote(v, v.notes()[v.noteSel], cx) } },
+      { caps: ["d"], label: "delete", rank: 2, on: { d: (v) => deleteNote(v, v.notes()[v.noteSel]), x: (v) => deleteNote(v, v.notes()[v.noteSel]) } },
+      { caps: ["escape"], label: "back", rank: 4, on: { escape: back("files"), h: back("files"), left: back("files"), n: back("files") } },
+    ],
   },
 };

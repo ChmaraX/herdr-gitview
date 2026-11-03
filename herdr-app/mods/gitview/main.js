@@ -27,7 +27,7 @@ import { History } from "./history.js";
 import { openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
 import { footer } from "./chrome.js";
-import { handleKey, runCommand } from "./keys.js";
+import { chipsFor, handleKey, runCommand, showKeys } from "./keys.js";
 import { MODES } from "./modes.js";
 
 // exec gives up on a program after 30 s: a commit that took that long may
@@ -487,6 +487,6 @@ export default class GitList extends View {
       .child(mode.header(this, t, notes))
       .child(mode.body(this, t, focused, notes))
       .children([mode.under?.(this, t)].filter(Boolean))
-      .child(footer(t, this.flash.text, mode.hints));
+      .child(footer(t, { flash: this.flash.text, chips: chipsFor(this), width: this.width, onKeys: () => showKeys(this) }));
   }
 }

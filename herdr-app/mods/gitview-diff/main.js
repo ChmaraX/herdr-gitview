@@ -5,11 +5,12 @@
 // list put in shared "gitview.views"[tab] (shared.js): the diff as gitview's
 // TUI draws it, with review notes under their lines.
 //
-// Keys: j/k (arrows, wheel, click) move the cursor; v or a drag selects; a
-// writes a note on the selection (enter saves, esc cancels); enter opens
-// nvim at the cursor (on a fold: unfolds); s/u/x stage, unstage, discard the
-// file; J/K next/previous file of the list; p sends the notes; esc clears.
-// Commands: `gitview-diff.key:<key>`, `gitview-diff.note:<text>`,
+// Keys (KEYS below; `?` shows them all): j/k (arrows, wheel, click) move
+// the cursor; v or a drag selects; a writes a note on the selection (enter
+// saves, esc cancels); enter opens nvim at the cursor (on a fold: unfolds);
+// s/u/x stage, unstage, discard the file; J/K next/previous file of the
+// list; m Diff or Preview (markdown, images, SVGs: preview.js); p sends the
+// notes; esc clears. Commands: `gitview-diff.key:<key>`, `gitview-diff.note:<text>`,
 // `gitview-diff.drag:<line>:<line>`, `gitview-diff.close`.
 
 import { View, div } from "gpui-kit";
@@ -26,10 +27,36 @@ import { panePlacement } from "./placement.js";
 import { openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
 import { diffHeader, footer } from "./chrome.js";
+import { actionFor, chipsOf, toggleKeys } from "./keymap.js";
+import { loadPreview, previewBody, previewKind } from "./preview.js";
 import * as diffs from "./diffview.js";
 
 const EMPTY = { rows: [] };
-const HINTS = "j/k · v or drag select · a note · enter nvim · s/u/x · J/K file · p send · esc";
+
+// Keys that act on the diff's lines: in Preview they say so instead.
+const inDiff = (run) => (v, cx) => (v.inPreview() ? v.flash.set("that works in Diff: m switches") : run(v, cx));
+const diffShown = (v) => !v.inPreview();
+
+// The pane's keys (keymap.js): the handling, the footer's keycaps and the
+// keys card.
+const KEYS = [
+  { caps: ["j", "k"], label: "move", on: { j: inDiff((v) => v.line(1)), down: inDiff((v) => v.line(1)), k: inDiff((v) => v.line(-1)), up: inDiff((v) => v.line(-1)) } },
+  { caps: ["pageup", "pagedown"], label: "a page", on: { pagedown: inDiff((v) => v.line(v.page())), space: inDiff((v) => v.line(v.page())), pageup: inDiff((v) => v.line(-v.page())) } },
+  { caps: ["g", "G"], label: "top / bottom", on: { g: inDiff((v) => v.line(-Infinity)), home: inDiff((v) => v.line(-Infinity)), G: inDiff((v) => v.line(Infinity)), end: inDiff((v) => v.line(Infinity)) } },
+  { caps: ["s"], label: "stage", rank: 1, on: { s: (v, cx) => v.act("stage", cx) } },
+  { caps: ["u"], label: "unstage", rank: 2, on: { u: (v, cx) => v.act("unstage", cx) } },
+  { caps: ["m"], label: "diff / preview", rank: 3, when: (v) => Boolean(previewKind(v.view)), on: { m: (v, cx) => v.togglePreview(cx) } },
+  { caps: ["v"], label: "select", rank: 4, when: diffShown, on: { v: inDiff((v) => { v.anchor = v.anchor === null ? v.cursor : null; }) } },
+  { caps: ["a"], label: "note", rank: 5, when: diffShown, on: { a: inDiff((v) => v.annotate()) } },
+  { caps: ["enter"], label: "nvim", rank: 6, on: { enter: (v, cx) => v.enterKey(cx), e: (v) => v.edit() } },
+  { caps: ["J", "K"], label: "next / previous file", rank: 7, on: { J: (v) => v.nextFile(1), K: (v) => v.nextFile(-1) } },
+  { caps: ["x"], label: "discard", rank: 8, on: { x: (v, cx) => v.act("discard", cx) } },
+  { caps: ["p"], label: "send notes", rank: 9, on: { p: (v, cx) => v.send(cx) } },
+  { caps: ["r"], label: "reload", on: { r: (v, cx) => v.reload(cx) } },
+  { caps: ["escape"], label: "clear the selection", on: { escape: (v) => { v.anchor = null; } } },
+  { caps: ["?"], label: "all keys", on: { "?": () => toggleKeys("gitview: the diff pane", [{ title: "Diff pane", table: KEYS }]) } },
+];
+const NOTE_KEYS = [{ caps: ["enter"], label: "save the note", rank: 1, on: {} }, { caps: ["escape"], label: "cancel", rank: 2, on: {} }];
 
 // Notes are written on staged or unstaged changes, as the TUI's: the side
 // (cached or not) of a view that takes them, null for a commit's or the
@@ -51,6 +78,10 @@ export default class GitDiff extends View {
     this.anchor = null;
     this.dragging = false;
     this.unfold = false;
+    this.width = 0;
+    this.preview = null; // {view, kind, …} (preview.js), or {view, failed}
+    this.previewOff = new Set(); // kinds the person switched to Diff
+    this.cursorMoved = false; // the person moved the cursor in this file
     this.dark = isDark(theme().background);
     this.flash = new Flash(cx);
     this.loads = new Loads((m) => this.flash.set(m));
@@ -94,6 +125,8 @@ export default class GitDiff extends View {
     this.view = view;
     if (!same) {
       this.diff = EMPTY;
+      this.preview = null;
+      this.cursorMoved = false;
       this.anchor = null;
       this.unfold = false;
       this.pendingNote = null;
@@ -101,12 +134,58 @@ export default class GitDiff extends View {
     }
     if (!view) return;
     this.loadDiff(cx, { keep: same && !view.line, line: view.line });
+    if (this.wantsPreview()) this.loadPreview(cx);
     if (!view.on) watch(this.watcher, view.root, cx, (cx) => { if (onScreen(this.tab())) this.reload(cx); });
     else this.watcher.root = null; // a local repo's watch ends
   }
 
   reload(cx) {
-    if (this.view) this.loadDiff(cx, { keep: true });
+    if (!this.view) return;
+    this.loadDiff(cx, { keep: true });
+    if (this.wantsPreview()) this.loadPreview(cx);
+  }
+
+  // ---- preview ------------------------------------------------------------------
+
+  // The shown file previews, and the person didn't switch its kind to Diff.
+  wantsPreview() {
+    const kind = previewKind(this.view);
+    return Boolean(kind) && !this.previewOff.has(kind);
+  }
+
+  inPreview() {
+    return this.wantsPreview() && this.preview?.view === this.view && !this.preview.failed;
+  }
+
+  // What it can't show (too big, not there, a failed read) falls back to
+  // Diff, with the reason in the footer.
+  loadPreview(cx) {
+    this.loads.latest(cx, "preview", async () => {
+      const view = this.view;
+      if (!view) return;
+      try {
+        const p = await loadPreview(view);
+        if (this.view !== view) return;
+        this.preview = { ...p, view };
+        this.publishCursor();
+      } catch (e) {
+        if (this.view !== view) return;
+        this.preview = { view, failed: true };
+        this.flash.set(message(e));
+      }
+    });
+  }
+
+  // m, or the header's Diff | Preview: kept per kind of file while the
+  // pane lives (Diff on a markdown file keeps markdown files in Diff).
+  togglePreview(cx, preview = !this.inPreview()) {
+    const kind = previewKind(this.view);
+    if (!kind) return this.flash.set("no preview for this file (markdown, images, SVGs have one)");
+    if (preview) this.previewOff.delete(kind);
+    else this.previewOff.add(kind);
+    if (preview && this.preview?.view !== this.view) this.loadPreview(cx);
+    else if (preview && this.preview?.failed) this.flash.set("can't preview this one: the diff shows");
+    this.publishCursor();
   }
 
   // The shown view's diff, one load at a time: asked again meanwhile (the
@@ -150,15 +229,17 @@ export default class GitDiff extends View {
     return this.diff.first_change ?? 1;
   }
 
-  // Where the cursor is, for the list's Enter.
+  // Where the cursor is, for the list's Enter; `preview`: the pane shows
+  // the Preview (then Enter opens line 1 unless the cursor was moved).
   publishCursor() {
     const v = this.view;
     const tab = this.tab();
-    if (!v || !tab || !this.diff.rows.length) return;
-    const line = this.lineAt(this.cursor);
+    const preview = this.inPreview();
+    if (!v || !tab || (!this.diff.rows.length && !preview)) return;
+    const line = preview && !this.cursorMoved ? 1 : this.lineAt(this.cursor);
     const was = cursorIn(tab);
-    if (was && was.line === line && was.row === this.cursor && sameFile(was, v)) return;
-    setCursor(tab, { root: v.root, on: v.on, path: v.path, section: v.section, commit: v.commit, line, row: this.cursor, first: this.diff.first_change ?? 1 });
+    if (was && was.line === line && was.row === this.cursor && was.preview === preview && sameFile(was, v)) return;
+    setCursor(tab, { root: v.root, on: v.on, path: v.path, section: v.section, commit: v.commit, line, row: this.cursor, first: this.diff.first_change ?? 1, preview });
   }
 
   // ---- moving -------------------------------------------------------------------
@@ -166,6 +247,7 @@ export default class GitDiff extends View {
   line(delta) {
     const n = this.diff.rows.length;
     if (!n) return;
+    this.cursorMoved = true;
     this.cursor = Math.min(n - 1, Math.max(0, this.cursor + delta));
     this.pendingReveal = { row: this.cursor, margin: diffs.ROW * 2 };
     this.publishCursor();
@@ -183,11 +265,24 @@ export default class GitDiff extends View {
 
   // ---- actions --------------------------------------------------------------
 
-  edit() {
+  // The lines a page moves.
+  page() {
+    return Math.max(1, Math.floor((this.scroll.height || 360) / diffs.ROW) - 2);
+  }
+
+  // enter: on a fold unfolds it; else nvim (from Preview: at line 1, or
+  // where the cursor was moved to in Diff).
+  enterKey(cx) {
+    if (this.inPreview()) return this.edit(this.cursorMoved ? null : 1);
+    if (this.diff.rows[this.cursor]?.k === "fold") return this.unfoldAll(cx);
+    this.edit();
+  }
+
+  edit(line = null) {
     const v = this.view;
     if (!v) return;
     if (v.kind === "deleted") return this.flash.set(`${v.path} is deleted`);
-    openNvim({ root: v.root, on: v.on, path: v.path, line: this.lineAt(this.cursor), tab: this.tab(), space: this.space(), editor: v.editor, closeDiff: this.place.closesForHerdrNvim });
+    openNvim({ root: v.root, on: v.on, path: v.path, line: line ?? this.lineAt(this.cursor), tab: this.tab(), space: this.space(), editor: v.editor, closeDiff: this.place.closesForHerdrNvim });
   }
 
   // s / u / x on the shown file (x asks first).
@@ -241,6 +336,7 @@ export default class GitDiff extends View {
   annotate() {
     const v = this.view;
     if (!v) return;
+    if (this.inPreview()) return this.flash.set("notes work in Diff: m switches");
     if (v.commit || v.section === "branch") return this.flash.set("notes work on staged/unstaged changes only");
     const [a, b] = this.selection() ?? [this.cursor, this.cursor];
     const range = diffs.noteRange(this.diff, a, b);
@@ -280,22 +376,9 @@ export default class GitDiff extends View {
       this.handle.focus();
       return true;
     }
-    const page = Math.max(1, Math.floor((this.scroll.height || 360) / diffs.ROW) - 2);
-    const fold = this.diff.rows[this.cursor]?.k === "fold";
-    const KEYS = {
-      j: () => this.line(1), down: () => this.line(1), k: () => this.line(-1), up: () => this.line(-1),
-      pagedown: () => this.line(page), space: () => this.line(page), pageup: () => this.line(-page),
-      g: () => this.line(-Infinity), home: () => this.line(-Infinity), G: () => this.line(Infinity), end: () => this.line(Infinity),
-      v: () => { this.anchor = this.anchor === null ? this.cursor : null; },
-      a: () => this.annotate(),
-      enter: () => (fold ? this.unfoldAll(cx) : this.edit()), e: () => this.edit(),
-      s: () => this.act("stage", cx), u: () => this.act("unstage", cx), x: () => this.act("discard", cx),
-      J: () => this.nextFile(1), K: () => this.nextFile(-1),
-      p: () => this.send(cx), r: () => this.reload(cx),
-      escape: () => { this.anchor = null; },
-    };
-    if (!KEYS[k]) return false;
-    KEYS[k]();
+    const act = actionFor([KEYS], k);
+    if (!act) return false;
+    act(this, cx);
     return true;
   }
 
@@ -334,6 +417,7 @@ export default class GitDiff extends View {
     this.flash.clear();
     if (this.diff.rows[index]?.k === "fold") return this.unfoldAll(cx);
     this.cursor = index;
+    this.cursorMoved = true;
     if (e.click_count >= 2) {
       this.anchor = null;
       return this.edit();
@@ -392,7 +476,13 @@ export default class GitDiff extends View {
       onDeleteNote: (n, cx) => { removeNotes(key, [n.id]); cx.notify(); },
     };
     const display = this.display;
-    const body = this.view
+    const rich = Boolean(this.view && previewKind(this.view));
+    const preview = this.inPreview();
+    const body = preview
+      ? previewBody(this.preview, { t, uiFont: settings().ui_font ?? "Geist", narrow: this.width < 560 })
+      : this.view && this.wantsPreview() && this.preview?.view !== this.view
+        ? v_flex().flex_1().items_center().justify_center().text_color(t.dim).child("Loading the preview…")
+        : this.view
       ? div()
           .flex_1()
           .min_h(0)
@@ -418,14 +508,29 @@ export default class GitDiff extends View {
       .track_focus(this.handle)
       .on_mouse_down("left", (_e, cx) => { this.handle.focus(); cx.notify(); })
       .on_mouse_up("left", (_e, cx) => this.up(cx))
+      .on_size_change((size, cx) => {
+        if (size.width === this.width) return;
+        this.width = size.width;
+        cx.notify();
+      })
       .on_key_down((e, cx) => {
         if (!this.key(e, cx)) return;
         this.flash.clear();
         cx.stop_propagation();
         cx.notify();
       })
-      .child(diffHeader(t, this.view, { loading: this.loads.busy(), onClose: this.place.closeButton ? () => this.closePane() : null }))
+      .child(diffHeader(t, this.view, {
+        loading: this.loads.busy(),
+        onClose: this.place.closeButton ? () => this.closePane() : null,
+        rich: rich ? { preview, compact: this.width < 420, onPick: (on, cx) => { this.togglePreview(cx, on); cx.notify(); } } : null,
+      }))
       .child(body)
-      .child(footer(t, this.flash.text, this.pendingNote ? "enter saves the note · esc cancels" : HINTS));
+      .child(footer(t, {
+        flash: this.flash.text,
+        chips: chipsOf([this.pendingNote ? NOTE_KEYS : KEYS], this),
+        width: this.width,
+        onKeys: (cx) => { KEYS.at(-1).on["?"](this, cx); },
+        id: "gitview-diff-keys-button",
+      }));
   }
 }
