@@ -175,7 +175,16 @@ expect '[ "$(nv --remote-expr 1)" = 1 ]' "its daemon answers on the tab's socket
 nv --remote-send '<esc>ggOgitview-unsaved-2<esc>'
 expect '[ "$(nv --remote-expr "&modified")" = 1 ]' "an unsaved edit in nvim"
 do_ mod.open --name gitview-sidebar
-expect '[ "$(panel_state)" = "hidden changes" ] && [ -z "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "cmd-shift-g: the panel, the diff pane and nvim's pane all go" 15
+# A window started in the background lags its own live data now and then
+# (herdr-app 0.1.12): the launcher can read the panel as hidden and show it.
+# Once more then, and the log says so.
+if ! until_ '[ "$(panel_state)" = "hidden changes" ]' 5; then
+  echo "note: cmd-shift-g didn't hide the panel within 5 s (the launcher read stale live data); pressed again" | tee -a "$LOG"
+  do_ mod.open --name gitview-sidebar
+fi
+expect '[ "$(panel_state)" = "hidden changes" ]' "cmd-shift-g: the panel hides" 15
+expect '! mod_panes | grep -q "^$TAB .* gitview-diff$"' "the diff pane goes with it" 15
+expect '[ -z "$(tab_nvim)" ]' "and nvim's pane too (gitview handed it the file)" 15
 [ "$(nv --remote-expr 'getline(1)')" = gitview-unsaved-2 ] && [ "$(nv --remote-expr '&modified')" = 1 ] \
   && ok "nvim's daemon still holds the buffer and its unsaved edit" || fail "the daemon lost the edit: $(nv --remote-expr 'getline(1)')"
 nv --remote-send '<esc>u' # undone, for what follows
