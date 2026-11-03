@@ -12,14 +12,18 @@
 //! starts or drives its panes.
 
 use std::ffi::OsString;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
+use crate::deadline::output_within;
 use crate::logx::log;
+
+/// How long a call to `herdr-app` or herdr-core may take.
+const CALL_LIMIT: Duration = Duration::from_secs(10);
 
 pub use crate::remote::hc_bin;
 
@@ -50,12 +54,13 @@ impl App {
     /// `herdr-app <args>` → its JSON reply. An `{"error"}` reply or a failed
     /// exit is an error.
     fn call(&self, args: &[&str]) -> Result<Value> {
-        let out = Command::new(&self.bin)
-            .args(args)
-            .stdin(Stdio::null())
-            .env("HERDR_APP_HOME", &self.home)
-            .output()
-            .with_context(|| format!("cannot run {}", self.bin.to_string_lossy()))?;
+        let out = output_within(
+            Command::new(&self.bin)
+                .args(args)
+                .env("HERDR_APP_HOME", &self.home),
+            None,
+            CALL_LIMIT,
+        )?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
         log(format!(
@@ -98,22 +103,15 @@ impl App {
 
 /// One herdr-core API call over `hc connect` (JSON-RPC, one line each).
 pub fn hc_rpc(method: &str, params: Value) -> Result<Value> {
-    let bin = hc_bin();
-    let mut child = Command::new(&bin)
-        .arg("connect")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("spawning {} connect", bin.to_string_lossy()))?;
-    {
-        let mut stdin = child.stdin.take().context("hc connect stdin")?;
-        let hello =
-            json!({"jsonrpc": "2.0", "id": 1, "method": "hello", "params": {"generation": 1}});
-        let call = json!({"jsonrpc": "2.0", "id": 2, "method": method, "params": params});
-        writeln!(stdin, "{hello}\n{call}")?;
-    } // EOF ends the session once both are answered
-    let out = child.wait_with_output()?;
+    let hello = json!({"jsonrpc": "2.0", "id": 1, "method": "hello", "params": {"generation": 1}});
+    let call = json!({"jsonrpc": "2.0", "id": 2, "method": method, "params": params});
+    // The input's EOF ends the session once both are answered.
+    let input = format!("{hello}\n{call}\n");
+    let out = output_within(
+        Command::new(hc_bin()).arg("connect"),
+        Some(input.as_bytes()),
+        CALL_LIMIT,
+    )?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let reply = stdout
         .lines()
@@ -134,7 +132,11 @@ pub fn hc_rpc(method: &str, params: Value) -> Result<Value> {
 /// Run `hc <args> --json` and parse its reply.
 fn hc_json(args: &[&str]) -> Result<Value> {
     let bin = hc_bin();
-    let out = Command::new(&bin).args(args).arg("--json").output()?;
+    let out = output_within(
+        Command::new(&bin).args(args).arg("--json"),
+        None,
+        CALL_LIMIT,
+    )?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     log(format!(
         "hc {args:?} -> {} | {}{}",
@@ -155,8 +157,8 @@ fn hc_json(args: &[&str]) -> Result<Value> {
 // ---- terminals and nvim -----------------------------------------------------
 
 /// A terminal's full facts (`terminal.get`), live or finished.
-pub fn terminal(address: &str) -> Option<Value> {
-    hc_rpc("terminal.get", json!({ "terminal": address })).ok()
+pub fn terminal(address: &str) -> Result<Value> {
+    hc_rpc("terminal.get", json!({ "terminal": address }))
 }
 
 /// Live terminals carrying all `labels` (full facts).
@@ -257,7 +259,7 @@ pub fn open_in_running_nvim(
     if let Some(tab) = tab {
         candidates.extend(terminals_with(json!({ "herdr.tab": tab })));
     }
-    candidates.extend(shown.iter().filter_map(|t| terminal(t)));
+    candidates.extend(shown.iter().filter_map(|t| terminal(t).ok()));
     let nvim = find_nvim(candidates, &[])?;
     crate::nvim::edit_at("nvim", Some(&nvim.socket), file, line).then_some(nvim.pane_id)
 }
@@ -286,12 +288,18 @@ pub fn open_in_herdr_nvim(
     if let Some(space) = space.filter(|s| !s.is_empty()) {
         cmd.args(["--space", space]);
     }
-    let Ok(out) = cmd
-        .arg(&target)
-        .env_remove("HC_SCOPE") // a scope that isn't ours gets its hc calls ended
-        .output()
-    else {
-        return false;
+    // It may start herdr-nvim's nvim daemon first.
+    let out = output_within(
+        cmd.arg(&target).env_remove("HC_SCOPE"), // a scope that isn't ours gets its hc calls ended
+        None,
+        Duration::from_secs(30),
+    );
+    let out = match out {
+        Ok(out) => out,
+        Err(err) => {
+            log(format!("herdr-nvim open {target}: {err:#}"));
+            return false;
+        }
     };
     log(format!(
         "herdr-nvim open {target} -> {} {}{}",
@@ -360,12 +368,21 @@ pub fn open_mod_sidebar(
     let mut tried: Vec<(String, String)> = Vec::new();
     // Best first, each looked up only when the ones before it didn't split:
     // the usual open costs the layout document, the split and the resize.
-    let lookups: [&dyn Fn() -> Option<String>; 3] =
+    let lookups: [&dyn Fn() -> Result<Option<String>>; 3] =
         [&|| local_root(tab), &|| remote_root(tab), &|| {
             focused_pane(app, tab)
         }];
+    // Why a lookup found nothing (it failed, not just missed the tab).
+    let mut failed = Vec::new();
     for lookup in lookups {
-        let Some(target) = lookup() else { continue };
+        let target = match lookup() {
+            Ok(Some(target)) => target,
+            Ok(None) => continue,
+            Err(err) => {
+                failed.push(format!("{err:#}"));
+                continue;
+            }
+        };
         if tried.iter().any(|(t, _)| *t == target) {
             continue;
         }
@@ -390,7 +407,12 @@ pub fn open_mod_sidebar(
         }
     }
     if tried.is_empty() {
-        bail!("tab {tab} isn't in the app's layout and isn't focused");
+        let why = if failed.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", failed.join("; "))
+        };
+        bail!("tab {tab} isn't in the app's layout and isn't focused{why}");
     }
     let tried: Vec<String> = tried.iter().map(|(t, e)| format!("{t}: {e}")).collect();
     bail!("no pane of tab {tab} could be split ({})", tried.join("; "))
@@ -404,28 +426,33 @@ fn root_in(doc: &Value, id: &str) -> Option<String> {
 }
 
 /// `tab`'s root in this machine's layout document.
-fn local_root(tab: &str) -> Option<String> {
-    root_in(&layout_doc(None).ok()?, tab)
+fn local_root(tab: &str) -> Result<Option<String>> {
+    Ok(root_in(&layout_doc(None)?, tab))
 }
 
 /// A remote tab's (`machine/…`) root in that machine's own document, named
 /// as this app names that machine's panes (never a bare id: it could be a
 /// pane here).
-fn remote_root(tab: &str) -> Option<String> {
-    let (machine, id) = tab.split_once('/')?;
-    let doc = layout_doc(Some(machine)).ok()?;
-    let root = root_in(&doc, tab).or_else(|| root_in(&doc, id))?;
-    Some(if root.contains('/') {
-        root
-    } else {
-        format!("{machine}/{root}")
-    })
+fn remote_root(tab: &str) -> Result<Option<String>> {
+    let Some((machine, id)) = tab.split_once('/') else {
+        return Ok(None);
+    };
+    let doc = layout_doc(Some(machine))?;
+    Ok(root_in(&doc, tab)
+        .or_else(|| root_in(&doc, id))
+        .map(|root| {
+            if root.contains('/') {
+                root
+            } else {
+                format!("{machine}/{root}")
+            }
+        }))
 }
 
 /// The app's focused pane, when it's in `tab`.
-fn focused_pane(app: &App, tab: &str) -> Option<String> {
-    let status = app.status().ok()?;
-    (status.get("tab").and_then(Value::as_str) == Some(tab))
+fn focused_pane(app: &App, tab: &str) -> Result<Option<String>> {
+    let status = app.status()?;
+    Ok((status.get("tab").and_then(Value::as_str) == Some(tab))
         .then(|| status.get("focused_pane")?.as_str().map(str::to_string))
-        .flatten()
+        .flatten())
 }

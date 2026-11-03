@@ -5,6 +5,7 @@
 //! `src/app/rpc.rs` `paste()`; no clipboard is involved.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -158,7 +159,7 @@ fn reply(method: &str, message: Value) -> Result<Value> {
 /// replay for the program's paste mode, send the bytes, detach.
 pub fn paste(terminal: &str, text: &str) -> Result<()> {
     let facts =
-        crate::apphost::terminal(terminal).with_context(|| format!("no terminal {terminal}"))?;
+        crate::apphost::terminal(terminal).with_context(|| format!("terminal {terminal}"))?;
     let cols = facts.get("cols").and_then(Value::as_u64).unwrap_or(80);
     let rows = facts.get("rows").and_then(Value::as_u64).unwrap_or(24);
 
@@ -168,6 +169,7 @@ pub fn paste(terminal: &str, text: &str) -> Result<()> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .with_context(|| format!("spawning {} connect", bin.to_string_lossy()))?;
     let result = (|| -> Result<()> {
@@ -177,21 +179,31 @@ pub fn paste(terminal: &str, text: &str) -> Result<()> {
             b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"hello\",\"params\":{\"framed\":true}}\n",
         )?;
         stdin.flush()?;
-        let mut hello = String::new();
-        reader.read_line(&mut hello)?;
-        reply(
-            "hello",
-            serde_json::from_str(&hello).context("bad hello reply")?,
-        )?;
-
+        // The hello line and then the frames, read on a thread so a core
+        // that doesn't answer can't hold us past the deadlines below.
+        let (hello_tx, hello_rx) = mpsc::channel();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
+            let mut hello = String::new();
+            let ok = reader.read_line(&mut hello).is_ok_and(|n| n > 0);
+            let _ = hello_tx.send(hello);
+            if !ok {
+                return;
+            }
             while let Some(frame) = read_frame(&mut reader) {
                 if tx.send(frame).is_err() {
                     break;
                 }
             }
         });
+
+        let hello = hello_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| anyhow!("hello: no reply from herdr-core"))?;
+        reply(
+            "hello",
+            serde_json::from_str(&hello).context("bad hello reply")?,
+        )?;
 
         let attach = json!({"jsonrpc": "2.0", "id": 1, "method": "terminal.attach",
             "params": {"terminal": terminal, "cols": cols, "rows": rows, "history": 0}});
@@ -230,8 +242,7 @@ pub fn paste(terminal: &str, text: &str) -> Result<()> {
         std::thread::sleep(Duration::from_millis(200));
         bytes.map(|_| ())
     })();
-    let _ = child.kill();
-    let _ = child.wait();
+    crate::deadline::kill_group(&mut child);
     result
 }
 

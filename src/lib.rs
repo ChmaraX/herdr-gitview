@@ -6,6 +6,7 @@ pub mod applayout;
 pub mod appsetup;
 pub mod ask;
 pub mod config;
+pub mod deadline;
 pub mod editor;
 pub mod git;
 pub mod hcpaste;

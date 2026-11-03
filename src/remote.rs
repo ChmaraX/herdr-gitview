@@ -57,7 +57,7 @@ pub enum Machine {
 pub struct Run {
     /// We pipe input in (else its stdin is closed).
     pub stdin: bool,
-    /// Seconds before hc ends it (hc's default: 60). Here: no limit.
+    /// Seconds before hc ends it (default [`READ_LIMIT`]). Here: no limit.
     pub timeout: Option<u32>,
 }
 
@@ -70,6 +70,10 @@ pub struct FileFacts {
     /// not counted (too big, binary).
     pub lines: Option<u32>,
 }
+
+/// Seconds a call there may take unless it says otherwise: under the app's
+/// own 30 s, so a machine that hangs gives a reason, not the app's stop.
+pub const READ_LIMIT: u32 = 25;
 
 /// Untracked files are counted at most this big (bigger: no counts).
 pub const MAX_COUNTED: u64 = 1024 * 1024;
@@ -121,9 +125,8 @@ impl Machine {
     fn hc_exec(machine: &str, cwd: &Path, run: Run, argv: &[&str]) -> Command {
         let mut cmd = Command::new(hc_bin());
         cmd.args(["exec", "--on", machine]).arg("--cwd").arg(cwd);
-        if let Some(secs) = run.timeout {
-            cmd.args(["--timeout", &secs.to_string()]);
-        }
+        let secs = run.timeout.unwrap_or(READ_LIMIT);
+        cmd.args(["--timeout", &secs.to_string()]);
         if run.stdin {
             cmd.arg("-i");
         }

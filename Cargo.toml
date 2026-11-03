@@ -13,6 +13,8 @@ publish = false
 [dependencies]
 anyhow = "1.0.104"
 crossterm = "0.29.0"
+# `deadline`: a program past its deadline is killed with its process group.
+libc = "0.2"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
 # preserve_order: `app-setup` rewrites the person's Herdr layout and keys

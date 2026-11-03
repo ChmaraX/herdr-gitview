@@ -11,6 +11,11 @@ use std::process::{Command, Output};
 /// Run an nvim remote command against the editor's `--listen` socket.
 /// `None` = not remote-controllable (not nvim, or no live socket).
 pub fn remote(editor: &str, server: Option<&Path>, args: &[&str]) -> Option<Output> {
+    remote_command(editor, server, args)?.output().ok()
+}
+
+/// The [`remote`] command, `None` when there's no nvim to ask.
+fn remote_command(editor: &str, server: Option<&Path>, args: &[&str]) -> Option<Command> {
     if !editor.contains("nvim") {
         return None;
     }
@@ -18,12 +23,9 @@ pub fn remote(editor: &str, server: Option<&Path>, args: &[&str]) -> Option<Outp
     if !server.exists() {
         return None;
     }
-    Command::new(editor)
-        .arg("--server")
-        .arg(server)
-        .args(args)
-        .output()
-        .ok()
+    let mut cmd = Command::new(editor);
+    cmd.arg("--server").arg(server).args(args);
+    Some(cmd)
 }
 
 /// Does the remote nvim hold modified buffers? Runs child processes —
@@ -82,7 +84,11 @@ pub fn edit_expr(file: &Path, line: u32) -> String {
 
 /// Open `file` at `line` in the running nvim. Returns whether it succeeded.
 pub fn edit_at(editor: &str, server: Option<&Path>, file: &Path, line: u32) -> bool {
-    remote(editor, server, &["--remote-expr", &edit_expr(file, line)])
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+    let Some(mut cmd) = remote_command(editor, server, &["--remote-expr", &edit_expr(file, line)])
+    else {
+        return false;
+    };
+    // An nvim busy with a prompt doesn't answer: give up after 5 s.
+    crate::deadline::output_within(&mut cmd, None, std::time::Duration::from_secs(5))
+        .is_ok_and(|out| out.status.success())
 }
