@@ -7,9 +7,10 @@
 # touched:
 # - every `hc` call runs with HC_SCOPE (and the other HC_/HERDR_ variables)
 #   unset, against this run's own core session;
-# - the private window is moved on screen once (macOS only draws visible
-#   windows; System Events, needs Accessibility) and never raised;
-#   screenshots are `herdr-app shot` (the app's last frame, no raise);
+# - the private app starts in the background (`open -g -n`), its window
+#   placed through window.json where most of it shows, and is never raised
+#   (a background window doesn't draw on its own: E2E_FOREGROUND=1 for
+#   frames); screenshots are `herdr-app shot` (the app's last frame);
 # - keys go to the private app's process only (keys.py, CGEventPostToPid);
 # - no Cmd+Q: the app is ended with a signal at the end.
 #

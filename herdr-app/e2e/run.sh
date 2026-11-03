@@ -99,8 +99,8 @@ expect '[ "$(view_of $TAB path)" = config.toml ]' "another click shows config.to
 status_has '"errors": \[\]' && ok "no mod errors in status" || fail "mod errors: $("$APP" status)"
 
 step "with the diff pane open, a file an agent writes shows in the list at once (not on the 10 s timer)"
-# Both copies watch the repo, and only the newest watch wakes (the pane's):
-# it stamps shared gitview.changed and the list follows.
+# The list's own folder watch (the pane has none: the list writes the view
+# again when the file's rev moves).
 printf 'written by an agent\n' >"$S/agent.txt"
 expect '"$APP" do gitview.file:agent.txt >/dev/null && [ "$(view_of $TAB path)" = agent.txt ]' "agent.txt is in the list within 2 s" 2
 rm "$S/agent.txt"
@@ -212,6 +212,10 @@ expect '"$APP" do gitview.key:r' "its list is up" 20
 expect '[ "$(panel_state)" = "hidden changes" ]' "cmd-g's tab shows one list: the panel steps aside there"
 OWN0=$(tab_id)
 expect '[ -n "$(view_of $OWN0 path)" ]' "and its first file shows in its diff pane at once"
+# Two lists watch the repo now (the panel's, hidden, and this tab's), and
+# only the newest watch wakes: the stamp (gitview.changed) carries it over.
+printf 'w\n' >"$S/w.txt"
+expect '"$APP" do gitview.file:w.txt >/dev/null && [ "$(view_of $OWN0 path)" = w.txt ]' "a file written now shows in cmd-g's list within 2 s" 2
 do_ gitview.button:discard:drop.txt
 expect 'overlay_open confirm' "the tab's list asks about drop.txt"
 confirm_discard gitview # its Confirm reaches every list on screen
@@ -221,6 +225,9 @@ sleep 1
 do_ mod.open --name gitview-tab # closes it, back to tab 1
 expect '[ "$(tab_active)" = 1 ]' "back in tab 1"
 expect '[ "$(panel_state)" = "open changes" ]' "the panel is back in tab 1"
+printf 'w2\n' >"$S/w2.txt"
+expect '"$APP" do gitview.file:w2.txt >/dev/null && [ "$(view_of $TAB path)" = w2.txt ]' "after cmd-g's tab closed, a file written shows in the panel's list within 2 s" 2
+rm -f "$S/w.txt" "$S/w2.txt"
 rm -f "$S/keep.txt"
 do_ gitview.key:r
 
@@ -450,9 +457,10 @@ if [ "$KEYS" = 1 ]; then
   do_ pane.focus --terminal "$SHELL_T"
   do_ pane.go --direction right
   sleep 0.6
-  L0=$(shared "s['gitview.cursor']['$TAB']['row']")
+  L0=$(shared "s['gitview.cursor']['$TAB']['line']")
   keys 38 # j
-  expect '[ "$(shared "s[\"gitview.cursor\"][\"$TAB\"][\"row\"]")" != "$L0" ]' "pane.go then j: the diff pane has the keyboard (the cursor moved)"
+  keys 38 # j again: a deleted row and its added row can share a line number
+  expect '[ "$(shared "s[\"gitview.cursor\"][\"$TAB\"][\"line\"]")" != "$L0" ]' "pane.go then j: the diff pane has the keyboard (the cursor's line moved)"
 else
   skip "pane.go then j (keys reach only a frontmost app)"
 fi
