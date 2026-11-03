@@ -4,7 +4,7 @@
 // Everything that differs between the two is here, so the mods never ask
 // "am I the panel?". Shared (linked; install copies it).
 
-import { props, run } from "herdr";
+import { props, run, spaces } from "herdr";
 import { location } from "./engine.js";
 import { isOwnTab, onScreen, ownTab, panelDiffPanes, panelState } from "./shared.js";
 
@@ -45,24 +45,33 @@ const TAB = {
 
 export const listPlacement = () => (props()?.own || props()?.cwd ? TAB : PANEL);
 
-// The panel's show/hide cycle, as the TUI's toggle did. Hidden (cmd-shift-g,
-// the Changes or Files button, a space whose panel is closed): the diff
-// panes it opened close, in every tab. Shown: look() says so, and the list
-// opens its file in the tab's diff pane. The list looks from a timer too:
-// a hidden copy isn't drawn, but its timers run, so a hide is seen whatever
-// tab shows and whether or not it has a diff pane.
+// The panel's show/hide cycle, as the TUI's toggle did. Hidden by the
+// person (cmd-shift-g, the Changes or Files button): the diff panes it
+// opened in the shown space's tabs close. Hidden because the person went to
+// another space whose panel is closed (the tab bar puts each space's panel
+// back): nothing closes, so coming back finds the diff as it was. Shown:
+// look() says so, and the list opens its file in the tab's diff pane when
+// the tab has none. The list looks from a timer too: a hidden copy isn't
+// drawn, but its timers run, so a hide is seen whatever tab shows and
+// whether or not it has a diff pane.
 class PanelCycle {
   constructor() {
     this.shown = null; // not looked yet
+    this.space = null;
   }
 
   // "shown" on the edge to shown (the first look counts), else null.
   look() {
     const shown = PANEL.shown();
+    const space = spaces().find((s) => s.active) ?? null;
+    const moved = this.space !== null && space?.id !== this.space;
+    this.space = space?.id ?? null;
     if (shown === this.shown) return null;
     this.shown = shown;
     if (shown) return "shown";
-    for (const pane of panelDiffPanes()) run("pane.close", { pane: pane.pane });
+    if (moved || !space) return null;
+    const tabs = new Set(space.tabs.map((t) => t.id));
+    for (const pane of panelDiffPanes()) if (tabs.has(pane.tab)) run("pane.close", { pane: pane.pane });
     return null;
   }
 }
