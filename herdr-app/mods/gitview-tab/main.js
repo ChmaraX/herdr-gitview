@@ -30,9 +30,10 @@ export default class GitviewTab extends View {
       const { cwd, on } = location();
       const before = new Set(space.tabs.map((t) => t.id));
       run("tab.new", { name: "gitview", space: space.id, mod: "gitview-diff", props: { space: space.id, own: true } });
-      // The new tab shows up in spaces() a moment later.
+      // The new tab shows up in spaces() a moment later (seconds, in a
+      // busy app).
       let tab = null;
-      for (let i = 0; i < 50 && !tab; i++) {
+      for (let i = 0; i < 200 && !tab; i++) {
         tab = spaces().find((s) => s.id === space.id)?.tabs.find((t) => !before.has(t.id) && t.name === "gitview")?.id ?? null;
         if (!tab) await cx.sleep(50);
       }

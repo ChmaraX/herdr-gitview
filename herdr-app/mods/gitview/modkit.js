@@ -180,6 +180,7 @@ export function oneShot(cx, work) {
     try {
       await work(cx);
     } catch (e) {
+      console.error(`gitview: ${message(e)}`);
       notify({ title: "gitview", body: message(e), level: "error" });
     } finally {
       if (overlay) closeOverlay(overlay);
