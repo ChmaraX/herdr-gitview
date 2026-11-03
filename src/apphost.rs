@@ -61,6 +61,18 @@ pub fn app_do(command: &str, args: Value) -> Result<Value> {
     Ok(reply)
 }
 
+/// The app's home, as the app defines it: `$HERDR_APP_HOME`, else
+/// `$HOME/.config/herdr-app`.
+pub fn app_home() -> PathBuf {
+    if let Some(home) = std::env::var_os("HERDR_APP_HOME") {
+        return PathBuf::from(home);
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join(".config/herdr-app")
+}
+
 /// What the window shows (`herdr-app status`): focused space, tab, pane.
 pub fn app_status() -> Result<Value> {
     let bin = app_bin();
@@ -275,10 +287,7 @@ pub fn open_in_running_nvim(
 /// the reason on stderr. No binary there: herdr-nvim isn't installed, and the
 /// caller falls back to plain nvim.
 pub fn open_in_herdr_nvim(tab: &str, space: Option<&str>, file: &Path, line: u32) -> bool {
-    let home = std::env::var_os("HERDR_APP_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| crate::logx::xdg_dir("XDG_CONFIG_HOME", ".config").join("herdr-app"));
-    let bin = home.join("mods/herdr-nvim/bin/herdr-nvim");
+    let bin = app_home().join("mods/herdr-nvim/bin/herdr-nvim");
     if !bin.exists() {
         return false;
     }

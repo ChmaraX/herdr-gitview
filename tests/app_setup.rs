@@ -3,6 +3,14 @@
 //! `layout.switch` the way the app does, and logs every call. Install then
 //! uninstall leaves every layout and `keys.json` byte for byte as before, and
 //! uninstall never switches or deletes a layout.
+//!
+//! Failure modes this catches:
+//! - a shipped layout edited in place (also when `installed.json` is missing:
+//!   then both stop before writing anything);
+//! - a second clone, a switch or clone on uninstall, a deleted layout;
+//! - files not byte-identical after install + uninstall (keys and layouts);
+//! - a person's key replaced, or a retired key/mod removed that isn't ours;
+//! - an ambiguous copy guessed instead of refused.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -96,6 +104,12 @@ fn home(name: &str, shown: &str) -> Home {
 
 impl Home {
     fn setup(&self, op: &str) -> String {
+        let (ok, text) = self.try_setup(op);
+        assert!(ok, "app-setup {op}: {text}");
+        text
+    }
+
+    fn try_setup(&self, op: &str) -> (bool, String) {
         let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
             .args(["app-setup", op, "--home"])
             .arg(&self.dir)
@@ -111,8 +125,7 @@ impl Home {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        assert!(out.status.success(), "app-setup {op}: {text}");
-        text
+        (out.status.success(), text)
     }
 
     fn file(&self, rel: &str) -> String {
@@ -256,4 +269,76 @@ fn several_copies_stop_the_install_without_touching_a_layout() {
         .filter(|(n, _)| n != "keys.json")
         .collect();
     assert_eq!(layouts_after, layouts_before);
+}
+
+#[test]
+fn without_installed_json_neither_install_nor_uninstall_touches_anything() {
+    let h = home("no-installed", "main");
+    std::fs::remove_file(h.dir.join("installed.json")).unwrap();
+    let before = h.snapshot();
+    for op in ["install", "uninstall"] {
+        let (ok, out) = h.try_setup(op);
+        assert!(!ok, "{op} went ahead: {out}");
+        assert!(out.contains("installed.json"), "{out}");
+        assert_eq!(h.snapshot(), before, "{op} changed files");
+    }
+    assert!(h.calls().is_empty(), "no app call either");
+    // Unreadable is the same as missing.
+    std::fs::write(h.dir.join("installed.json"), "not json").unwrap();
+    assert!(!h.try_setup("install").0);
+    assert_eq!(h.snapshot(), before);
+}
+
+#[test]
+fn retired_keys_and_mods_of_older_installs_go_but_only_ours() {
+    let h = home("retired", "main");
+    std::fs::write(
+        h.dir.join("keys.json"),
+        pretty(&json!({"global": {
+            "cmd-alt-g": "mod.open:gitview-tui-tab",
+            "cmd-alt-shift-g": "mod.open:my-own-thing",
+            "cmd-t": "tab.new"}})),
+    )
+    .unwrap();
+    for (name, title) in [
+        ("gitview-popup", "gitview: popup"),
+        ("gitview-tui-tab", "gitview TUI: toggle in own tab"),
+        ("gitview-tui-sidebar", "someone else's"),
+    ] {
+        std::fs::create_dir_all(h.dir.join("mods").join(name)).unwrap();
+        std::fs::write(
+            h.dir.join("mods").join(name).join("mod.json"),
+            json!({"title": title}).to_string(),
+        )
+        .unwrap();
+    }
+    let out = h.setup("install");
+    assert!(
+        out.contains("removed the retired global cmd-alt-g"),
+        "{out}"
+    );
+    let keys: Value = serde_json::from_str(&h.file("keys.json")).unwrap();
+    assert!(keys["global"].get("cmd-alt-g").is_none());
+    assert_eq!(keys["global"]["cmd-alt-shift-g"], "mod.open:my-own-thing");
+    assert!(!h.dir.join("mods/gitview-popup").exists());
+    assert!(!h.dir.join("mods/gitview-tui-tab").exists());
+    assert!(h.dir.join("mods/gitview-tui-sidebar").exists(), "not ours");
+
+    // An uninstall also takes a retired key a newer install never saw.
+    let mut keys: Value = serde_json::from_str(&h.file("keys.json")).unwrap();
+    keys["global"]["cmd-alt-g"] = json!("mod.open:gitview-tui-tab");
+    std::fs::write(h.dir.join("keys.json"), pretty(&keys)).unwrap();
+    std::fs::create_dir_all(h.dir.join("mods/gitview-popup")).unwrap();
+    std::fs::write(
+        h.dir.join("mods/gitview-popup/mod.json"),
+        r#"{"title":"gitview: popup"}"#,
+    )
+    .unwrap();
+    h.setup("uninstall");
+    let keys: Value = serde_json::from_str(&h.file("keys.json")).unwrap();
+    assert_eq!(
+        keys,
+        json!({"global": {"cmd-alt-shift-g": "mod.open:my-own-thing", "cmd-t": "tab.new"}})
+    );
+    assert!(!h.dir.join("mods/gitview-popup").exists());
 }

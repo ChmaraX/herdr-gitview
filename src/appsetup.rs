@@ -20,11 +20,20 @@
 //! * **Keys**: our `keys.json` entries are added where the key is free; a key
 //!   the person already uses for something else is kept and reported.
 //!   Uninstall removes only bindings that still have our action.
+//! * **Retired**: what older installs added and nothing uses any more goes on
+//!   install and uninstall alike: the TUI-in-the-app keys (only while they
+//!   still carry exactly our old actions) and the mod folders
+//!   `gitview-popup`, `gitview-tui-sidebar`, `gitview-tui-tab` (only when
+//!   their `mod.json` says they're gitview's).
+//! * **`installed.json`** (which layouts are Herdr's own) must be readable:
+//!   without it a shipped layout would look personal and get edited, so both
+//!   stop before changing anything.
 //!
 //! `--home`: the app home (default `$HERDR_APP_HOME`, else
-//! `~/.config/herdr-app`). `--app`: the `herdr-app` binary (default
+//! `$HOME/.config/herdr-app`). `--app`: the `herdr-app` binary (default
 //! `$HERDR_APP_BIN`, else `herdr-app` on `PATH`); install only.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,6 +42,15 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use crate::applayout::{self, Patched};
+
+/// Keys older installs bound for the TUI inside the app, now gone.
+const RETIRED_KEYS: &str = r#"{"global": {
+    "cmd-alt-g": "mod.open:gitview-tui-tab",
+    "cmd-alt-shift-g": "mod.open:gitview-tui-sidebar"
+}}"#;
+
+/// Mods older installs copied, now gone.
+const RETIRED_MODS: [&str; 3] = ["gitview-popup", "gitview-tui-sidebar", "gitview-tui-tab"];
 
 const USAGE: &str =
     "usage: herdr-gitview app-setup install|uninstall --keys <keys.json> [--home DIR] [--app BIN]";
@@ -46,8 +64,7 @@ pub fn run(args: &[String]) -> Result<()> {
     };
     let home = value("--home")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HERDR_APP_HOME").map(PathBuf::from))
-        .unwrap_or_else(|| crate::logx::xdg_dir("XDG_CONFIG_HOME", ".config").join("herdr-app"));
+        .unwrap_or_else(crate::apphost::app_home);
     let app = value("--app")
         .or_else(|| std::env::var("HERDR_APP_BIN").ok())
         .unwrap_or_else(|| "herdr-app".to_string());
@@ -74,15 +91,23 @@ fn install(home: &Path, app: &str, ours: &Value) -> Result<()> {
             home.display()
         );
     }
+    let shipped = shipped_layouts(home)?;
     let keys = home.join("keys.json");
     if !keys.exists() {
         fs::write(&keys, "{}\n")?;
     }
-    let mut report = (Vec::new(), Vec::new());
+    let retired: Value = serde_json::from_str(RETIRED_KEYS).expect("valid JSON");
+    // A keys file that still lists a retired binding never brings it back.
+    let mut ours = ours.clone();
+    unmerge_keys(&mut ours, &retired);
+    let (mut report, mut gone) = ((Vec::new(), Vec::new()), Vec::new());
     edit_json(&keys, &mut |value| {
-        report = merge_keys(value, ours);
-        Ok(!report.0.is_empty())
+        gone = unmerge_keys(value, &retired);
+        report = merge_keys(value, &ours);
+        Ok(!report.0.is_empty() || !gone.is_empty())
     })?;
+    gone.iter()
+        .for_each(|l| say(format!("keys: removed the retired {l}")));
     report
         .0
         .iter()
@@ -91,22 +116,49 @@ fn install(home: &Path, app: &str, ours: &Value) -> Result<()> {
         .1
         .iter()
         .for_each(|l| say(format!("keys: kept yours: {l}")));
-    install_layout(home, app)
+    remove_retired_mods(home)?;
+    install_layout(home, app, &shipped)
 }
 
 fn uninstall(home: &Path, ours: &Value) -> Result<()> {
+    let shipped = shipped_layouts(home)?;
     let keys = home.join("keys.json");
     if keys.exists() {
+        let retired: Value = serde_json::from_str(RETIRED_KEYS).expect("valid JSON");
         let mut removed = Vec::new();
         edit_json(&keys, &mut |value| {
             removed = unmerge_keys(value, ours);
+            removed.extend(unmerge_keys(value, &retired));
             Ok(!removed.is_empty())
         })?;
         removed
             .iter()
             .for_each(|l| say(format!("keys: removed {l}")));
     }
-    uninstall_layouts(home)
+    remove_retired_mods(home)?;
+    uninstall_layouts(home, &shipped)
+}
+
+/// Delete the retired mod folders that are gitview's.
+fn remove_retired_mods(home: &Path) -> Result<()> {
+    for name in RETIRED_MODS {
+        let dir = home.join("mods").join(name);
+        if !dir.exists() {
+            continue;
+        }
+        let title = fs::read_to_string(dir.join("mod.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|m| m.get("title")?.as_str().map(str::to_string))
+            .unwrap_or_default();
+        if title.starts_with("gitview") {
+            fs::remove_dir_all(&dir).with_context(|| format!("cannot remove {}", dir.display()))?;
+            say(format!("mods: removed the retired {name}"));
+        } else {
+            say(format!("mods: left {} (not gitview's)", dir.display()));
+        }
+    }
+    Ok(())
 }
 
 // ---- the app ------------------------------------------------------------------
@@ -145,15 +197,29 @@ fn layout_path(home: &Path, name: &str) -> PathBuf {
 }
 
 /// Herdr's own layouts (`installed.json` lists them as `layout:<name>`).
-fn shipped(home: &Path, name: &str) -> bool {
-    fs::read_to_string(home.join("installed.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .is_some_and(|installed| installed.get(format!("layout:{name}")).is_some())
+/// An error when the file can't be read: then nothing tells them apart.
+fn shipped_layouts(home: &Path) -> Result<HashSet<String>> {
+    let path = home.join("installed.json");
+    let text = fs::read_to_string(&path).with_context(|| {
+        format!(
+            "cannot read {} (it tells Herdr's own layouts from yours; start the app once)",
+            path.display()
+        )
+    })?;
+    let installed: Value = serde_json::from_str(&text)
+        .with_context(|| format!("{} is not valid JSON", path.display()))?;
+    let entries = installed
+        .as_object()
+        .with_context(|| format!("{} is not an object", path.display()))?;
+    Ok(entries
+        .keys()
+        .filter_map(|k| k.strip_prefix("layout:"))
+        .map(str::to_string)
+        .collect())
 }
 
 /// The person's own layouts: every `layouts/*.json` Herdr doesn't ship.
-fn personal_layouts(home: &Path) -> Vec<(String, Value)> {
+fn personal_layouts(home: &Path, shipped: &HashSet<String>) -> Vec<(String, Value)> {
     let mut found: Vec<(String, Value)> = fs::read_dir(home.join("layouts"))
         .into_iter()
         .flatten()
@@ -165,7 +231,7 @@ fn personal_layouts(home: &Path) -> Vec<(String, Value)> {
             let layout = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
             Some((name, layout))
         })
-        .filter(|(name, _)| !shipped(home, name))
+        .filter(|(name, _)| !shipped.contains(name))
         .collect();
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found
@@ -211,14 +277,18 @@ pub fn choose(shown: &str, shown_is_shipped: bool, personal: &[(String, Value)])
     }
 }
 
-fn install_layout(home: &Path, app: &str) -> Result<()> {
+fn install_layout(home: &Path, app: &str, shipped: &HashSet<String>) -> Result<()> {
     let status = app_call(app, home, &["status"])?;
     let shown = status
         .get("layout")
         .and_then(Value::as_str)
         .context("herdr-app status names no layout")?
         .to_string();
-    let target = match choose(&shown, shipped(home, &shown), &personal_layouts(home))? {
+    let target = match choose(
+        &shown,
+        shipped.contains(&shown),
+        &personal_layouts(home, shipped),
+    )? {
         Target::Edit(name) => name,
         Target::Switch(copy) => {
             app_do(app, home, "layout.switch", json!({ "name": copy }))?;
@@ -265,8 +335,8 @@ fn install_into(home: &Path, name: &str) -> Result<()> {
 
 /// Take gitview's edits out of every personal layout. Layouts themselves
 /// stay, and so does the one on screen.
-fn uninstall_layouts(home: &Path) -> Result<()> {
-    for (name, _) in personal_layouts(home) {
+fn uninstall_layouts(home: &Path, shipped: &HashSet<String>) -> Result<()> {
+    for (name, _) in personal_layouts(home, shipped) {
         if edit_json(&layout_path(home, &name), &mut |layout| {
             Ok(applayout::restore(layout))
         })? {
@@ -414,7 +484,7 @@ mod tests {
             &json!({"mod": "gitview", "props": {"replaces": {"mod": "changes"}}})
         );
         install_into(&home.0, name).unwrap();
-        uninstall_layouts(&home.0).unwrap();
+        uninstall_layouts(&home.0, &shipped_layouts(&home.0).unwrap()).unwrap();
         assert_eq!(
             String::from_utf8(read(home, name)).unwrap(),
             String::from_utf8(before).unwrap()
@@ -434,7 +504,12 @@ mod tests {
         let h = home("shipped");
         put(&h, "main", &main());
         assert_eq!(
-            choose("main", shipped(&h.0, "main"), &personal_layouts(&h.0)).unwrap(),
+            choose(
+                "main",
+                shipped_layouts(&h.0).unwrap().contains("main"),
+                &personal_layouts(&h.0, &shipped_layouts(&h.0).unwrap())
+            )
+            .unwrap(),
             Target::Clone("main".into())
         );
         // What layout.clone writes, then the round trip on it.
@@ -449,7 +524,12 @@ mod tests {
         put(&h, "main-copy", &cloned(main(), "main"));
         put(&h, "main-mods", &cloned(main(), "main"));
         assert_eq!(
-            choose("main", true, &personal_layouts(&h.0)).unwrap(),
+            choose(
+                "main",
+                true,
+                &personal_layouts(&h.0, &shipped_layouts(&h.0).unwrap())
+            )
+            .unwrap(),
             Target::Switch("main-copy".into()),
             "the app's default name wins"
         );
@@ -463,7 +543,12 @@ mod tests {
         put(&h, "main-mods", &cloned(main(), "main"));
         put(&h, "mine", &json!({"id": "root", "type": "row"}));
         assert_eq!(
-            choose("main", true, &personal_layouts(&h.0)).unwrap(),
+            choose(
+                "main",
+                true,
+                &personal_layouts(&h.0, &shipped_layouts(&h.0).unwrap())
+            )
+            .unwrap(),
             Target::Switch("main-mods".into())
         );
         round_trip(&h, "main-mods");
@@ -476,7 +561,12 @@ mod tests {
         put(&h, "main", &main());
         put(&h, "mine", &main());
         assert_eq!(
-            choose("mine", shipped(&h.0, "mine"), &personal_layouts(&h.0)).unwrap(),
+            choose(
+                "mine",
+                shipped_layouts(&h.0).unwrap().contains("mine"),
+                &personal_layouts(&h.0, &shipped_layouts(&h.0).unwrap())
+            )
+            .unwrap(),
             Target::Edit("mine".into())
         );
         round_trip(&h, "mine");
@@ -494,7 +584,7 @@ mod tests {
         assert_eq!(ours.pointer(at).unwrap()["mod"], "gitview");
         *ours.pointer_mut(at).unwrap() = json!({"mod": "changes"});
         assert_eq!(ours, theirs, "nothing but the changes slot changed");
-        uninstall_layouts(&h.0).unwrap();
+        uninstall_layouts(&h.0, &shipped_layouts(&h.0).unwrap()).unwrap();
         round_trip(&h, "main-mods");
     }
 
@@ -510,7 +600,7 @@ mod tests {
         );
         install_into(&h.0, "bare").unwrap();
         assert_eq!(read(&h, "bare"), bytes);
-        uninstall_layouts(&h.0).unwrap();
+        uninstall_layouts(&h.0, &shipped_layouts(&h.0).unwrap()).unwrap();
         assert_eq!(read(&h, "bare"), bytes);
     }
 
@@ -521,7 +611,7 @@ mod tests {
         let text = "{\n  \"type\": \"row\",\n  \"id\": \"root\",\n  \"children\": [\n    {\n      \"type\": \"block\",\n      \"id\": \"changes\",\n      \"content\": {\n        \"mod\": \"changes\"\n      }\n    }\n  ]\n}\n";
         fs::write(layout_path(&h.0, "mine"), text).unwrap();
         install_into(&h.0, "mine").unwrap();
-        uninstall_layouts(&h.0).unwrap();
+        uninstall_layouts(&h.0, &shipped_layouts(&h.0).unwrap()).unwrap();
         assert_eq!(String::from_utf8(read(&h, "mine")).unwrap(), text);
     }
 

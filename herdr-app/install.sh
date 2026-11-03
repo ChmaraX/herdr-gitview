@@ -14,12 +14,14 @@
 #   - copies every mod folder in herdr-app/mods (the gitview panel, its diff
 #     pane, send notes, the full TUI as panes, the popup)
 #   - writes mods/gitview/config.json: the binary, herdr-app and hc paths
+#   - runs `herdr-app check` on each mod, before anything outside the mod
+#     folders changes
 #   - `herdr-gitview app-setup install`: adds the keys from keys.json
 #     (keys.linux.json on Linux) where they're free, and points the Changes
 #     slot of the person's personal layout at gitview (see src/appsetup.rs:
 #     on one of Herdr's own layouts, the person's copy of it is used, or it
-#     is cloned once as <name>-copy)
-#   - runs `herdr-app check` on each mod
+#     is cloned once as <name>-copy); it also drops what older installs
+#     added and nothing uses now (the TUI-in-the-app keys and mods)
 # The uninstall runs `app-setup uninstall` (our keys and our layout edits
 # only; no layout is deleted or switched) and removes our mod folders.
 #
@@ -27,7 +29,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOME_DIR="${HERDR_APP_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr-app}"
+HOME_DIR="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 
 say() { printf 'gitview: %s\n' "$*"; }
 die() { printf 'gitview: %s\n' "$*" >&2; exit 1; }
@@ -125,11 +127,11 @@ path, bin_, app, hc = sys.argv[1:]
 json.dump({"bin": bin_, "herdr_app": app, "hc": hc}, open(path, "w"), indent=2)
 EOF
 
-# --- keys and layout -----------------------------------------------------------------
-"$HOME_DIR/mods/gitview/bin/herdr-gitview" app-setup install \
-  --home "$HOME_DIR" --app "$APP_BIN" --keys "$KEYS"
-
 for m in "${MODS[@]}"; do
   "$APP_BIN" check "$HOME_DIR/mods/$m" >/dev/null || die "herdr-app check failed for $m"
 done
+
+# --- keys and layout -----------------------------------------------------------------
+"$HOME_DIR/mods/gitview/bin/herdr-gitview" app-setup install \
+  --home "$HOME_DIR" --app "$APP_BIN" --keys "$KEYS"
 say "installed into $HOME_DIR (herdr-app: $APP_BIN)"

@@ -86,7 +86,11 @@
 //!
 //! The app install's layout and key setup is `herdr-gitview app-setup
 //! install|uninstall --keys FILE [--home DIR] [--app BIN]` (see
-//! [`crate::appsetup`]).
+//! [`crate::appsetup`]): app home `$HERDR_APP_HOME`, else
+//! `$HOME/.config/herdr-app`; stops before any change when `installed.json`
+//! can't be read; both directions also drop the retired TUI-in-the-app keys
+//! (`cmd-alt-g`, `cmd-alt-shift-g`, only with exactly their old actions) and
+//! mod folders (`gitview-popup`, `gitview-tui-sidebar`, `gitview-tui-tab`).
 
 use std::path::{Path, PathBuf};
 
