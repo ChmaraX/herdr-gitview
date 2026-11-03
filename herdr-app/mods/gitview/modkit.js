@@ -2,7 +2,7 @@
 // wait for them), a footer message that fades, the folder watch, the
 // command loop and key names. Shared (linked; install copies it).
 
-import { closeOverlay, nextCommand, notify, panes, props, watchFolder } from "herdr";
+import { closeOverlay, focused, nextCommand, notify, panes, props, watchFolder } from "herdr";
 import { message } from "./engine.js";
 import { shared } from "herdr";
 import { changedAt, ignoredDirs, stampChanged, stampOf } from "./shared.js";
@@ -167,7 +167,8 @@ export function debugLook(cx, look) {
 }
 
 // work() at most once per `ms`, after the last kick (trailing): returns
-// kick(). A task of the copy's own, as pump's.
+// kick(). A task of the copy's own (made in init): render() only kicks it,
+// never works itself; at 0 ms, any kicks before it runs are one run.
 export function debounced(cx, ms, work) {
   let wake = null;
   let due = 0;
@@ -374,5 +375,29 @@ export function oneShot(cx, work) {
     } finally {
       if (overlay) closeOverlay(overlay);
     }
+  });
+}
+
+// Take the keyboard and make sure it stays: the app may hand it over a
+// moment later than it draws the focus (a "focus" from pane.go, a click).
+// Checks for a second, stops once held twice or when focus went elsewhere.
+export function takeKeyboard(view, cx) {
+  const where = JSON.stringify(focused());
+  const arrival = (view.arrival = {});
+  try { view.handle.focus(); } catch { /* not drawn yet */ }
+  cx.spawn(async (cx) => {
+    let held = 0;
+    for (let step = 0; step < 10 && view.arrival === arrival; step++) {
+      await cx.sleep(100);
+      if (view.arrival !== arrival || JSON.stringify(focused()) !== where) break;
+      if (view.handle.is_focused()) {
+        if (++held >= 2) break;
+        continue;
+      }
+      held = 0;
+      try { view.handle.focus(); } catch { /* not drawn yet */ }
+      cx.notify();
+    }
+    if (view.arrival === arrival) view.arrival = null;
   });
 }

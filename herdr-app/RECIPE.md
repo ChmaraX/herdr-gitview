@@ -377,7 +377,7 @@ Spaces on other machines work the same way.
   nothing there, so the diff pane can't become nvim; a new nvim opens right
   of it instead.
 - Never start work from `render()`: render only notices and wakes a task
-  made in `init` (shared.js `pump`). Commands read shared state as they
+  made in `init` (modkit.js `debounced`, at 0 ms). Commands read shared state as they
   arrive (a fully covered window doesn't draw, so render may not run).
 - With two copies of a mod on screen (the panel and cmd-g's list), a copy
   that wasn't waiting on `nextCommand()` when a command came never got

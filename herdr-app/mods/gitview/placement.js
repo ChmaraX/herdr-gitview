@@ -6,7 +6,8 @@
 
 import { focused, panes, props, run, spaces } from "herdr";
 import { location } from "./engine.js";
-import { diffPane, isOwnTab, onScreen, ownTab, panelDiffPanes, panelState, takeKeyboard } from "./shared.js";
+import { diffPane, isOwnTab, onScreen, ownTab, panelDiffPanes, panelState } from "./shared.js";
+import { takeKeyboard } from "./modkit.js";
 
 // ---- the list ------------------------------------------------------------------
 

@@ -18,10 +18,10 @@ import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  answer, askIn, cursorIn, diffPane, panelState, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, pump, setHandoff, setTreeMode, setView, takeKeyboard,
+  answer, askIn, cursorIn, diffPane, panelState, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, setHandoff, setTreeMode, setView,
   treeMode, viewIn,
 } from "./shared.js";
-import { Flash, Loads, ModPanes, commandLoop, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
+import { Flash, Loads, ModPanes, commandLoop, debounced, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
 import { askToClose, editorState, liveEditor, quitEditor, setEditor } from "./editors.js";
 import { FileList } from "./filelist.js";
@@ -71,7 +71,7 @@ export default class GitList extends View {
     // repo or moved, the panel showed) is acted on from a task of this
     // copy's own, and from a light timer: a hidden or covered copy isn't
     // drawn, but its timers run.
-    this.kick = pump(cx, (cx) => this.notice(cx));
+    this.kick = debounced(cx, 0, (cx) => this.notice(cx));
     cx.timer.every(300, (cx) => {
       if (!this.stale()) return;
       this.notice(cx);
@@ -154,7 +154,7 @@ export default class GitList extends View {
   // What stale() looks for: the panel showed; another repo, space or tab;
   // another list's watch stamped the repo; the pane asked something
   // (gitview.ask); a mod pane closed (Loads.revive); nvim's pane came or
-  // went (the handoff). Before every command, and from the pump or the
+  // went (the handoff). Before every command, and from the kick task or the
   // timer after stale().
   notice(cx) {
     if (this.modPanes.gone()) this.loads.afterClose(cx);

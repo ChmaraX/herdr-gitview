@@ -7,7 +7,7 @@
 import { keyEvent, keyName } from "./modkit.js";
 import { MODES } from "./modes.js";
 import { actionFor, chipsOf, toggleKeys } from "./keymap.js";
-import { takeKeyboard } from "./shared.js";
+import { takeKeyboard } from "./modkit.js";
 
 // The keys every view has.
 const EVERYWHERE = [

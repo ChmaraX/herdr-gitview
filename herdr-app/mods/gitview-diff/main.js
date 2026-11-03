@@ -20,10 +20,10 @@ import { gv, message } from "./engine.js";
 import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  addNote, answerIn, ask, cursorIn, diffPane, liveView, notesKey, notesOf, previewOff, pump, removeNotes, setCursor, setPreviewOff, takeKeyboard,
+  addNote, answerIn, ask, cursorIn, diffPane, liveView, notesKey, notesOf, previewOff, removeNotes, setCursor, setPreviewOff,
   viewIn,
 } from "./shared.js";
-import { Flash, Loads, ModPanes, commandLoop, debounced, debugLook, keyEvent, keyName, trace } from "./modkit.js";
+import { Flash, Loads, ModPanes, commandLoop, debounced, debugLook, keyEvent, keyName, takeKeyboard, trace } from "./modkit.js";
 import { panePlacement } from "./placement.js";
 import { editorLabel, knowEditor, openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
@@ -94,7 +94,7 @@ export default class GitDiff extends View {
     this.loads = new Loads((m) => this.flash.set(m));
     this.modPanes = new ModPanes();
     // What render notices (a new view, a theme switch) loads from here.
-    this.kick = pump(cx, (cx) => this.sync(cx));
+    this.kick = debounced(cx, 0, (cx) => this.sync(cx));
     this.sync(cx);
     debugLook(cx, () => { if (focused()?.tab === this.tab()) this.renderLook(); trace("pane", () => this.traceFields(), this); });
     commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview-diff", before: (cx) => this.sync(cx), handle: (c, cx) => this.command(c, cx) });
@@ -538,7 +538,7 @@ export default class GitDiff extends View {
 
   // ---- view -----------------------------------------------------------------
 
-  // What a render notices, woken in the pump (never work from render).
+  // What a render notices, woken in the kick task (never work from render).
   renderLook() {
     if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(theme().background) !== this.dark || this.modPanes.changed()) this.kick();
   }
