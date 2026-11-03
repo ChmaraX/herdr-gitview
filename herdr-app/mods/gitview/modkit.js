@@ -27,6 +27,18 @@ export class Loads {
     this.waiters = [];
     this.onError = onError;
     this.slots = new Map(); // what → {started, at, next}: latest()'s
+    this.panes = new ModPanes(); // for revive: app bug #1 (a dropped exec)
+  }
+
+  // A mod pane went since the last look: the loads running are taken as
+  // lost and loaded again (revive). Call where the copy notices things.
+  panesClosed(cx) {
+    if (this.panes.gone()) this.afterClose(cx);
+  }
+
+  // Whether panesClosed has something to see (no side effects).
+  panesMoved() {
+    return this.panes.changed();
   }
 
   live() {

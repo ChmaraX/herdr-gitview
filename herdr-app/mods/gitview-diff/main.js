@@ -23,7 +23,7 @@ import {
   addNote, answerIn, ask, cursorIn, diffPane, liveView, notesKey, notesOf, previewOff, removeNotes, setCursor, setPreviewOff,
   viewIn,
 } from "./shared.js";
-import { Flash, Loads, ModPanes, commandLoop, debounced, debugLook, keyEvent, keyName, takeKeyboard, trace } from "./modkit.js";
+import { Flash, Loads, commandLoop, debounced, debugLook, keyEvent, keyName, takeKeyboard, trace } from "./modkit.js";
 import { panePlacement } from "./placement.js";
 import { editorLabel, knowEditor, openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
@@ -92,7 +92,6 @@ export default class GitDiff extends View {
     this.dark = isDark(theme().background);
     this.flash = new Flash(cx);
     this.loads = new Loads((m) => this.flash.set(m));
-    this.modPanes = new ModPanes();
     // What render notices (a new view, a theme switch) loads from here.
     this.kick = debounced(cx, 0, (cx) => this.sync(cx));
     this.sync(cx);
@@ -137,7 +136,7 @@ export default class GitDiff extends View {
   // shown since (the list moved on and back while this pane wasn't drawn):
   // then this one starts afresh too.
   sync(cx) {
-    if (this.modPanes.gone()) this.loads.afterClose(cx); // Loads.revive
+    this.loads.panesClosed(cx); // Loads.revive
     if (isDark(theme().background) !== this.dark) {
       this.dark = !this.dark;
       this.reload(cx);
@@ -540,7 +539,7 @@ export default class GitDiff extends View {
 
   // What a render notices, woken in the kick task (never work from render).
   renderLook() {
-    if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(theme().background) !== this.dark || this.modPanes.changed()) this.kick();
+    if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(theme().background) !== this.dark || this.loads.panesMoved()) this.kick();
   }
 
   // What the body shows: {kind: "diff" | "preview" | null, old}: the shown

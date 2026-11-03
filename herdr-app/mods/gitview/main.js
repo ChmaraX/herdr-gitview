@@ -21,7 +21,7 @@ import {
   answer, askIn, cursorIn, diffPane, panelState, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, setHandoff, setTreeMode, setView,
   treeMode, viewIn,
 } from "./shared.js";
-import { Flash, Loads, ModPanes, commandLoop, debounced, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
+import { Flash, Loads, commandLoop, debounced, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
 import { closeEditorOf, liveEditor } from "./editors.js";
 import { FileList } from "./filelist.js";
@@ -65,7 +65,6 @@ export default class GitList extends View {
     this.tops = {}; // each view's scroll (setMode)
     this.flash = new Flash(cx);
     this.loads = new Loads((m) => this.flash.set(m));
-    this.modPanes = new ModPanes();
     this.watcher = {};
     // What render notices (another repo or space, the pane changed the
     // repo or moved, the panel showed) is acted on from a task of this
@@ -137,7 +136,7 @@ export default class GitList extends View {
   // Whether something notice() acts on changed (render and the timer ask;
   // no side effects).
   stale() {
-    if (this.modPanes.changed()) return true;
+    if (this.loads.panesMoved()) return true;
     if (this.cycle && (this.cycle.shown !== this.place.shown() || this.cycle.asideStale())) return true;
     if (!this.place.shown()) return false;
     if (this.place.panel) {
@@ -157,7 +156,7 @@ export default class GitList extends View {
   // went (the handoff). Before every command, and from the kick task or the
   // timer after stale().
   notice(cx) {
-    if (this.modPanes.gone()) this.loads.afterClose(cx);
+    this.loads.panesClosed(cx);
     this.cycle?.stepAside();
     const edge = this.cycle?.look();
     if (edge === "shown") this.openOnShow(cx);
