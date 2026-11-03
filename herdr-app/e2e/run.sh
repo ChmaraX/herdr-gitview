@@ -385,14 +385,14 @@ expect '"$APP" do gitview.click:src/app/a.rs >/dev/null && pane_on $TAB src/app/
 # never raised), the keys' checks are skipped and their commands run
 # instead, checked as that.
 KEYS=0
-if until_ drawn 20; then KEYS=1; else echo "note: the private window is covered by another window: key presses skipped, their commands run instead" | tee -a "$LOG"; fi
+if keys_reach; then KEYS=1; else echo "note: key presses reach the private app only while it is the frontmost app (never made so here): skipped, their commands run instead" | tee -a "$LOG"; fi
 # press <keys.py spec> <key name> <the mod the key opens> <check> <what it does>
 press() {
   if [ "$KEYS" = 1 ]; then
     keys "$1"
     expect "$4" "$2 $5"
   else
-    skip "$2 (the window is covered)"
+    skip "$2 (keys reach only a frontmost app)"
     do_ mod.open --name "$3"
     expect "$4" "mod.open:$3 (what $2 runs) $5"
   fi
@@ -407,7 +407,7 @@ if [ "$KEYS" = 1 ]; then
   keys 38 # j
   expect '[ "$(shared "s[\"gitview.cursor\"][\"$TAB\"][\"row\"]")" != "$L0" ]' "pane.go then j: the diff pane has the keyboard (the cursor moved)"
 else
-  skip "pane.go then j (the window is covered)"
+  skip "pane.go then j (keys reach only a frontmost app)"
 fi
 
 step "cmd-shift-g toggles the Changes panel; cmd-g opens gitview's own tab"
@@ -421,7 +421,7 @@ if [ "$KEYS" = 1 ]; then
   keys 38 # j
   expect '[ "$(view_of $TAB path)" != "$P0" ]' "and the list has the keyboard: j moves the diff"
 else
-  skip "the list has the keyboard after cmd-shift-g (the window is covered)"
+  skip "the list has the keyboard after cmd-shift-g (keys reach only a frontmost app)"
 fi
 shot 14-cmd-shift-g 1
 press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ] && ! mod_panes | grep -q gitview-diff' "hides both again"

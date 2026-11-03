@@ -1,8 +1,10 @@
 """Whether macOS draws a process's window now: `drawn.py PID` exits 0 when
-some part of its main window is on screen and not covered by a window in
-front of it, 1 when it's fully covered (macOS then doesn't draw it: no new
-frames, no layout, so screenshots are stale and mods can't take the
-keyboard). It only reads the window list; it never moves or raises
+some part of its main window is on screen and not covered by another app's
+ordinary window (layer 0) in front of it, 1 when it's fully covered. The
+Dock's and the menu bar's full-screen windows sit on higher layers above
+every app window and cover nothing (counting them made every window look
+covered). Fully covered, macOS doesn't draw it: no new frames, no layout,
+so screenshots are stale and mods can't take the keyboard. It only reads the window list; it never moves or raises
 anything. Needs pyobjc (Quartz)."""
 import sys
 
@@ -17,7 +19,7 @@ for w in windows:
     if w.get("kCGWindowOwnerPID") == pid and w.get("kCGWindowLayer") == 0 and b["Width"] > 200:
         ours = rect
         break
-    if w.get("kCGWindowLayer", 0) >= 0 and w.get("kCGWindowAlpha", 1) > 0:
+    if w.get("kCGWindowLayer", 0) == 0 and w.get("kCGWindowOwnerPID") != pid and w.get("kCGWindowAlpha", 1) > 0:
         front.append(rect)
 else:
     sys.exit(1)  # not on screen at all

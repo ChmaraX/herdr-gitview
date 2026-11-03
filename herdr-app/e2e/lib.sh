@@ -40,7 +40,12 @@ export HERDR_PLUGIN_STATE_DIR="$BASE/gvstate"
 GV_LOG="$HERDR_PLUGIN_STATE_DIR/debug.log"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 mkdir -p "$HERDR_APP_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
-echo '{"frame.welcomed": true, "layout": "main"}' >"$HERDR_APP_HOME/shared.json"
+# GITVIEW_DEBUG=1: the gitview mods log a line per render (GVTRACE, jank.sh).
+if [ -n "${GITVIEW_DEBUG:-}" ]; then
+  echo '{"frame.welcomed": true, "layout": "main", "gitview.debug": true}' >"$HERDR_APP_HOME/shared.json"
+else
+  echo '{"frame.welcomed": true, "layout": "main"}' >"$HERDR_APP_HOME/shared.json"
+fi
 echo '{"zoom": 1, "theme": "graphite", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
 declare -p HERDR_APP_HOME HC_SESSION XDG_STATE_HOME XDG_CONFIG_HOME XDG_DATA_HOME | sed 's/^declare -x/export/' >"$BASE/env.sh"
 
@@ -67,7 +72,9 @@ done
 APP_PID=""
 cleanup() {
   set +e
-  [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null && wait "$APP_PID" 2>/dev/null
+  if [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null; then
+    for _ in $(seq 1 25); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.2; done
+  fi
   for t in $(hc ls --json 2>/dev/null | python3 -c 'import json,sys; print(" ".join(t["address"] for t in json.load(sys.stdin)["terminals"] if "/" not in t["address"]))' 2>/dev/null); do
     hc kill "$t" >/dev/null 2>&1
   done
@@ -132,6 +139,11 @@ screen() { hc read "$1" --lines 0 2>/dev/null; }
 # your windows; drawn.py only reads the window list). Covered, it gets no
 # frames: screenshots are stale and a mod can't take the keyboard.
 drawn() { "$PY" "$E2E/drawn.py" "$APP_PID"; }
+# The frontmost app's pid (System Events; read only, nothing is raised).
+front_pid() { osascript -e 'tell application "System Events" to get unix id of first process whose frontmost is true' 2>/dev/null; }
+# Key presses reach the private app only while it is the frontmost app (keys
+# to a background app are dropped), and it's never made frontmost here.
+keys_reach() { drawn && [ "$(front_pid)" = "$APP_PID" ]; }
 # Keys to the private app's process only (keys.py: keycodes, names, text:).
 keys() { "$PY" "$E2E/keys.py" "$APP_PID" "$@"; }
 # The dummy agent's input line / submitted messages (its own record).
@@ -275,11 +287,45 @@ step "private app + core (HERDR_APP_HOME=$HERDR_APP_HOME, HC_SESSION=$HC_SESSION
 { echo "herdr-app: $("$APP" --version 2>&1 | head -1) ($APP)"; echo "hc: $(hc --version 2>&1 | head -1) ($(command -v hc))"
   echo "gitview: $(git -C "$REPO" rev-parse --short HEAD) ($GITVIEW_BIN)"; echo "macOS: $(sw_vers -productVersion 2>/dev/null)"; } | tee -a "$LOG"
 hc server start >>"$LOG" 2>&1
-"$APP" >"$BASE/app.log" 2>&1 &
-APP_PID=$!
+# The window: 1280×820, where as much of it shows as can (spot.py): macOS
+# draws a window only while some of it isn't under other windows, and the
+# private window is never raised. The app opens where window.json says (a
+# background-launched app shows no windows to System Events to move).
+read -r WX WY WVIS WDISPLAY < <("$PY" "$E2E/spot.py" 0 1280 820 2>/dev/null || echo "40 60 0 -")
+printf '{"state": "windowed", "bounds": [%s, %s, 1280, 820], "display": "%s"}\n' "$WX" "$WY" "$WDISPLAY" >"$HERDR_APP_HOME/window.json"
+echo "window at {$WX, $WY}, $WVIS of it not under other windows" >>"$LOG"
+# Started in the background (`open -g -n`): the person's frontmost app stays
+# frontmost. Its environment is this script's (LaunchServices would give it
+# launchd's), passed variable by variable. Such a window never draws on its
+# own (herdr-app 0.1.12: only a resize makes a frame), which the checks here
+# don't need; frames (jank.sh, pixels) need E2E_FOREGROUND=1: started as a
+# plain process, it comes to the front once.
+FRONT0=$(front_pid)
+APP_BUNDLE="${APP_REAL%/Contents/MacOS/*}"
+if [ -z "${E2E_FOREGROUND:-}" ] && [ "$APP_BUNDLE" != "$APP_REAL" ] && [ -d "$APP_BUNDLE" ]; then
+  ENVS=()
+  while IFS= read -r -d '' kv; do
+    case "${kv%%=*}" in _|PWD|OLDPWD|SHLVL|TERM_SESSION_ID|__CF*|XPC_*) continue ;; esac
+    ENVS+=(--env "$kv")
+  done < <(env -0)
+  open -g -n -a "$APP_BUNDLE" --stdout "$BASE/app.log" --stderr "$BASE/app.log" "${ENVS[@]}"
+  for _ in $(seq 1 50); do
+    for p in $(pgrep -f "$APP_REAL"); do
+      ps eww -o command= -p "$p" 2>/dev/null | grep -qF "HERDR_APP_HOME=$HERDR_APP_HOME " && APP_PID=$p
+    done
+    [ -n "$APP_PID" ] && break
+    sleep 0.2
+  done
+  [ -n "$APP_PID" ] || { echo "the private app didn't start" >&2; exit 1; }
+else
+  "$APP" >"$BASE/app.log" 2>&1 &
+  APP_PID=$!
+fi
 expect '"$APP" status' "the private app answers" 30
-place_window() {
-  osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to set position of window 1 to {40, 60}" \
-    -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to set size of window 1 to {1280, 820}"
-}
-until_ place_window 15 || echo "note: could not move the window (Accessibility); screenshots may be stale" | tee -a "$LOG"
+FRONT1=$(front_pid)
+if [ -n "${E2E_FOREGROUND:-}" ]; then
+  echo "note: E2E_FOREGROUND: the private app started in the foreground (frontmost now: pid $FRONT1)" | tee -a "$LOG"
+else
+  [ "$FRONT1" = "$FRONT0" ] && ok "the private app started in the background (the frontmost app is still pid $FRONT0)" \
+    || echo "note: the frontmost app changed from pid $FRONT0 to $FRONT1 while the private app started" | tee -a "$LOG"
+fi
