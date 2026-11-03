@@ -10,6 +10,9 @@
 //! - the attach resizes the terminal (cols/rows other than its own);
 //! - bracketed paste isn't detected from the replay, or newlines get typed
 //!   as Enter into a program without it (it must refuse instead);
+//! - a replay slower than a first short wait (a remote or busy terminal)
+//!   taken as "no bracketed paste", or no replay at all blamed on the
+//!   program rather than reported as an unknown mode;
 //! - `--submit` doesn't go through `hc send`, or sends trailing newlines.
 
 mod common;
@@ -17,9 +20,12 @@ mod common;
 use std::path::{Path, PathBuf};
 
 const FAKE_HC: &str = r#"#!/usr/bin/env python3
-import json, os, struct, sys
+import json, os, struct, sys, time
 LOG = os.environ["FAKE_HC_LOG"]
 REPLAY = os.environ.get("FAKE_HC_REPLAY", "").encode().decode("unicode_escape").encode("latin-1")
+# A slow core: the replay comes this many seconds after the credit; "never":
+# it doesn't come at all.
+DELAY = os.environ.get("FAKE_HC_REPLAY_DELAY", "0")
 def log(kind, data):
     with open(LOG, "a") as f:
         f.write(json.dumps([kind, data]) + "\n")
@@ -52,7 +58,9 @@ while True:
         log("attach", msg["params"])
         frame(0, 0, json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"channel": 5}}).encode())
     elif kind == 1:
-        frame(5, 0, REPLAY)
+        if DELAY != "never":
+            time.sleep(float(DELAY))
+            frame(5, 0, REPLAY)
     elif kind == 0:
         log("typed", payload.decode())
     elif kind == 2:
@@ -77,6 +85,17 @@ fn send_raw(
     replay: &str,
     args: &[&str],
 ) -> (bool, String, Vec<serde_json::Value>) {
+    send_slow(dir, hc, replay, "0", args)
+}
+
+/// `send_raw` with the replay `delay` seconds late (`"never"`: none).
+fn send_slow(
+    dir: &Path,
+    hc: &Path,
+    replay: &str,
+    delay: &str,
+    args: &[&str],
+) -> (bool, String, Vec<serde_json::Value>) {
     let log = dir.join("hc.log");
     let _ = std::fs::remove_file(&log);
     let out = common::gitview()
@@ -85,6 +104,7 @@ fn send_raw(
         .env("GITVIEW_HC", hc)
         .env("FAKE_HC_LOG", &log)
         .env("FAKE_HC_REPLAY", replay)
+        .env("FAKE_HC_REPLAY_DELAY", delay)
         .output()
         .unwrap();
     let log = std::fs::read_to_string(&log)
@@ -143,6 +163,30 @@ fn placing_multi_line_text_into_a_plain_program_is_refused_and_types_nothing() {
     // One line is fine there.
     let log = send(&dir, &hc, "$ ", &["--", "one line\n"]);
     assert_eq!(entries(&log, "typed"), [&serde_json::json!("one line")]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_slow_replay_is_waited_for_and_a_missing_one_is_an_unknown_mode() {
+    let (dir, hc) = setup("slow");
+    // Half a second late: still read, so the agent gets its paste.
+    let (ok, stdout, log) = send_slow(&dir, &hc, "\\x1b[?2004h> ", "0.5", &["--", "a\nb"]);
+    assert!(ok, "{stdout}");
+    assert_eq!(
+        entries(&log, "typed"),
+        [&serde_json::json!("\u{1b}[200~a\nb\u{1b}[201~")]
+    );
+
+    // No replay at all: the mode is unknown, not the program's fault.
+    let (ok, stdout, log) = send_slow(&dir, &hc, "\\x1b[?2004h> ", "never", &["--", "a\nb"]);
+    assert!(!ok);
+    assert!(
+        stdout.contains("couldn't read the terminal's paste mode"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("this program can't"), "{stdout}");
+    assert!(entries(&log, "typed").is_empty(), "nothing typed: {log:?}");
+    assert_eq!(entries(&log, "closed").len(), 1, "detached cleanly");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

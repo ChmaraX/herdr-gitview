@@ -87,10 +87,14 @@
 //! - `send --terminal T [--submit] [--] TEXT` → `{ok}`: without `--submit`,
 //!   place TEXT in the terminal's input without pressing Enter (a paste
 //!   through a framed `terminal.attach` over `hc connect`; no clipboard;
-//!   trailing newlines dropped). Multi-line TEXT needs a program in
-//!   bracketed-paste mode; otherwise it's an error ("…use shift+enter to
-//!   send") and nothing is typed. `--submit`: send it with `hc send`, which
-//!   presses Enter.
+//!   trailing newlines dropped; control characters but `\n` and `\t`
+//!   stripped, so a diff line can't end the paste or press keys). The
+//!   program's paste mode is read from the screen replay, waited for up to
+//!   800 ms. Multi-line TEXT needs a program in bracketed-paste mode;
+//!   otherwise it's an error ("this program can't take multi-line text…",
+//!   or "couldn't read the terminal's paste mode…" when no replay came; both
+//!   end "use shift+enter to send") and nothing is typed. `--submit`: send
+//!   it with `hc send`, which presses Enter.
 //! - `sidebar --tab T --mod NAME [--props JSON] [--percent N]` → `{pane}`: a
 //!   mod pane at the tab's right edge, N percent of the tab wide (5–95;
 //!   default: `view_width_percent`). It's split off the tab's root, spanning the
