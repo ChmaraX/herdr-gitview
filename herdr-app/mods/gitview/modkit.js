@@ -105,8 +105,16 @@ export class Loads {
     if (!this.busy()) this.waiters.splice(0).forEach((resolve) => resolve());
   }
 
-  async idle(cx) {
-    while (this.busy()) await Promise.race([new Promise((resolve) => this.waiters.push(resolve)), cx.sleep(1000)]);
+  // `waiting()` is called about once a second while it waits.
+  async idle(cx, waiting) {
+    while (this.busy()) {
+      await Promise.race([new Promise((resolve) => this.waiters.push(resolve)), cx.sleep(1000)]);
+      if (this.busy()) waiting?.();
+    }
+  }
+
+  names() {
+    return [...this.running.values()].map((l) => l.what).join(", ");
   }
 }
 
@@ -219,7 +227,13 @@ export function commandLoop(cx, { loads, before, handle, flash, name }) {
       const command = queue.shift();
       try {
         before?.(cx);
-        await loads.idle(cx);
+        const asked = Date.now();
+        let said = false;
+        await loads.idle(cx, () => {
+          if (said || Date.now() - asked < 3000) return;
+          said = true;
+          console.warn(`${name}: ${command} is waiting for ${loads.names()}`);
+        });
         handle(command, cx);
         cx.notify();
       } catch (e) {
