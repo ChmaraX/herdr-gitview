@@ -18,7 +18,8 @@
 //    can't put a terminal in a mod pane, so the diff pane can't become the
 //    editor itself.) In a remote space it runs on that machine.
 
-import { exec, layout, notify, run } from "herdr";
+import { exec, layout, notify, run, terminals } from "herdr";
+import { setEditor, socketFor, trackEditor } from "./editors.js";
 import { gv, message, onArgs } from "./engine.js";
 import { diffPane, setHandoff, viewIn } from "./shared.js";
 
@@ -64,7 +65,7 @@ export function knowEditor(root, on, cx) {
 // What Enter starts there, for the keycaps and the keys card.
 export const editorLabel = (root, on) => editors.get(editorKey(root, on))?.editor?.name ?? "editor";
 
-// {root, on, path, line, tab, space, closeDiff, view}; `view`: the diff
+// {root, on, path, line, tab, space, closeDiff, view, cx}; `view`: the diff
 // shown for the file (with closeDiff, the handoff remembers it: the diff
 // comes back when nvim's pane goes).
 export async function openNvim(o) {
@@ -100,7 +101,18 @@ export async function openNvim(o) {
     }
     if (pane) run("pane.focus", { pane: pane.pane });
     const line = editor.kind === "nvim" || editor.kind === "vim" ? [`+${o.line || 1}`] : [];
-    run("terminal.open", { argv: [...editor.argv, ...line, file], folder: o.root, place: "right" });
+    // A local nvim also listens where gitview can ask it for unsaved buffers
+    // (its own server stays, for the engine to find); the editor is kept with
+    // the tab (editors.js): closing gitview closes it too.
+    const sock = editor.kind === "nvim" && !o.on && o.tab ? await socketFor(o.tab) : null;
+    const listen = sock ? ["--cmd", `call serverstart('${sock}')`] : [];
+    const before = new Set(terminals().map((t) => t.address));
+    run("terminal.open", { argv: [...editor.argv, ...listen, ...line, file], folder: o.root, place: "right" });
+    if (o.tab && o.cx) {
+      const rec = { kind: editor.kind, name: editor.name, bin: editor.argv[0], sock, file, terminal: null };
+      setEditor(o.tab, rec);
+      await trackEditor(o.tab, rec, before, o.cx);
+    }
     return "new";
   } catch (e) {
     notify({ title: "gitview", body: message(e), level: "error" });

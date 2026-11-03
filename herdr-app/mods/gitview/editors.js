@@ -1,0 +1,103 @@
+// The editors gitview started (a plain terminal right of the diff pane, when
+// herdr-nvim isn't there): as in v1, the editor is part of gitview, so
+// closing gitview (cmd-shift-g, the Changes button, closing cmd-g's tab)
+// closes it too. A local nvim listens on a socket of ours as well as its
+// own (`--cmd serverstart`), so it can be asked for unsaved buffers and
+// told to quit. Shared (linked; install copies it).
+//
+// shared "gitview.editors": {<tab>: {terminal, kind, name, bin, sock, file}}.
+
+import { appHome, exec, openOverlay, setShared, shared, terminals } from "herdr";
+import * as fs from "fs/promises";
+
+export function editorIn(tab) {
+  return (shared("gitview.editors") ?? {})[tab] ?? null;
+}
+
+export function setEditor(tab, rec) {
+  const all = { ...(shared("gitview.editors") ?? {}) };
+  if (rec) all[tab] = rec;
+  else if (tab in all) delete all[tab];
+  else return;
+  setShared("gitview.editors", all);
+}
+
+const live = (address) => terminals().some((t) => t.address === address && String(t.state ?? "live").toLowerCase() === "live");
+
+// The tab's editor, while its terminal runs (a gone one is forgotten).
+export function liveEditor(tab) {
+  const rec = editorIn(tab);
+  if (rec && !rec.terminal) return rec; // not found yet: still starting
+  if (rec && live(rec.terminal)) return rec;
+  if (rec) setEditor(tab, null);
+  return null;
+}
+
+// Where a tab's nvim listens for us: short (a socket path has ~100 bytes).
+export async function socketFor(tab) {
+  let h = 0;
+  for (const c of String(tab)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const dir = `${appHome()}/data/gitview`;
+  const sock = `${dir}/nv-${h.toString(36)}.sock`;
+  try {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.unlink(sock); // an old one would stop nvim from listening
+  } catch {
+    // none there
+  }
+  return sock;
+}
+
+// Find the terminal just opened for `rec` in the tab (the app's
+// terminal.open doesn't say), 3 s at most; then the record is kept.
+export async function trackEditor(tab, rec, before, cx) {
+  for (let i = 0; i < 30; i++) {
+    const t = terminals().find((t) => !before.has(t.address) && (t.argv ?? []).includes(rec.file));
+    if (t) return setEditor(tab, { ...rec, terminal: t.address });
+    await cx.sleep(100);
+  }
+}
+
+const ask = (rec, expr) => exec(rec.bin, ["--server", rec.sock, "--remote-expr", expr]);
+
+// "clean" (nothing unsaved), "dirty", or "unknown" (it can't be asked: not
+// an nvim, or it doesn't answer).
+export async function editorState(rec) {
+  if (rec.kind !== "nvim" || !rec.sock) return "unknown";
+  try {
+    const r = await ask(rec, "len(filter(getbufinfo({'bufloaded': 1}), 'v:val.changed'))");
+    if (r.code !== 0) return "unknown";
+    return Number(r.stdout.trim()) > 0 ? "dirty" : "clean";
+  } catch {
+    return "unknown";
+  }
+}
+
+// "qa" (quit; clean), "wqa" (save all, quit), "qa!" (discard, quit).
+export async function quitEditor(rec, how) {
+  await exec(rec.bin, ["--server", rec.sock, "--remote-send", `<C-\\><C-N>:${how}<CR>`]);
+}
+
+// Unsaved buffers when gitview closes: the dialog (mod gitview-ask) asks
+// Save / Discard / Cancel and does it itself (the list may be hidden, and
+// hidden copies get no commands). `cancel`: steps run on Cancel (show the
+// panel again); `after`: steps after Save or Discard (close cmd-g's tab).
+export function askToClose(rec, cancel, after = []) {
+  const quit = (how) => [{ exec: [rec.bin, ["--server", rec.sock, "--remote-send", `<C-\\><C-N>:${how}<CR>`]] }, ...after];
+  openOverlay({
+    mod: "gitview-ask",
+    kind: "dialog",
+    modal: true,
+    width: 440,
+    height: 180,
+    props: {
+      title: "The editor has unsaved changes",
+      detail: `Save them? (${rec.file.split("/").pop()} in ${rec.name})`,
+      choices: [
+        { label: "Save", key: "s", steps: quit("wqa") },
+        { label: "Discard", key: "d", steps: quit("qa!") },
+        { label: "Cancel", key: "escape", steps: [...cancel, { notify: { title: "gitview", body: "The editor has unsaved changes: it stays open.", level: "info" } }] },
+      ],
+    },
+  });
+}

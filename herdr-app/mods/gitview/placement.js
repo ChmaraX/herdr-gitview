@@ -4,9 +4,9 @@
 // Everything that differs between the two is here, so the mods never ask
 // "am I the panel?". Shared (linked; install copies it).
 
-import { focused, props, run, spaces } from "herdr";
+import { focused, panes, props, run, spaces } from "herdr";
 import { location } from "./engine.js";
-import { isOwnTab, onScreen, ownTab, panelDiffPanes, panelState } from "./shared.js";
+import { diffPane, isOwnTab, onScreen, ownTab, panelDiffPanes, panelState, takeKeyboard } from "./shared.js";
 
 // ---- the list ------------------------------------------------------------------
 
@@ -23,6 +23,24 @@ const PANEL = {
   takesKeyboard: false,
   frame: (e, t, focused) => e.rounded(10).overflow_hidden().border_1().border_color(focused ? t.accent : t.border),
   cycle: () => new PanelCycle(),
+  // The keyboard and the app's focus together, the one way the app has for
+  // a layout block: `pane.go right` from the pane beside it (the tab's diff
+  // pane, at its right edge; else the focused pane), as herdr-nvim hands its
+  // tree the keyboard. The app then sends "focus" (the list takes its
+  // handle) and moves its focus ring off the pane. A handle taken alone
+  // left the ring on the diff pane: two panes looked focused.
+  focusSelf: (list, cx) => {
+    const dp = diffPane(list.tab());
+    if (dp) run("pane.focus", { pane: dp.pane });
+    run("pane.go", { direction: "right" });
+    cx.spawn(async (cx) => {
+      // A pane between (no diff pane): further right, a few times.
+      for (let i = 0; i < 3 && !list.viaApp; i++) {
+        await cx.sleep(150);
+        if (!list.viaApp && !list.handle.is_focused()) run("pane.go", { direction: "right" });
+      }
+    });
+  },
 };
 
 // cmd-g's tab: the repo it was opened for, its own tab's diff pane (opened
@@ -42,6 +60,13 @@ const TAB = {
   showsFirstFile: true, // its pane opens with it: the first file shows at once
   frame: (e) => e,
   cycle: () => null,
+  // cmd-g's list is a pane: the app's focus onto it, then its handle.
+  focusSelf: (list, cx) => {
+    const me = panes().find((p) => p.tab === props()?.tab && p.mod === "gitview");
+    if (me) run("pane.focus", { pane: me.pane });
+    list.viaApp = true;
+    takeKeyboard(list, cx);
+  },
 };
 
 export const listPlacement = () => (props()?.own || props()?.cwd ? TAB : PANEL);
@@ -85,7 +110,9 @@ class PanelCycle {
     return isOwnTab(focused()?.tab) ? Boolean(panelState()?.shown) && !this.aside : this.aside;
   }
 
-  // "shown" on the edge to shown (the first look counts), else null.
+  // "shown" on the edge to shown (the first look counts); on a hide the
+  // person made, {hidden: the shown space's tabs} (their diff panes are
+  // closed; the list closes the rest of the unit); else null.
   look() {
     const shown = PANEL.shown();
     const space = spaces().find((s) => s.active) ?? null;
@@ -97,7 +124,7 @@ class PanelCycle {
     if (moved || !space) return null;
     const tabs = new Set(space.tabs.map((t) => t.id));
     for (const pane of panelDiffPanes()) if (tabs.has(pane.tab)) run("pane.close", { pane: pane.pane });
-    return null;
+    return { hidden: tabs };
   }
 }
 

@@ -18,11 +18,12 @@ import { gv, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  answer, askIn, cursorIn, diffPane, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, pump, setHandoff, setTreeMode, setView, takeKeyboard,
+  answer, askIn, cursorIn, diffPane, panelState, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, pump, setHandoff, setTreeMode, setView, takeKeyboard,
   treeMode, viewIn,
 } from "./shared.js";
 import { Flash, Loads, ModPanes, commandLoop, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
+import { askToClose, editorState, liveEditor, quitEditor, setEditor } from "./editors.js";
 import { FileList } from "./filelist.js";
 import { History } from "./history.js";
 import { knowEditor, openNvim } from "./nvim.js";
@@ -44,7 +45,13 @@ export default class GitList extends View {
     this.commitInput = InputState.new({ placeholder: "Commit message" });
     this.commitInput.on("change", (_e, cx) => cx.notify());
     this.commitInput.on("submit", (_e, cx) => this.commit(cx));
-    this.commitInput.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+    this.commitInput.on("focus", (_e, cx) => {
+      this.typing = true;
+      // A click into the message: the app's focus comes here too, then the
+      // message gets the keys again.
+      if (!this.viaApp) this.focusList(cx, { then: "input" });
+      cx.notify();
+    });
     this.commitInput.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.width = 0;
     this.mode = "files";
@@ -79,7 +86,22 @@ export default class GitList extends View {
     cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.place.shown() && Date.now() - (this.statusAt ?? 0) > 30000) this.refresh(cx, { poll: true, why: "poll" }); });
     debugLook(cx, () => { if (this.stale()) this.kick(); trace("list", this.traceFields(), this); });
     commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview", before: (cx) => this.notice(cx), handle: (c, cx) => runCommand(this, c, cx) });
-    if (this.place.takesKeyboard) takeKeyboard(this, cx);
+    if (this.place.takesKeyboard) this.focusList(cx);
+  }
+
+  // The keyboard and the app's focus, together (placement.js focusSelf).
+  focusList(cx, { then = null } = {}) {
+    this.viaApp = false;
+    this.afterFocus = then;
+    this.place.focusSelf(this, cx);
+  }
+
+  // Whether the list shows itself focused: it has the keys, and the app's
+  // focus came with them (else the app's ring is on another pane).
+  showsFocus() {
+    const has = this.handle.is_focused() || this.typing;
+    if (!has) this.viaApp = false;
+    return has && Boolean(this.viaApp);
   }
 
   // The tab whose diff pane this list drives.
@@ -128,12 +150,10 @@ export default class GitList extends View {
   notice(cx) {
     if (this.modPanes.gone()) this.loads.afterClose(cx);
     this.cycle?.stepAside();
-    if (this.cycle?.look() === "shown") this.openOnShow(cx);
-    if (!this.place.shown()) {
-      // Hidden (or on Files): no diff comes back for what nvim took.
-      if (this.cycle) for (const tab of Object.keys(handoffs())) setHandoff(tab, null);
-      return;
-    }
+    const edge = this.cycle?.look();
+    if (edge === "shown") this.openOnShow(cx);
+    else if (edge?.hidden) this.closeUnit(edge.hidden, cx);
+    if (!this.place.shown()) return;
     const ctx = this.context();
     const tabChanged = ctx.tab !== this.ctx?.tab;
     const stamped = Boolean(followStamp(this.watcher)); // another list's watch saw the repo change
@@ -214,7 +234,38 @@ export default class GitList extends View {
     if (diffPane(tab) || (viewIn(tab)?.seq ?? 0) !== rec.seq) return;
     const list = this.list();
     const row = list && list.where.root === rec.root && (list.where.commit ?? null) === rec.commit ? list.findFile(rec.path, rec.section) : null;
-    if (row) this.select(row, cx, { line: rec.line, focusPane: true });
+    // Back on the diff, the keys on the list (v1: :q came back to the list).
+    if (row) this.select(row, cx, { line: rec.line });
+  }
+
+  // The person hid the panel: the rest of gitview's unit closes with it, as
+  // v1's toggle closed the editor with the view. The nvim gitview handed a
+  // file to (herdr-nvim's daemon keeps its buffers, unsaved edits and
+  // cursor; shown again, the diff of that file comes back, followHandoff);
+  // an editor gitview started: a clean nvim quits, one with unsaved
+  // changes asks first (Save, Discard, Cancel: the panel back), another
+  // editor stays open and says so. A herdr-nvim pane the person opened
+  // themselves (no handoff) stays.
+  closeUnit(tabs, cx) {
+    for (const tab of tabs) {
+      if (handoffIn(tab)?.seen) for (const p of herdrNvimPanes(tab)) run("pane.close", { pane: p.pane });
+      const ed = liveEditor(tab);
+      if (ed) this.closeEditor(tab, ed, cx);
+    }
+  }
+
+  closeEditor(tab, ed, cx) {
+    cx.spawn(async () => {
+      const state = await editorState(ed);
+      if (state === "clean") {
+        await quitEditor(ed, "qa");
+        setEditor(tab, null);
+      } else if (state === "dirty") {
+        const p = panelState();
+        const back = p ? [...(p.stack ? [{ run: ["layout.select", { stack: p.stack, child: p.slot }] }] : []), { run: ["layout.show", { id: p.panel }] }] : [];
+        askToClose(ed, back);
+      } else notify({ title: "gitview", body: `${ed.name} stays open: gitview can't ask it about unsaved changes`, level: "info" });
+    });
   }
 
   // A click or Enter on the handed-off row: the diff again in nvim's place.
@@ -234,7 +285,8 @@ export default class GitList extends View {
   openOnShow(cx) {
     this.refresh(cx);
     const tab = this.tab();
-    if (!tab || diffPane(tab)) return;
+    // A file handed to nvim comes back on its own (followHandoff).
+    if (!tab || diffPane(tab) || handoffIn(tab)) return;
     cx.spawn(async (cx) => {
       await this.loads.idle(cx);
       const row = this.list()?.shownFile();
@@ -386,7 +438,7 @@ export default class GitList extends View {
       try {
         const { pane } = await gv(["sidebar", "--tab", tab, "--mod", "gitview-diff", "--props", JSON.stringify({ tab })]);
         if (focusPane && pane) run("pane.focus", { pane }); // the pane takes the keys (its view says so)
-        else takeKeyboard(this, cx); // the new pane took the app's focus; the list keeps the keys
+        else this.focusList(cx); // the new pane took the app's focus; the list keeps it
       } catch (e) {
         this.flash.set(message(e));
       } finally {
@@ -456,12 +508,12 @@ export default class GitList extends View {
     const tab = this.tab();
     const list = this.list();
     const space = this.ctx?.space;
-    this.loads.run(cx, "nvim", async () => {
+    this.loads.run(cx, "nvim", async (cx) => {
       const view = list.viewFor(row);
       const cursor = cursorIn(tab);
       let line = cursor && sameFile(cursor, view) ? cursor.line : null;
       if (!line) line = (await gv(diffArgs(view, { dark: isDark(theme().background), unfold: false })))?.first_change ?? 1;
-      await openNvim({ root: list.where.root, on: list.where.on, path: row.file.path, line, tab, space, view, closeDiff: this.place.closesForHerdrNvim });
+      await openNvim({ root: list.where.root, on: list.where.on, path: row.file.path, line, tab, space, view, closeDiff: this.place.closesForHerdrNvim, cx });
     });
   }
 
@@ -637,6 +689,8 @@ export default class GitList extends View {
     return {
       tab: this.tab(),
       mode: this.mode,
+      focused: this.handle.is_focused() || Boolean(this.typing),
+      viaApp: Boolean(this.viaApp),
       body,
       spinner: this.loads.shown(),
       header: this.mode === "files" ? `${this.work?.status.scope ?? "-"} ${this.work?.files() ?? 0} files` : this.mode,
@@ -647,14 +701,14 @@ export default class GitList extends View {
   render(cx) {
     if (this.stale()) this.kick();
     const t = theme();
-    const focused = this.handle.is_focused();
+    const focused = this.showsFocus();
     const notes = this.notes();
     const mode = MODES[this.mode];
     trace("list", this.traceFields(), this);
     return this.place
       .frame(v_flex().id("gitview").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13), t, focused)
       .track_focus(this.handle)
-      .on_mouse_down("left", (_e, cx) => { this.handle.focus(); cx.notify(); })
+      .on_mouse_down("left", (_e, cx) => { this.handle.focus(); if (!this.viaApp) this.focusList(cx); cx.notify(); })
       .on_size_change((size, cx) => {
         if (size.width === this.width) return;
         this.width = size.width;

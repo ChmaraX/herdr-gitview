@@ -9,6 +9,7 @@ import { exec, focused, notify, run, spaces } from "herdr";
 import { gv, hostEnv, loadConfig, location } from "./engine.js"; // links to ../gitview (install copies them)
 import { oneShot } from "./modkit.js";
 import { origins, ownTab, setOrigin, setOwnTab } from "./shared.js";
+import { askToClose, editorState, liveEditor, quitEditor, setEditor } from "./editors.js";
 
 const LIST_PERCENT = 29;
 
@@ -48,9 +49,16 @@ export default class GitviewTab extends View {
       if (!space) return notify({ title: "gitview", body: "Open a space first.", level: "warning" });
       const own = ownTab(space.id);
       if (own && own === f.tab) {
-        run("tab.close", { id: own, confirmed: true });
         const back = origins()[space.id];
-        if (back && space.tabs.some((t) => t.id === back)) run("tab.select", { id: back });
+        const close = [{ run: ["tab.close", { id: own, confirmed: true }] }, ...(back && space.tabs.some((t) => t.id === back) ? [{ run: ["tab.select", { id: back }] }] : [])];
+        // Its editor closes with it (v1): clean, it quits; unsaved, the
+        // question first (Cancel keeps the tab and the editor).
+        const ed = liveEditor(own);
+        const state = ed ? await editorState(ed) : "none";
+        if (state === "dirty") return askToClose(ed, [], close);
+        if (state === "clean") await quitEditor(ed, "qa");
+        if (ed) setEditor(own, null);
+        for (const s of close) run(s.run[0], s.run[1]);
         return;
       }
       setOrigin(space.id, f.tab);

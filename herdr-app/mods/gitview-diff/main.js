@@ -15,7 +15,7 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
-import { run, setShared, settings, shared, spaces, theme } from "herdr";
+import { focused, run, setShared, settings, shared, spaces, theme } from "herdr";
 import { gv, message } from "./engine.js";
 import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
@@ -52,7 +52,7 @@ const KEYS = [
   { caps: ["m"], label: "diff / preview", rank: 4, when: (v) => Boolean(previewKind(v.view)), on: { m: (v, cx) => v.togglePreview(cx) } },
   { caps: ["v"], label: "select", rank: 5, when: diffShown, on: { v: inDiff((v) => { v.anchor = v.anchor === null ? v.cursor : null; }) } },
   { caps: ["a"], label: "note", rank: 6, when: diffShown, on: { a: inDiff((v) => v.annotate()) } },
-  { caps: ["enter"], label: (v) => editorLabel(v.view?.root, v.view?.on), rank: 3, on: { enter: (v, cx) => v.enterKey(cx), e: (v) => v.edit() } },
+  { caps: ["enter"], label: (v) => editorLabel(v.view?.root, v.view?.on), rank: 3, on: { enter: (v, cx) => v.enterKey(cx), e: (v, cx) => v.edit(null, cx) } },
   { caps: ["J", "K"], label: "next / previous file", rank: 7, on: { J: (v, cx) => v.nextFile(1, cx), K: (v, cx) => v.nextFile(-1, cx) } },
   { caps: ["x"], label: "discard", rank: 8, on: { x: (v, cx) => v.act("discard", cx) } },
   { caps: ["p"], label: "send notes", rank: 9, on: { p: (v, cx) => v.send(cx) } },
@@ -104,6 +104,18 @@ export default class GitDiff extends View {
     return this.place.tab();
   }
 
+  // This copy's pane (null: not yet in the app's lists).
+  myPane() {
+    return diffPane(this.tab())?.pane ?? null;
+  }
+
+  // The keyboard and the app's focus together.
+  focusPane(cx) {
+    const me = this.myPane();
+    if (me) run("pane.focus", { pane: me });
+    takeKeyboard(this, cx);
+  }
+
   // The space of this pane's tab.
   space() {
     const tab = this.tab();
@@ -128,7 +140,7 @@ export default class GitDiff extends View {
     const fresh = (stored?.showing ?? 0) !== this.showing;
     this.seq = stored?.seq ?? 0;
     this.showing = stored?.showing ?? 0;
-    if (stored?.focus) takeKeyboard(this, cx); // back from nvim: the keys are the diff's
+    if (stored?.focus) this.focusPane(cx); // the click-back from nvim: the keys are the diff's
     const view = liveView(stored);
     const same = !fresh && sameFile(view, this.view);
     // The same file written again (the list's j on the last row, a refresh):
@@ -350,16 +362,19 @@ export default class GitDiff extends View {
   // enter: on a fold unfolds it; else nvim (from Preview: at line 1, or
   // where the cursor was moved to in Diff).
   enterKey(cx) {
-    if (this.inPreview()) return this.edit(this.cursorMoved ? null : 1);
+    if (this.inPreview()) return this.edit(this.cursorMoved ? null : 1, cx);
     if (this.diff.rows[this.cursor]?.k === "fold") return this.unfoldAll(cx);
-    this.edit();
+    this.edit(null, cx);
   }
 
-  edit(line = null) {
+  edit(line = null, cx = null) {
     const v = this.view;
     if (!v) return;
     if (v.kind === "deleted") return this.flash.set(`${v.path} is deleted`);
-    openNvim({ root: v.root, on: v.on, path: v.path, line: line ?? this.lineAt(this.cursor), tab: this.tab(), space: this.space(), view: v, closeDiff: this.place.closesForHerdrNvim });
+    const o = { root: v.root, on: v.on, path: v.path, line: line ?? this.lineAt(this.cursor), tab: this.tab(), space: this.space(), view: v, closeDiff: this.place.closesForHerdrNvim };
+    // In a task of its own: the editor it starts is looked for a moment after.
+    if (cx) cx.spawn(async (cx) => openNvim({ ...o, cx }));
+    else openNvim(o);
   }
 
   // s / u / x on the shown file (x asks first).
@@ -491,7 +506,7 @@ export default class GitDiff extends View {
     this.cursorMoved = true;
     if (e.click_count >= 2) {
       this.anchor = null;
-      return this.edit();
+      return this.edit(null, cx);
     }
     if (!e.modifiers?.shift) this.anchor = index;
     else if (this.anchor === null) this.anchor = index;
@@ -534,6 +549,8 @@ export default class GitDiff extends View {
     const b = this.bodyNow();
     return {
       tab: this.tab(),
+      focused: this.handle.is_focused(),
+      ring: Boolean(this.myPane()) && focused()?.pane === this.myPane(),
       seq: this.seq,
       file: v ? `${v.section}:${v.path}${v.commit ? `@${v.commit.slice(0, 7)}` : ""}` : null,
       shown: viewIn(this.tab())?.path ?? null,

@@ -39,11 +39,18 @@ export function showKeys(view) {
 export function runCommand(view, command, cx) {
   const [what, ...rest] = command.split(":");
   const arg = rest.join(":");
-  if (command === "focus") takeKeyboard(view, cx);
-  // cmd-shift-g showed the panel: the keyboard (its file opens as the panel
-  // shows, placement.js).
+  // The app moved its focus here (pane.go, a popup over it closed).
+  if (command === "focus") {
+    view.viaApp = true;
+    if (view.afterFocus === "input") {
+      view.afterFocus = null;
+      view.commitInput.focus();
+    } else takeKeyboard(view, cx);
+  }
+  // cmd-shift-g showed the panel: the keyboard and the app's focus (its
+  // file opens as the panel shows, placement.js).
   else if (command === "focus:panel") {
-    if (view.place.panel) takeKeyboard(view, cx);
+    if (view.place.panel) view.focusList(cx);
   } else if (what === "discard") view.discardConfirmed(command, cx);
   else if (what === "key") view.key(keyEvent(arg), cx);
   else if (what === "file") view.selectPath(arg, cx);
