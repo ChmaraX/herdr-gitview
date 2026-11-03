@@ -326,10 +326,14 @@ Spaces on other machines work the same way.
   lays out at it); notes are `gitview.notes["<machine
   or ''>:<repo root>"]` (`{id, file, section, cached, start, end, text,
   snippet}`; the engine gets `cached`); `gitview.changed` a list's folder watch saw a repo change (with the batch's
-  paths), `gitview.ignored` the repo's ignored folders; `gitview.handoff[<tab>]`
-  the file Enter handed to herdr-nvim (the diff comes back when its pane
-  goes); `gitview.tree` the list mode; `gitview.own[<space>]`
-  cmd-g's tab; `gitview.origins[<space>]` where cmd-g came from.
+  paths), `gitview.ignored` the repo's ignored folders (the 20 repos seen
+  last); `gitview.handoff[<tab>]` the file Enter handed to herdr-nvim and
+  the view's `showing` then (the diff comes back when its pane goes, unless
+  another file was shown since: a `:w` there only rewrites the same view);
+  `gitview.editors[<tab>]` the editors gitview started; `gitview.tree` the
+  list mode; `gitview.own[<space>]` cmd-g's tab; `gitview.origins[<space>]`
+  where cmd-g came from. Per-tab and per-space keys drop tabs and spaces
+  that are gone when they're written, so shared.json stays bounded.
 - **mods/gitview-agents**: the send dialog (`agents()`, then the binary's
   `send`, then the sent notes leave `gitview.notes`; its error shown in
   the dialog).
@@ -347,7 +351,9 @@ Spaces on other machines work the same way.
   reads there through `hc exec --on`; the mods put `--` before paths,
   messages and text; in branch scope a poll passes the base it already
   knows with the HEAD it was found at, `--head`; `commit` takes no
-  `--all`) and `app-setup install|uninstall`. The full contract is the module
+  `--all`; every op on a status's root passes `--root`, so the engine
+  doesn't look the top level up again; a repo whose status said
+  `ignore_submodules` is asked with `--ignore-submodules` from then on) and `app-setup install|uninstall`. The full contract is the module
   doc of `src/appjson.rs`.
 - **herdr** functions: `exec`, `watchFolder`, `shared`/`setShared`,
   `nextCommand`, `openOverlay`/`closeOverlay` (`confirm`, `gitview-agents`),
