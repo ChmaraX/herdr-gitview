@@ -48,7 +48,9 @@ export function pill(t, text, { accent = false, id, onPress } = {}) {
   return onPress ? p.id(id).cursor_pointer().on_click((_e, cx) => onPress(cx)) : p;
 }
 
-export const spinner = (t) => div().flex_none().w(10).text_color(t.dim).frames(SPINNER, 90).child(SPINNER[0]);
+// The spinner's place is always there (10 px): showing it moves nothing.
+export const spinner = (t, on = true) =>
+  on ? div().flex_none().w(10).text_color(t.dim).frames(SPINNER, 90).child(SPINNER[0]) : div().flex_none().w(10);
 
 // "folder/" in dim, then the name: the folder gives way first, then the
 // name, both ending in "…". `folder: false` shows the name only; `grow:
@@ -97,7 +99,7 @@ export function filesHeader(t, h) {
     )
     .when(h.notes > 0, (e) => e.child(pill(t, `${h.notes} note${h.notes > 1 ? "s" : ""}`, { accent: true, id: "gitview-notes-pill", onPress: h.onNotes })))
     .child(pill(t, `${h.files} file${h.files === 1 ? "" : "s"}`))
-    .when(h.loading, (e) => e.child(spinner(t)))
+    .child(spinner(t, h.loading))
     .when(h.wide, (e) =>
       e
         .child(iconButton(t, "gitview-tree", h.tree ? "list" : "list-tree", h.tree ? "Show as list (t)" : "Show as tree (t)", h.onTree))
@@ -113,7 +115,7 @@ export function subHeader(t, h) {
     .child(div().flex_none().font_semibold().child(h.title))
     .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(h.detail ?? ""))
     .when(Boolean(h.pill), (e) => e.child(pill(t, h.pill, { id: "gitview-sub-pill", onPress: h.onPill })))
-    .when(h.loading, (e) => e.child(spinner(t)))
+    .child(spinner(t, h.loading))
     .when(Boolean(h.onSend), (e) => e.child(iconButton(t, "gitview-send", "send", "Send to an agent (p)", h.onSend)));
 }
 
@@ -161,7 +163,7 @@ export function diffHeader(t, view, { loading, onClose, rich }) {
         .child(pill(t, view.scope)),
     )
     .when(Boolean(view && rich), (e) => e.child(segmented(t, rich.preview, rich.onPick, rich.compact)))
-    .when(loading, (e) => e.child(spinner(t)))
+    .child(spinner(t, loading))
     .when(Boolean(onClose), (e) => e.child(iconButton(t, "gitview-diff-close", "x", "Close the diff", onClose)));
 }
 

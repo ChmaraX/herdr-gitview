@@ -19,15 +19,21 @@
 //   text, snippet}; `cached`: written on the staged diff.
 // - "gitview.dirty": {root, on, at}: the pane staged or discarded something
 //   (the list refreshes and picks the file the pane shows next).
-// - "gitview.changed": {"<machine or ''>:<repo root>": at}: a folder watch
-//   saw the repo change. With two copies watching one folder only the
-//   newest wakes (herdr-app 0.1.12), so the copy that woke says so here and
-//   the others follow (modkit.js watch).
+// - "gitview.changed": {"<machine or ''>:<repo root>": {at, prev, paths}}: a
+//   folder watch saw the repo change; `paths`: the batch's repo-relative
+//   paths that matter (at most 50), or "all"; `prev`: the stamp before. With
+//   two copies watching one folder only the newest wakes (herdr-app
+//   0.1.12), so the copy that woke says so here and the others follow
+//   (modkit.js watch).
+// - "gitview.ignored": {"<machine or ''>:<repo root>": [dir/]}: the repo's
+//   outermost ignored folders, from the last status (a watch batch under
+//   them is no change).
 // - "gitview.handoff": {<tab>: {root, on, path, section, commit, line, seq,
 //   at, seen}}: Enter handed the tab's diff to herdr-nvim's nvim (its pane
 //   took the diff pane's place). `seq`: the tab's view then; `seen`: the
 //   list saw nvim's pane. When that pane goes, the list brings the diff
 //   back (main.js followHandoff).
+// - "gitview.previewOff": [kind]: kinds of file shown as Diff, not Preview.
 // - "gitview.tree": the list shows folders as a tree.
 // - "gitview.own": {<space>: <tab>}: the space's gitview tab (cmd-g).
 // - "gitview.origins": {<space>: <tab>}: where cmd-g was pressed (it goes
@@ -104,13 +110,43 @@ export function machineOf(address) {
   return s.includes("/") ? s.split("/")[0] : null;
 }
 
-// When a watch last saw the (local) repo change.
-export function changedAt(root) {
-  return (shared("gitview.changed") ?? {})[notesKey(null, root)] ?? 0;
+// The last change a watch saw in the (local) repo: {at, prev, paths} or null.
+export function stampOf(root) {
+  const s = (shared("gitview.changed") ?? {})[notesKey(null, root)];
+  return typeof s === "number" ? { at: s, prev: 0, paths: "all" } : s ?? null;
 }
 
-export function stampChanged(root, at) {
-  setShared("gitview.changed", { ...(shared("gitview.changed") ?? {}), [notesKey(null, root)]: at });
+export const changedAt = (root) => stampOf(root)?.at ?? 0;
+
+// Stamps older than an hour go (repos nobody watches any more).
+export function stampChanged(root, at, paths) {
+  const all = Object.fromEntries(Object.entries(shared("gitview.changed") ?? {}).filter(([, s]) => at - (s?.at ?? s ?? 0) < 3600000));
+  all[notesKey(null, root)] = { at, prev: changedAt(root), paths };
+  setShared("gitview.changed", all);
+}
+
+export function ignoredDirs(root) {
+  return (shared("gitview.ignored") ?? {})[notesKey(null, root)] ?? [];
+}
+
+export function setIgnoredDirs(root, dirs) {
+  const key = notesKey(null, root);
+  const all = shared("gitview.ignored") ?? {};
+  if (JSON.stringify(all[key] ?? []) === JSON.stringify(dirs)) return;
+  setShared("gitview.ignored", { ...all, [key]: dirs });
+}
+
+// ---- the diff pane's Diff | Preview ------------------------------------------------
+
+// The kinds of file (preview.js: markdown, image, html) the person switched
+// to Diff; a new pane (after nvim, in another tab) keeps the choice.
+export function previewOff() {
+  return shared("gitview.previewOff") ?? [];
+}
+
+export function setPreviewOff(kind, off) {
+  const now = previewOff().filter((k) => k !== kind);
+  setShared("gitview.previewOff", off ? [...now, kind] : now);
 }
 
 // ---- the handoff to herdr-nvim ----------------------------------------------------

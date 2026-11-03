@@ -57,8 +57,12 @@ function reason(r) {
   return `can't preview a ${r.kind}`;
 }
 
-async function fetchSide(v, path, side, want) {
-  const r = await gv(["file", "--repo", v.root, "--path", path, "--side", side, "--out", `${appHome()}/${CACHE}`, ...onArgs(v.on)]);
+// `had`: what this side gave last time; when the engine says it's the same
+// (`--unless` its hash), that comes back as it is.
+async function fetchSide(v, path, side, want, had) {
+  const unless = had?.hash ? ["--unless", had.hash] : [];
+  const r = await gv(["file", "--repo", v.root, "--path", path, "--side", side, "--out", `${appHome()}/${CACHE}`, ...unless, ...onArgs(v.on)]);
+  if (r.same) return had;
   if (r.kind !== want) throw new Error(`preview: ${reason(r)}`);
   if (want === "image") r.src = r.path.startsWith(`${appHome()}/`) ? r.path.slice(appHome().length + 1) : r.path;
   return r;
@@ -66,26 +70,28 @@ async function fetchSide(v, path, side, want) {
 
 // Loads what the preview shows: {kind, text?, after?, before?, deleted,
 // sides}. Rejects with the reason it can't (the pane shows the diff then).
-export async function loadPreview(v) {
+// `had`: this file's preview from before; what's unchanged is reused
+// (`same` true when nothing changed).
+export async function loadPreview(v, had = null) {
   const kind = previewKind(v);
   const { side, before, deleted } = sidesOf(v, kind);
   if (!side) throw new Error("preview: no side to show");
   const path = deleted ? v.orig ?? v.path : v.path;
   if (kind !== "image") {
-    const r = await fetchSide(v, path, side, "text");
-    return { kind, text: r.text, deleted: Boolean(deleted), side };
+    const r = await fetchSide(v, path, side, "text", had?.textReply);
+    return { kind, text: r.text, textReply: r, deleted: Boolean(deleted), side, same: r === had?.textReply };
   }
-  const after = await fetchSide(v, path, side, "image");
+  const after = await fetchSide(v, path, side, "image", had?.after);
   let old = null;
   if (before) {
     try {
-      old = await fetchSide(v, v.orig ?? v.path, before, "image");
+      old = await fetchSide(v, v.orig ?? v.path, before, "image", had?.before);
     } catch {
       old = null; // no before (new on that side): after only
     }
   }
   prune([after.path, old?.path].filter(Boolean));
-  return { kind, after, before: old, deleted: Boolean(deleted), side, beforeSide: before };
+  return { kind, after, before: old, deleted: Boolean(deleted), side, beforeSide: before, same: after === had?.after && old === (had?.before ?? null) };
 }
 
 // The newest KEEP files and bytes stay (`keep`: the ones on screen).

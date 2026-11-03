@@ -5,7 +5,7 @@
 import { closeOverlay, nextCommand, notify, panes, props, watchFolder } from "herdr";
 import { message } from "./engine.js";
 import { shared } from "herdr";
-import { changedAt, stampChanged } from "./shared.js";
+import { changedAt, ignoredDirs, stampChanged, stampOf } from "./shared.js";
 
 // At most one "gitview.changed" stamp per repo this often.
 const STAMP_MS = 250;
@@ -17,6 +17,8 @@ const STAMP_MS = 250;
 // counts, so it can't hold the commands or the spinner for good; the log
 // names it.
 const LOST_MS = 35000;
+// A load shows the spinner once it has run this long.
+const SPIN_MS = 250;
 
 export class Loads {
   constructor(onError) {
@@ -42,10 +44,19 @@ export class Loads {
     return this.live() > 0;
   }
 
-  // `what` names it in the log.
-  run(cx, what, work) {
+  // Whether to show the spinner: a load that isn't quiet has run SPIN_MS
+  // (the short ones never blink it).
+  shown() {
+    const now = Date.now();
+    return [...this.running.values()].some((l) => !l.quiet && now - l.at >= SPIN_MS && now - l.at < LOST_MS);
+  }
+
+  // `what` names it in the log; `quiet`: never shows the spinner (a poll, a
+  // reload of what's shown).
+  run(cx, what, work, { quiet = false } = {}) {
     const id = ++this.seq;
-    this.running.set(id, { what, at: Date.now() });
+    this.running.set(id, { what, at: Date.now(), quiet });
+    if (!quiet) cx.spawn(async (cx) => { await cx.sleep(SPIN_MS + 10); if (this.running.has(id)) cx.notify(); });
     cx.spawn(async (cx) => {
       try {
         await work(cx);
@@ -64,10 +75,12 @@ export class Loads {
   // between are dropped). `work(cx, current)`: `current()` turns false once
   // a later run started (after a lost one), so an older reply is ignored,
   // never written over a newer one.
-  latest(cx, what, work) {
+  latest(cx, what, work, { quiet = false } = {}) {
     let slot = this.slots.get(what);
     if (!slot) this.slots.set(what, (slot = { started: 0, at: 0, next: null }));
     if (slot.at && Date.now() - slot.at < LOST_MS) {
+      // Quiet only if every ask it stands for was.
+      slot.nextQuiet = (slot.next ? slot.nextQuiet : true) && quiet;
       slot.next = work;
       return;
     }
@@ -81,10 +94,10 @@ export class Loads {
       } finally {
         if (slot.started === seq) {
           slot.at = 0;
-          if (slot.next) this.latest(cx, what, slot.next);
+          if (slot.next) this.latest(cx, what, slot.next, { quiet: slot.nextQuiet ?? false });
         }
       }
-    });
+    }, { quiet });
   }
 
   // The loads started by `before` (ms) are taken as lost, and each such
@@ -152,6 +165,30 @@ export function debugLook(cx, look) {
   if (shared("gitview.debug")) cx.timer.every(25, () => look());
 }
 
+// work() at most once per `ms`, after the last kick (trailing): returns
+// kick(). A task of the copy's own, as pump's.
+export function debounced(cx, ms, work) {
+  let wake = null;
+  let due = 0;
+  cx.spawn(async (cx) => {
+    for (;;) {
+      if (!due) await new Promise((resolve) => (wake = resolve));
+      wake = null;
+      while (Date.now() < due) await cx.sleep(Math.max(10, due - Date.now()));
+      due = 0;
+      try {
+        work(cx);
+      } catch (e) {
+        console.error(`gitview: ${e?.message ?? e}`);
+      }
+    }
+  });
+  return () => {
+    due = Date.now() + ms;
+    if (wake) wake();
+  };
+}
+
 // Whether a mod pane went since the last look (any mod's: the app's drop
 // of in-flight execs isn't limited to ours); `changed()` only peeks.
 export class ModPanes {
@@ -200,13 +237,34 @@ export class Flash {
   }
 }
 
-// Calls `changed(cx)` whenever something under `root` changes, until
-// `watcher.root` is something else. A local repo only (no watch elsewhere).
-// Only the newest copy waiting on a folder wakes (herdr-app 0.1.12): the
-// one that wakes stamps shared "gitview.changed" for the repo (at most once
-// per STAMP_MS; a batch inside that waits for the next stamp, never
-// dropped), and every copy follows the stamp too (`followStamp`). A
-// refresh never stamps, so nothing loops.
+// A watch batch's paths that can change what gitview shows: repo-relative,
+// without git's object, log and lock writes or anything under the repo's
+// ignored folders (macOS watches those too: a build's output); "all" when
+// the batch names the root itself (the app's "refresh everything") or has
+// more than 50.
+export function batchPaths(root, batch) {
+  const base = root.endsWith("/") ? root : `${root}/`;
+  const ignored = ignoredDirs(root);
+  const out = [];
+  for (const p of batch ?? []) {
+    if (p === root || p === base) return "all";
+    if (!p.startsWith(base)) continue;
+    const rel = p.slice(base.length);
+    if (rel.startsWith(".git/objects/") || rel.startsWith(".git/logs/") || rel.endsWith(".lock")) continue;
+    if (ignored.some((d) => rel.startsWith(d))) continue;
+    out.push(rel);
+  }
+  return out.length > 50 ? "all" : out;
+}
+
+// Calls `changed(cx, paths)` whenever something that matters under `root`
+// changes (`batchPaths`), until `watcher.root` is something else. A local
+// repo only (no watch elsewhere). Only the newest copy waiting on a folder
+// wakes (herdr-app 0.1.12): the one that wakes stamps shared
+// "gitview.changed" for the repo, with the paths (at most once per
+// STAMP_MS; a batch inside that waits for the next stamp, never dropped),
+// and every copy follows the stamp too (`followStamp`). A refresh never
+// stamps, so nothing loops.
 export function watch(watcher, root, cx, changed) {
   if (watcher.root === root) return;
   watcher.root = root;
@@ -214,14 +272,15 @@ export function watch(watcher, root, cx, changed) {
   cx.spawn(async (cx) => {
     try {
       while (watcher.root === root) {
-        await watchFolder(root);
+        const paths = batchPaths(root, await watchFolder(root));
+        if (paths !== "all" && !paths.length) continue; // nothing that matters
         const wait = STAMP_MS - (Date.now() - changedAt(root));
         if (wait > 0) await cx.sleep(wait);
         if (watcher.root !== root) break;
         const at = Date.now();
-        stampChanged(root, at);
+        stampChanged(root, at, paths);
         watcher.seen = at;
-        changed(cx);
+        changed(cx, paths);
       }
     } catch {
       if (watcher.root === root) watcher.root = null;
@@ -232,11 +291,14 @@ export function watch(watcher, root, cx, changed) {
 // Another copy's watch stamped this watcher's repo since this copy looked.
 export const stampMoved = (watcher) => Boolean(watcher.root) && changedAt(watcher.root) > (watcher.seen ?? 0);
 
-// True (once) when the stamp moved: the repo changed, refresh it.
+// Once per stamp: the paths it names (`batchPaths`), "all" when a stamp in
+// between was missed, null when there's none new.
 export function followStamp(watcher) {
-  if (!stampMoved(watcher)) return false;
-  watcher.seen = changedAt(watcher.root);
-  return true;
+  if (!stampMoved(watcher)) return null;
+  const s = stampOf(watcher.root);
+  const missed = (watcher.seen ?? 0) < (s.prev ?? 0);
+  watcher.seen = s.at;
+  return missed ? "all" : s.paths;
 }
 
 // The mod's commands (`<mod>.<command>`), one at a time: `before(cx)`

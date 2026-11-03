@@ -116,13 +116,16 @@ export const sameFile = (a, b) =>
   Boolean(a && b) && a.root === b.root && a.on === b.on && a.path === b.path && a.section === b.section && a.commit === b.commit;
 
 // `herdr-gitview json diff` arguments for a view.
-export function diffArgs(view, { dark, unfold }) {
+// `unless`: the hash of the rows shown now (the reply is {same} when they'd
+// be the same).
+export function diffArgs(view, { dark, unfold, unless = null }) {
   const args = ["diff", "--repo", view.root, "--path", view.path, "--kind", view.kind, "--theme", dark ? "dark" : "light"];
   if (view.orig) args.push("--orig", view.orig);
   if (view.cached) args.push("--cached");
   if (view.base) args.push("--merge-base", view.base.merge_base, "--base", view.base.label);
   if (view.commit) args.push("--commit", view.commit);
   if (unfold) args.push("--unfold");
+  if (unless) args.push("--unless", unless);
   if (view.on) args.push("--on", view.on);
   return args;
 }

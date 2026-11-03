@@ -18,7 +18,7 @@ import { gv, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  cursorIn, diffPane, dirty, handoffIn, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, pump, setHandoff, setTreeMode, setView, takeKeyboard,
+  cursorIn, diffPane, dirty, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, pump, setHandoff, setTreeMode, setView, takeKeyboard,
   treeMode, viewIn,
 } from "./shared.js";
 import { Flash, Loads, ModPanes, commandLoop, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
@@ -101,7 +101,12 @@ export default class GitList extends View {
     if (this.modPanes.changed()) return true;
     if (this.cycle && this.cycle.shown !== this.place.shown()) return true;
     if (!this.place.shown()) return false;
-    if (this.place.panel && handoffIn(this.tab())) return true; // followHandoff watches nvim's pane
+    if (this.place.panel) {
+      // followHandoff, on an edge only: the record not seen yet, or nvim's
+      // pane came or went (not a redraw every look while nvim is open).
+      const rec = handoffIn(this.tab());
+      if (rec && (!rec.seen || (herdrNvimPanes(this.tab()).length > 0) !== this.nvimSeen)) return true;
+    }
     if (stampMoved(this.watcher)) return true;
     const ctx = this.context();
     const d = dirty();
@@ -125,8 +130,8 @@ export default class GitList extends View {
     const repoChanged = Boolean(d && d.at > this.seen.dirty && d.root === this.work?.where.root);
     if (d) this.seen.dirty = Math.max(this.seen.dirty, d.at);
     const tabChanged = ctx.tab !== this.ctx?.tab;
-    const stamped = followStamp(this.watcher); // another copy's watch saw the repo change
-    if (ctx.key !== this.ctx?.key || repoChanged || stamped) this.refresh(cx);
+    const stamped = Boolean(followStamp(this.watcher)); // another copy's watch saw the repo change
+    if (ctx.key !== this.ctx?.key || repoChanged || stamped) this.refresh(cx, { quiet: ctx.key === this.ctx?.key });
     else if (tabChanged) this.ctx = { ...this.ctx, tab: ctx.tab, space: ctx.space };
     this.followPane({ adopt: tabChanged });
     if (this.place.panel) this.followHandoff(cx);
@@ -167,6 +172,7 @@ export default class GitList extends View {
     const rec = handoffIn(tab);
     if (!rec) return;
     const nvim = herdrNvimPanes(tab).length > 0;
+    this.nvimSeen = nvim;
     if (!rec.seen) {
       if (nvim) setHandoff(tab, { ...rec, seen: true });
       else if (Date.now() - rec.at > 10000) setHandoff(tab, null);
@@ -211,7 +217,9 @@ export default class GitList extends View {
   // found at: the engine finds it again once HEAD moved. One status load at
   // a time (Loads.latest); a newer ask runs after it, and a reply that
   // isn't the newest is dropped.
-  refresh(cx, { poll = false } = {}) {
+  // `quiet`: the same repo again (a watch batch, a stamp, a poll): no
+  // spinner.
+  refresh(cx, { poll = false, quiet = poll } = {}) {
     this.ctx = this.context();
     if (!this.ctx.cwd) {
       this.work = null;
@@ -228,9 +236,14 @@ export default class GitList extends View {
         status = await gv(["status", "--repo", ctx.cwd, "--scope", this.scope, ...known, ...onArgs(ctx.on)]);
       } catch (e) {
         if (current() && ctx.key === this.ctx.key) {
-          this.work = null;
           const m = message(e);
-          this.error = /not (inside )?a git repository/.test(m) ? "Not a git repository" : m;
+          // The same repo as shown: a passing failure (a remote hiccup, a
+          // timeout) keeps the list and says so in the footer.
+          if (this.work && this.loadedKey === ctx.key && !/not (inside )?a git repository/.test(m)) this.flash.set(m);
+          else {
+            this.work = null;
+            this.error = /not (inside )?a git repository/.test(m) ? "Not a git repository" : m;
+          }
         }
         return;
       }
@@ -246,12 +259,13 @@ export default class GitList extends View {
       }
       this.error = null;
       this.loadedKey = ctx.key;
-      if (!ctx.on) watch(this.watcher, status.root, cx, (cx) => { if (this.place.shown()) this.refresh(cx); });
+      if (!ctx.on) setIgnoredDirs(status.root, status.ignored_dirs ?? []);
+      if (!ctx.on) watch(this.watcher, status.root, cx, (cx) => { if (this.place.shown()) this.refresh(cx, { quiet: true }); });
       else this.watcher.root = null; // a local repo's watch ends
       this.followPane();
       this.followSelection();
       knowEditor(where.root, where.on, cx);
-    });
+    }, { quiet });
   }
 
   // After a new status: when the file the pane shows went from where it
@@ -269,6 +283,10 @@ export default class GitList extends View {
     const there = work.findFile(view.path, view.section);
     if (there) {
       if (!work.row()) work.select(there);
+      // Its counts or kind moved (an agent wrote more to it): the pane's
+      // header follows.
+      const now = work.viewFor(there);
+      if (["add", "del", "kind", "letter"].some((k) => now[k] !== view[k])) this.show(there);
       return;
     }
     const next = work.shownFile();
@@ -308,7 +326,12 @@ export default class GitList extends View {
   show(row, { open = false, cx, line = null, focusPane = false } = {}) {
     const tab = this.tab();
     if (!tab) return;
-    this.seen.views[tab] = setView(tab, { ...this.list().viewFor(row, line), focus: focusPane }).seq;
+    const next = { ...this.list().viewFor(row, line), focus: focusPane };
+    // The same file as shown, the same way (j on the last row, a click on
+    // the selected one): nothing to write, nothing for the pane to reload.
+    const was = liveView(viewIn(tab));
+    const same = was && sameFile(was, next) && !line && !focusPane && ["add", "del", "kind", "letter", "scope"].every((k) => was[k] === next[k]);
+    if (!same) this.seen.views[tab] = setView(tab, next).seq;
     if (open && cx && this.place.opensDiffPane) this.ensurePane(tab, cx, { focusPane });
   }
 
@@ -540,11 +563,15 @@ export default class GitList extends View {
   // What the list draws now, for the debug trace (modkit.js trace).
   traceFields() {
     const list = this.list();
+    const body = this.mode === "log"
+      ? (this.history.commits.length ? "content" : this.history.loading ? (this.loads.shown() ? "loading-text" : "blank") : "empty-state")
+      : this.mode === "notes" ? (this.notes().length ? "content" : "empty-state")
+      : list?.rows.length ? "content" : list ? "empty-state" : this.loads.busy() ? "loading-text" : "empty-state";
     return {
       tab: this.tab(),
       mode: this.mode,
-      body: list?.rows.length ? "content" : this.loads.busy() ? "loading-text" : "empty-state",
-      spinner: this.loads.busy(),
+      body,
+      spinner: this.loads.shown(),
       header: this.mode === "files" ? `${this.work?.status.scope ?? "-"} ${this.work?.files() ?? 0} files` : this.mode,
       selected: list?.row()?.key ?? null,
     };

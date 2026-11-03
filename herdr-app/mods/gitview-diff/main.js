@@ -20,9 +20,10 @@ import { gv, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile, viewOf } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  addNote, cursorIn, diffPane, liveView, notesKey, notesOf, onScreen, pump, removeNotes, setCursor, setDirty, setView, takeKeyboard, viewIn,
+  addNote, cursorIn, diffPane, liveView, notesKey, notesOf, onScreen, previewOff, pump, removeNotes, setCursor, setDirty, setPreviewOff, setView,
+  takeKeyboard, viewIn,
 } from "./shared.js";
-import { Flash, Loads, ModPanes, commandLoop, debugLook, followStamp, keyEvent, keyName, stampMoved, trace, watch } from "./modkit.js";
+import { Flash, Loads, ModPanes, commandLoop, debounced, debugLook, followStamp, keyEvent, keyName, stampMoved, trace, watch } from "./modkit.js";
 import { panePlacement } from "./placement.js";
 import { editorLabel, knowEditor, openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
@@ -34,7 +35,10 @@ import * as diffs from "./diffview.js";
 const EMPTY = { rows: [] };
 
 // Keys that act on the diff's lines: in Preview they say so instead.
-const inDiff = (run) => (v, cx) => (v.inPreview() ? v.flash.set("that works in Diff: m switches") : run(v, cx));
+// Keys that act on the diff's lines: in Preview they say so instead, and
+// while the next file's diff is on its way (the old one still shows) they
+// wait for it (do nothing).
+const inDiff = (run) => (v, cx) => (v.inPreview() ? v.flash.set("that works in Diff: m switches") : v.ready() ? run(v, cx) : null);
 const diffShown = (v) => !v.inPreview();
 
 // The pane's keys (keymap.js): the handling, the footer's keycaps and the
@@ -45,10 +49,10 @@ const KEYS = [
   { caps: ["g", "G"], label: "top / bottom", on: { g: inDiff((v) => v.line(-Infinity)), home: inDiff((v) => v.line(-Infinity)), G: inDiff((v) => v.line(Infinity)), end: inDiff((v) => v.line(Infinity)) } },
   { caps: ["s"], label: "stage", rank: 1, on: { s: (v, cx) => v.act("stage", cx) } },
   { caps: ["u"], label: "unstage", rank: 2, on: { u: (v, cx) => v.act("unstage", cx) } },
-  { caps: ["m"], label: "diff / preview", rank: 3, when: (v) => Boolean(previewKind(v.view)), on: { m: (v, cx) => v.togglePreview(cx) } },
-  { caps: ["v"], label: "select", rank: 4, when: diffShown, on: { v: inDiff((v) => { v.anchor = v.anchor === null ? v.cursor : null; }) } },
-  { caps: ["a"], label: "note", rank: 5, when: diffShown, on: { a: inDiff((v) => v.annotate()) } },
-  { caps: ["enter"], label: (v) => editorLabel(v.view?.root, v.view?.on), rank: 6, on: { enter: (v, cx) => v.enterKey(cx), e: (v) => v.edit() } },
+  { caps: ["m"], label: "diff / preview", rank: 4, when: (v) => Boolean(previewKind(v.view)), on: { m: (v, cx) => v.togglePreview(cx) } },
+  { caps: ["v"], label: "select", rank: 5, when: diffShown, on: { v: inDiff((v) => { v.anchor = v.anchor === null ? v.cursor : null; }) } },
+  { caps: ["a"], label: "note", rank: 6, when: diffShown, on: { a: inDiff((v) => v.annotate()) } },
+  { caps: ["enter"], label: (v) => editorLabel(v.view?.root, v.view?.on), rank: 3, on: { enter: (v, cx) => v.enterKey(cx), e: (v) => v.edit() } },
   { caps: ["J", "K"], label: "next / previous file", rank: 7, on: { J: (v) => v.nextFile(1), K: (v) => v.nextFile(-1) } },
   { caps: ["x"], label: "discard", rank: 8, on: { x: (v, cx) => v.act("discard", cx) } },
   { caps: ["p"], label: "send notes", rank: 9, on: { p: (v, cx) => v.send(cx) } },
@@ -61,6 +65,17 @@ const NOTE_KEYS = [{ caps: ["enter"], label: "save the note", rank: 1, on: {} },
 // Notes are written on staged or unstaged changes, as the TUI's: the side
 // (cached or not) of a view that takes them, null for a commit's or the
 // branch's diff.
+// Whether a change to `paths` (repo-relative, or "all": watch batches,
+// modkit.js batchPaths) can change the view's diff: its file (or where it
+// was renamed from), or git's index, HEAD or refs; never a commit's.
+function touches(view, paths) {
+  if (!view) return false;
+  if (paths === "all") return true;
+  if (view.commit) return false;
+  const git = (p) => p === ".git/index" || p === ".git/HEAD" || p === ".git/packed-refs" || p.startsWith(".git/refs/");
+  return paths.some((p) => p === view.path || p === view.orig || git(p));
+}
+
 const noteSide = (v) => (!v || v.commit || v.section === "branch" ? null : Boolean(v.cached));
 
 export default class GitDiff extends View {
@@ -80,7 +95,10 @@ export default class GitDiff extends View {
     this.unfold = false;
     this.width = 0;
     this.preview = null; // {view, kind, …} (preview.js), or {view, failed}
-    this.previewOff = new Set(); // kinds the person switched to Diff
+    this.diffView = null; // the view `diff` is of
+    this.lastBody = null; // "diff" | "preview": what the body showed last
+    this.switchedAt = 0; // another file was asked for (the old body dims after 150 ms)
+    this.cursorKick = debounced(cx, 250, () => this.publishNow());
     this.cursorMoved = false; // the person moved the cursor in this file
     this.dark = isDark(theme().background);
     this.flash = new Flash(cx);
@@ -114,7 +132,10 @@ export default class GitDiff extends View {
   // then this one starts afresh too.
   sync(cx) {
     if (this.modPanes.gone()) this.loads.afterClose(cx); // Loads.revive
-    if (followStamp(this.watcher) && onScreen(this.tab())) this.reload(cx); // another copy's watch saw the repo change
+    // Another copy's watch saw the repo change: reload when that can change
+    // this diff (`touches`).
+    const stamped = followStamp(this.watcher);
+    if (stamped && touches(this.view, stamped) && onScreen(this.tab())) this.reload(cx);
     if (isDark(theme().background) !== this.dark) {
       this.dark = !this.dark;
       this.reload(cx);
@@ -127,59 +148,77 @@ export default class GitDiff extends View {
     if (stored?.focus) takeKeyboard(this, cx); // back from nvim: the keys are the diff's
     const view = liveView(stored);
     const same = !fresh && sameFile(view, this.view);
+    // The same file written again (the list's j on the last row, a refresh):
+    // load again only when its change did (the counts) or a line was asked.
+    const changed = !same || view.line || ["add", "del", "kind", "letter", "cached", "scope"].some((k) => view[k] !== this.view?.[k]);
     this.view = view;
     if (!same) {
-      this.diff = EMPTY;
-      this.preview = null;
+      // Another file: the old body stays until the new one is here (dimmed
+      // after 150 ms); what belongs to the old rows goes now.
       this.cursorMoved = false;
       this.anchor = null;
       this.unfold = false;
       this.pendingNote = null;
-      this.scroll.top = 0;
+      this.switchedAt = Date.now();
+      cx.spawn(async (cx) => { await cx.sleep(160); cx.notify(); });
     }
     if (!view) return;
     knowEditor(view.root, view.on, cx);
-    this.loadDiff(cx, { keep: same && !view.line, line: view.line });
-    if (this.wantsPreview()) this.loadPreview(cx);
-    if (!view.on) watch(this.watcher, view.root, cx, (cx) => { if (onScreen(this.tab())) this.reload(cx); });
+    if (changed) {
+      this.loadDiff(cx, { keep: same && !view.line, line: view.line, quiet: same });
+      if (this.wantsPreview()) this.loadPreview(cx, { quiet: same });
+    }
+    if (!view.on) watch(this.watcher, view.root, cx, (cx, paths) => { if (touches(this.view, paths) && onScreen(this.tab())) this.reload(cx); });
     else this.watcher.root = null; // a local repo's watch ends
   }
 
+  // The shown file again (the repo changed): no spinner.
   reload(cx) {
     if (!this.view) return;
-    this.loadDiff(cx, { keep: true });
-    if (this.wantsPreview()) this.loadPreview(cx);
+    this.loadDiff(cx, { keep: true, quiet: true });
+    if (this.wantsPreview()) this.loadPreview(cx, { quiet: true });
   }
 
   // ---- preview ------------------------------------------------------------------
 
-  // The shown file previews, and the person didn't switch its kind to Diff.
+  // The shown file previews, and the person didn't switch its kind to
+  // Diff (kept in shared gitview.previewOff, so a new pane, after nvim say,
+  // keeps it).
   wantsPreview() {
     const kind = previewKind(this.view);
-    return Boolean(kind) && !this.previewOff.has(kind);
+    return Boolean(kind) && !previewOff().includes(kind);
   }
 
+  // The mode, decided from the file's path before anything loads: Preview,
+  // unless it can't show this file (then the diff, with the reason).
   inPreview() {
-    return this.wantsPreview() && this.preview?.view === this.view && !this.preview.failed;
+    return this.wantsPreview() && !(this.preview?.failed && sameFile(this.preview.view, this.view));
+  }
+
+  // What the body shows is of the shown file (else the old one still shows).
+  ready() {
+    return this.inPreview() ? Boolean(this.preview && !this.preview.failed && sameFile(this.preview.view, this.view)) : sameFile(this.diffView, this.view);
   }
 
   // What it can't show (too big, not there, a failed read) falls back to
   // Diff, with the reason in the footer.
-  loadPreview(cx) {
+  loadPreview(cx, { quiet = false } = {}) {
     this.loads.latest(cx, "preview", async () => {
       const view = this.view;
       if (!view) return;
       try {
-        const p = await loadPreview(view);
-        if (this.view !== view) return;
+        const had = this.preview && !this.preview.failed && sameFile(this.preview.view, view) ? this.preview : null;
+        const p = await loadPreview(view, had);
+        if (!sameFile(this.view, view) || (had && p.same)) return;
         this.preview = { ...p, view };
+        this.lastBody = "preview";
         this.publishCursor();
       } catch (e) {
-        if (this.view !== view) return;
+        if (!sameFile(this.view, view)) return;
         this.preview = { view, failed: true };
         this.flash.set(message(e));
       }
-    });
+    }, { quiet });
   }
 
   // m, or the header's Diff | Preview: kept per kind of file while the
@@ -187,9 +226,8 @@ export default class GitDiff extends View {
   togglePreview(cx, preview = !this.inPreview()) {
     const kind = previewKind(this.view);
     if (!kind) return this.flash.set("no preview for this file (markdown, images, SVGs have one)");
-    if (preview) this.previewOff.delete(kind);
-    else this.previewOff.add(kind);
-    if (preview && this.preview?.view !== this.view) this.loadPreview(cx);
+    setPreviewOff(kind, !preview);
+    if (preview && !sameFile(this.preview?.view, this.view)) this.loadPreview(cx);
     else if (preview && this.preview?.failed) this.flash.set("can't preview this one: the diff shows");
     this.publishCursor();
   }
@@ -198,7 +236,10 @@ export default class GitDiff extends View {
   // repo changed again, another view), it loads once more afterwards, with
   // the asks merged (`keep`: the cursor stays; else it goes to `line`, or
   // the first change).
-  loadDiff(cx, { keep, line = null }) {
+  // `quiet`: no spinner (a reload of the same file).
+  // A reload of the same rows asks `--unless` their hash: when nothing
+  // changed the engine says {same}, and nothing is parsed or redrawn.
+  loadDiff(cx, { keep, line = null, quiet = false }) {
     const asked = this.asked;
     this.asked = asked ? { keep: asked.keep && keep, line: line ?? asked.line } : { keep, line };
     this.loads.latest(cx, "diff", async () => {
@@ -206,19 +247,30 @@ export default class GitDiff extends View {
       const { keep, line } = this.asked ?? { keep: true, line: null };
       this.asked = null;
       if (!view) return;
+      const args = diffArgs(view, { dark: this.dark, unfold: this.unfold });
+      const again = keep && !line && sameFile(this.diffView, view) && JSON.stringify(args) === this.diffArgs;
       let diff;
       try {
-        diff = await gv(diffArgs(view, { dark: this.dark, unfold: this.unfold }));
+        diff = await gv(again && this.diff.hash ? diffArgs(view, { dark: this.dark, unfold: this.unfold, unless: this.diff.hash }) : args);
+        if (diff.same) return;
+        this.diffArgs = JSON.stringify(args);
       } catch (e) {
-        if (this.view === view) this.diff = EMPTY;
+        if (sameFile(this.view, view) && !sameFile(this.diffView, view)) {
+          this.diff = EMPTY;
+          this.diffView = view;
+        }
         throw e;
       }
-      if (this.view !== view) return;
+      if (!sameFile(this.view, view)) return;
+      const another = !sameFile(this.diffView, view);
       this.diff = diff;
+      this.diffView = view;
+      this.lastBody = "diff";
       const n = diff.rows.length;
-      if (line || !keep) {
+      if (line || !keep || another) {
         const at = line ? diff.rows.findIndex((r) => r.n === line) : diff.rows.findIndex((r) => r.k === "add" || r.k === "del");
         this.cursor = Math.max(0, at);
+        if (another) this.scroll.top = 0;
         this.pendingReveal = { row: this.cursor, center: true }; // once `display` has these rows
       }
       this.cursor = Math.min(this.cursor, Math.max(0, n - 1));
@@ -235,17 +287,23 @@ export default class GitDiff extends View {
     return this.diff.first_change ?? 1;
   }
 
-  // Where the cursor is, for the list's Enter; `preview`: the pane shows
-  // the Preview (then Enter opens line 1 unless the cursor was moved).
+  // Where the cursor is, for the list's Enter (the file and its line;
+  // `preview`: the pane shows the Preview, then Enter opens line 1 unless
+  // the cursor was moved). At most every 250 ms: a held j is one write,
+  // not thirty (every shared write renders every mod).
   publishCursor() {
+    this.cursorKick();
+  }
+
+  publishNow() {
     const v = this.view;
     const tab = this.tab();
     const preview = this.inPreview();
-    if (!v || !tab || (!this.diff.rows.length && !preview)) return;
+    if (!v || !tab || !this.ready() || (!this.diff.rows.length && !preview)) return;
     const line = preview && !this.cursorMoved ? 1 : this.lineAt(this.cursor);
     const was = cursorIn(tab);
-    if (was && was.line === line && was.row === this.cursor && was.preview === preview && sameFile(was, v)) return;
-    setCursor(tab, { root: v.root, on: v.on, path: v.path, section: v.section, commit: v.commit, line, row: this.cursor, first: this.diff.first_change ?? 1, preview });
+    if (was && was.line === line && was.preview === preview && sameFile(was, v)) return;
+    setCursor(tab, { root: v.root, on: v.on, path: v.path, section: v.section, commit: v.commit, line, preview });
   }
 
   // ---- moving -------------------------------------------------------------------
@@ -456,22 +514,29 @@ export default class GitDiff extends View {
     if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(theme().background) !== this.dark || this.modPanes.changed() || stampMoved(this.watcher)) this.kick();
   }
 
+  // What the body shows: {kind: "diff" | "preview" | null, old}: the shown
+  // file's, or while it's on its way the one shown before (`old`).
+  bodyNow() {
+    if (this.ready()) return { kind: this.inPreview() ? "preview" : "diff", old: false };
+    return { kind: this.lastBody, old: true };
+  }
+
   // What the pane draws now, for the debug trace (modkit.js trace).
   traceFields() {
     const v = this.view;
-    const preview = this.inPreview();
+    const b = this.bodyNow();
     return {
       tab: this.tab(),
       seq: this.seq,
       file: v ? `${v.section}:${v.path}${v.commit ? `@${v.commit.slice(0, 7)}` : ""}` : null,
       shown: viewIn(this.tab())?.path ?? null,
-      body: preview ? "content"
-        : v && this.wantsPreview() && this.preview?.view !== v ? "loading-text"
-        : !v ? "empty-state"
-        : this.diff.rows.length ? "content"
-        : (this.diff.empty || this.diff.binary) && !this.loads.busy() ? "empty-state" : "blank",
-      mode: v && previewKind(v) ? (preview ? "preview" : "diff") : "diff",
-      spinner: this.loads.busy(),
+      body: !v ? "empty-state"
+        : b.kind === "preview" ? "content"
+        : b.kind === "diff" ? (this.diff.rows.length ? "content" : this.diff.empty || this.diff.binary ? "empty-state" : "blank")
+        : "blank",
+      old: b.old,
+      mode: v && previewKind(v) ? (this.inPreview() ? "preview" : "diff") : "diff",
+      spinner: this.loads.shown(),
       header: v ? `${v.letter ?? ""} ${v.path} +${v.add ?? 0} -${v.del ?? 0} ${v.scope}` : "Diff",
     };
   }
@@ -481,10 +546,13 @@ export default class GitDiff extends View {
     this.renderLook();
     const focused = this.handle.is_focused();
     const key = this.notesKey();
+    // The body shows the shown file, or (just switched) the one before.
+    const b = this.bodyNow();
+    const of = b.old ? (b.kind === "preview" ? this.preview?.view : this.diffView) : this.view;
     // A note's card shows on the side it was written on (notes from before
     // `cached` are the unstaged side's).
-    const side = noteSide(this.view);
-    const notes = key && side !== null ? notesOf(key).filter((n) => n.file === this.view.path && Boolean(n.cached) === side) : [];
+    const side = noteSide(of);
+    const notes = key && of && side !== null ? notesOf(key).filter((n) => n.file === of.path && Boolean(n.cached) === side) : [];
     this.display = diffs.displayRows(this.diff, notes, this.pendingNote ? this.pendingNote.after : -1);
     this.scroll.measure(this.display.map(diffs.rowSize));
     if (this.pendingReveal) {
@@ -509,11 +577,13 @@ export default class GitDiff extends View {
     const display = this.display;
     const rich = Boolean(this.view && previewKind(this.view));
     const preview = this.inPreview();
-    const body = preview
-      ? previewBody(this.preview, { t, uiFont: settings().ui_font ?? "Geist", narrow: this.width < 560 })
-      : this.view && this.wantsPreview() && this.preview?.view !== this.view
-        ? v_flex().flex_1().items_center().justify_center().text_color(t.dim).child("Loading the preview…")
-        : this.view
+    const body = (!this.view
+      ? v_flex().flex_1().items_center().justify_center().gap(4).text_color(t.dim)
+          .child(div().child("No file selected"))
+          .child(div().text_size(12).child("Click a file in the gitview list."))
+      : b.kind === "preview"
+        ? previewBody(this.preview, { t, uiFont: settings().ui_font ?? "Geist", narrow: this.width < 560 })
+        : b.kind === "diff"
       ? div()
           .flex_1()
           .min_h(0)
@@ -523,12 +593,11 @@ export default class GitDiff extends View {
           .font_family(settings().font_family ?? "JetBrains Mono")
           .text_size(12)
           .child(this.scroll.view(t, (i) => diffs.renderRow(display[i], ctx)))
-          .when(Boolean(this.diff.empty || this.diff.binary) && !this.loads.busy(), (e) =>
+          .when(Boolean(this.diff.empty || this.diff.binary), (e) =>
             e.child(div().absolute().top(10).px(14).text_color(t.dim).child(this.diff.binary ? "Binary file" : "No text changes")),
           )
-      : v_flex().flex_1().items_center().justify_center().gap(4).text_color(t.dim)
-          .child(div().child("No file selected"))
-          .child(div().text_size(12).child("Click a file in the gitview list."));
+      : div().flex_1() // a new pane's first file, on its way
+    ).when(b.old && Date.now() - this.switchedAt > 150, (e) => e.opacity(0.55));
     trace("pane", this.traceFields(), this);
     return v_flex()
       .id("gitview-diff")
@@ -552,7 +621,7 @@ export default class GitDiff extends View {
         cx.notify();
       })
       .child(diffHeader(t, this.view, {
-        loading: this.loads.busy(),
+        loading: this.loads.shown(),
         onClose: this.place.closeButton ? () => this.closePane() : null,
         rich: rich ? { preview, compact: this.width < 420, onPick: (on, cx) => { this.togglePreview(cx, on); cx.notify(); } } : null,
       }))

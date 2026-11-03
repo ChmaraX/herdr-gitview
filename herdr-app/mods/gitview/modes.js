@@ -29,7 +29,7 @@ const empty = (t, text) => div().px(16).py(12).text_color(t.dim).child(text);
 // A list of file rows (the changed files or a commit's).
 function filesBody(v, t, focused, list) {
   const rows = list?.rows ?? [];
-  if (!rows.length) return empty(t, v.error ?? (v.loads.busy() ? "Loading changes…" : list ? "No changes" : "No folder"));
+  if (!rows.length) return empty(t, v.error ?? (list ? "No changes" : v.loads.busy() ? "Loading changes…" : "No folder"));
   v.scroll.measure(padded(rows.map(rowSize)));
   const ctx = {
     t, selected: list.row()?.key, hover: v.hover, focused, tree: list.tree, inNvim: (row) => v.handedOff(row),
@@ -53,7 +53,7 @@ export const MODES = {
       status: v.work?.status,
       files: v.work?.files() ?? 0,
       notes: notes.length,
-      loading: v.loads.busy(),
+      loading: v.loads.shown(),
       wide: v.width >= 340,
       tree: treeMode(),
       onNotes: (cx) => { v.setMode("notes", cx); cx.notify(); },
@@ -116,12 +116,13 @@ export const MODES = {
       detail: v.history.filter ? `since ${v.work?.where.base?.label ?? "the base"}` : v.work?.status.branch ?? "",
       pill: v.history.filter ? "branch" : "all",
       onPill: (cx) => { toggleLogFilter(v, cx); cx.notify(); },
-      loading: v.history.loading,
+      loading: v.loads.shown(),
       onBack: (cx) => { v.setMode("files", cx); cx.notify(); },
     }),
     body: (v, t, focused) => {
       const commits = v.history.commits;
-      if (!commits.length) return empty(t, v.history.loading ? "Loading history…" : "No commits");
+      // "Loading history…" only once it takes a while (the spinner's 250 ms).
+      if (!commits.length) return empty(t, v.history.loading ? (v.loads.shown() ? "Loading history…" : "") : "No commits");
       v.scroll.measure(padded(commits.map(() => COMMIT_ROW)));
       const ctx = { t, selected: v.history.selected, focused, onClick: (i, cx) => { v.handle.focus(); v.history.selected = i; openCommit(v, commits[i], cx); cx.notify(); } };
       return v.scroll.view(t, (i) => (i === 0 || i > commits.length ? div().h(6) : commitRow(commits[i - 1], i - 1, ctx)));
