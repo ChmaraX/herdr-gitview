@@ -44,9 +44,18 @@ fn json_file(repo: &Path, args: &[&str]) -> (bool, Value) {
     (out.status.success(), v)
 }
 
+/// The reply, without its `hash` (checked to be there; what it's for is
+/// in `tests/unless.rs`).
 fn file(repo: &Path, args: &[&str]) -> Value {
-    let (ok, v) = json_file(repo, args);
+    let (ok, mut v) = json_file(repo, args);
     assert!(ok, "json file {args:?}: {v}");
+    let hash = v.as_object_mut().unwrap().remove("hash");
+    assert!(
+        hash.as_ref()
+            .and_then(Value::as_str)
+            .is_some_and(|h| h.len() == 32),
+        "json file {args:?}: no hash in {v}"
+    );
     v
 }
 

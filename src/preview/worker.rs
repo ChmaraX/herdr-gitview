@@ -377,17 +377,28 @@ fn sources(req: &ShowReq) -> Result<(Source, Source), String> {
 /// Build `req`'s diff in one go (fetch, diff, highlight) — the native app
 /// panel's route (`herdr-gitview json diff`), with no cache or worker.
 pub fn load_doc(repo: &Repo, cfg: &Config, req: &ShowReq) -> Result<render::DiffDoc, String> {
-    let fetched = fetch(repo, req)?;
+    let (old, new) = load_sides(repo, req)?;
+    Ok(build_doc(cfg, req, &old, &new))
+}
+
+/// The two sides [`load_doc`] renders: old and new text.
+pub fn load_sides(repo: &Repo, req: &ShowReq) -> Result<(String, String), String> {
+    fetch(repo, req).map(|f| (f.old, f.new))
+}
+
+/// What [`load_doc`] makes of the sides [`load_sides`] read; nothing else
+/// goes in (with `cfg`'s theme, context lines and tab width).
+pub fn build_doc(cfg: &Config, req: &ShowReq, old: &str, new: &str) -> render::DiffDoc {
     let hl = crate::preview::highlight::Highlighter::new(cfg.theme);
-    Ok(render::build(
+    render::build(
         &req.file,
-        &fetched.old,
-        &fetched.new,
+        old,
+        new,
         &hl,
         cfg.theme,
         cfg.context_lines,
         cfg.tab_width,
-    ))
+    )
 }
 
 /// Read both sides of `req` — every git side in a single `cat-file` call —

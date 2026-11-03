@@ -61,6 +61,18 @@ pub struct FileEntry {
     pub dels: Option<u32>,
 }
 
+/// A status for the app's list: the entries, a rev for each path, and the
+/// ignored folders.
+#[derive(Debug, Clone)]
+pub struct AppStatus {
+    pub entries: Vec<FileEntry>,
+    /// Per path: changes when what the index or HEAD say about it changes,
+    /// or the worktree file does.
+    pub revs: HashMap<PathBuf, String>,
+    /// The outermost ignored folders, each ending in `/`.
+    pub ignored_dirs: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub root: PathBuf,
@@ -464,13 +476,19 @@ impl Repo {
     /// answer, still listing the submodule path itself as changed; only its
     /// internal dirtiness is hidden. Without this the whole pane had nothing
     /// to show and died.
-    fn status_raw(&self, show_untracked: bool) -> Result<Vec<u8>> {
+    /// `git status --porcelain=v2 -z`; `ignored`: with the ignored paths
+    /// (`--ignored=matching`: an ignored folder as one `folder/` record; it
+    /// needs `show_untracked`).
+    fn status_raw(&self, show_untracked: bool, ignored: bool) -> Result<Vec<u8>> {
         let untracked = if show_untracked {
             "--untracked-files=all"
         } else {
             "--untracked-files=no"
         };
-        let args = ["status", "--porcelain=v2", "-z", untracked];
+        let mut args = vec!["status", "--porcelain=v2", "-z", untracked];
+        if ignored && show_untracked {
+            args.push("--ignored=matching");
+        }
         let out = self.git_lenient(&args)?;
         if out.status.success() {
             return Ok(out.stdout);
@@ -487,8 +505,103 @@ impl Repo {
     }
 
     pub fn worktree_status(&self, show_untracked: bool) -> Result<Vec<FileEntry>> {
-        let raw = self.status_raw(show_untracked)?;
-        let mut entries = parse_porcelain_v2(&raw)?;
+        let raw = self.status_raw(show_untracked, false)?;
+        self.worktree_entries(&raw)
+    }
+
+    /// [`Repo::worktree_status`] with what the app's list needs on top: a
+    /// rev per file and the ignored folders (see [`AppStatus`]).
+    pub fn app_worktree_status(&self, show_untracked: bool) -> Result<AppStatus> {
+        let raw = self.status_raw(show_untracked, true)?;
+        let entries = self.worktree_entries(&raw)?;
+        let records = porcelain_records(&raw);
+        let dirty: Vec<&Path> = records
+            .iter()
+            .filter(|r| r.worktree_dirty)
+            .map(|r| r.path.as_path())
+            .collect();
+        let mut prints = self.machine.fingerprints(&self.root, &dirty).into_iter();
+        let mut revs = HashMap::new();
+        let mut ignored = Vec::new();
+        for r in &records {
+            if r.ignored {
+                if r.path.as_os_str().to_string_lossy().ends_with('/') {
+                    ignored.push(r.path.clone());
+                }
+                continue;
+            }
+            let print = if r.worktree_dirty {
+                prints.next().unwrap_or_default()
+            } else {
+                String::new()
+            };
+            revs.insert(
+                r.path.clone(),
+                rev_of(&[r.fields.as_bytes(), print.as_bytes()]),
+            );
+        }
+        let ignored_dirs = if show_untracked {
+            ignored
+        } else {
+            self.ignored_dirs()?
+        };
+        Ok(AppStatus {
+            entries,
+            revs,
+            ignored_dirs: cap(ignored_dirs),
+        })
+    }
+
+    /// [`Repo::branch_changes`] with a rev per file and the ignored folders.
+    pub fn app_branch_status(&self, merge_base: &str, show_untracked: bool) -> Result<AppStatus> {
+        let entries = self.branch_changes(merge_base, show_untracked)?;
+        let present: Vec<&Path> = entries
+            .iter()
+            .filter(|e| e.kind != ChangeKind::Deleted)
+            .map(|e| e.path.as_path())
+            .collect();
+        let mut prints = self.machine.fingerprints(&self.root, &present).into_iter();
+        let mut revs = HashMap::new();
+        for e in &entries {
+            let print = if e.kind == ChangeKind::Deleted {
+                String::new()
+            } else {
+                prints.next().unwrap_or_default()
+            };
+            revs.insert(
+                e.path.clone(),
+                rev_of(&[b"branch", merge_base.as_bytes(), print.as_bytes()]),
+            );
+        }
+        Ok(AppStatus {
+            entries,
+            revs,
+            ignored_dirs: cap(self.ignored_dirs()?),
+        })
+    }
+
+    /// The outermost ignored folders (`git ls-files -o -i --exclude-standard
+    /// --directory`), each ending in `/`.
+    fn ignored_dirs(&self) -> Result<Vec<PathBuf>> {
+        let raw = self.git(&[
+            "ls-files",
+            "-o",
+            "-i",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ])?;
+        Ok(String::from_utf8_lossy(&raw)
+            .split('\0')
+            .filter(|s| s.ends_with('/'))
+            .map(PathBuf::from)
+            .collect())
+    }
+
+    /// `git status`'s porcelain v2 `raw` as the list's entries, with their
+    /// line counts, sorted.
+    fn worktree_entries(&self, raw: &[u8]) -> Result<Vec<FileEntry>> {
+        let mut entries = parse_porcelain_v2(raw)?;
 
         // Merge line stats from numstat (unstaged + staged, summed per path).
         let mut stats: HashMap<PathBuf, Option<(u32, u32)>> = HashMap::new();
@@ -872,7 +985,7 @@ impl Repo {
     pub fn fingerprint(&self, show_untracked: bool) -> u64 {
         // Same fallback as `worktree_status`, or auto-refresh would go blind
         // in exactly the repositories that need the fallback.
-        let raw = self.status_raw(show_untracked).unwrap_or_default();
+        let raw = self.status_raw(show_untracked, false).unwrap_or_default();
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in &raw {
             hash ^= u64::from(*byte);
@@ -962,6 +1075,69 @@ fn parse_porcelain_v2(raw: &[u8]) -> Result<Vec<FileEntry>> {
 
 /// Split an ordinary/rename/unmerged record: field 1 is XY, the path is
 /// everything from field index `path_field` on (paths may contain spaces).
+/// What a status record says about one path, for its rev.
+struct Record {
+    path: PathBuf,
+    /// Everything but the path: XY, the modes and the HEAD and index object
+    /// ids (and for a rename, its score and old path). `?` for untracked.
+    fields: String,
+    /// The worktree's file may differ from the index (`Y` isn't `.`, an
+    /// untracked or conflicted file): its own fingerprint counts.
+    worktree_dirty: bool,
+    /// A `!` record: an ignored path (a folder ends in `/`).
+    ignored: bool,
+}
+
+fn porcelain_records(raw: &[u8]) -> Vec<Record> {
+    let text = String::from_utf8_lossy(raw);
+    let mut fields = text.split('\0');
+    let mut out = Vec::new();
+    while let Some(record) = fields.next() {
+        let path_field = match record.chars().next() {
+            Some('1') => 8,
+            Some('2') => 9,
+            Some('u') => 10,
+            Some(c @ ('?' | '!')) if record.len() > 2 => {
+                out.push(Record {
+                    path: PathBuf::from(&record[2..]),
+                    fields: c.to_string(),
+                    worktree_dirty: c == '?',
+                    ignored: c == '!',
+                });
+                continue;
+            }
+            _ => continue,
+        };
+        let Ok((xy, path)) = split_ordinary(record, path_field) else {
+            continue;
+        };
+        let mut head = record[..record.len() - path.len()].to_string();
+        if record.starts_with('2') {
+            head.push_str(fields.next().unwrap_or_default());
+        }
+        out.push(Record {
+            path: PathBuf::from(path),
+            worktree_dirty: record.starts_with('u') || xy.chars().nth(1) != Some('.'),
+            fields: head,
+            ignored: false,
+        });
+    }
+    out
+}
+
+/// A rev: a hash of `parts`, 16 hex digits.
+fn rev_of(parts: &[&[u8]]) -> String {
+    crate::appfile::digest(parts)[..16].to_string()
+}
+
+/// At most this many ignored folders go in a reply.
+const IGNORED_DIRS_MAX: usize = 200;
+
+fn cap(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    dirs.truncate(IGNORED_DIRS_MAX);
+    dirs
+}
+
 fn split_ordinary(record: &str, path_field: usize) -> Result<(&str, &str)> {
     let xy = record
         .split(' ')

@@ -33,24 +33,45 @@
 //! Ops (exact usage):
 //!
 //! - `status --repo DIR [--scope worktree|branch] [--base LABEL --merge-base
-//!   SHA --head SHA] [--on M]` → `{root, branch, head, scope, sections: [{id,
-//!   title, cached, files: [FILE]}], editor}`; `head` is HEAD's sha (`null`
-//!   before the first commit); branch scope adds `base: {label, merge_base}`
-//!   and has one section (`id: "branch"`). Worktree sections: `conflicts`,
-//!   `staged`, `changes` (empty ones left out). FILE is `{path, orig, kind,
-//!   letter, add, del}`. In branch scope, `--base`/`--merge-base`/`--head`
-//!   (what the last reply said) skip the base detection, a dozen git calls,
-//!   while HEAD is still at `--head`; when it moved (or `--head` is
-//!   missing), the base is resolved again.
+//!   SHA --head SHA] [--on M]` → `{root, branch, head, scope, sections:
+//!   [{id, title, cached, files: [FILE]}], editor, ignored_dirs}`; `head` is
+//!   HEAD's sha (`null` before the first commit); branch scope adds `base:
+//!   {label, merge_base}` and has one section (`id: "branch"`). Worktree
+//!   sections: `conflicts`, `staged`, `changes` (empty ones left out). In
+//!   branch scope, `--base`/`--merge-base`/`--head` (what the last reply
+//!   said) skip the base detection, a dozen git calls, while HEAD is still
+//!   at `--head`; when it moved (or `--head` is missing), the base is
+//!   resolved again.
+//!   - FILE is `{path, orig, kind, letter, add, del, rev}`.
+//!   - `rev` (16 hex digits, opaque) moves when anything the file's diffs
+//!     are made of may have. In worktree scope: what git status says of it
+//!     (XY, modes, HEAD and index object ids, a rename's source), plus the
+//!     worktree file's content when it can differ from the index. In branch
+//!     scope: the merge-base and the worktree file's content. The content
+//!     counts by its git object id (`git hash-object --no-filters`, one call
+//!     for all the files, there too), so a touch that keeps it doesn't move
+//!     the rev, and a file has the same rev here and there. A partly staged
+//!     file has one rev in both sections. A content that couldn't be read
+//!     gives a rev never given before.
+//!   - `ignored_dirs`: the outermost ignored folders, each ending in `/`
+//!     (`target/`, `web/node_modules/`; not ignored files, not `.git/`), at
+//!     most 200. They come from the status call itself
+//!     (`--ignored=matching`); with `show_untracked` off and in branch
+//!     scope, from one `git ls-files -o -i --exclude-standard --directory`.
 //! - `diff --repo DIR --path P --kind K [--orig P] [--cached]
 //!   [--merge-base SHA --base LABEL] [--commit SHA] [--theme dark|light]
-//!   [--unfold] [--on M]` → `{rows: [{k, o, n, m, bg, s}], truncated,
-//!   first_change, empty, binary}`: rows as the TUI renders them; the
-//!   palette's tints come as roles (`@ins`, `@del`, `@ins_emph`,
-//!   `@del_emph`, `@gutter`, `@fold`, `@fold_fg`) so the mod paints them in
-//!   the app's theme. `--cached`: HEAD vs index; `--merge-base`: that commit
-//!   vs the worktree; `--commit`: that commit's own change to the file (vs
-//!   its first parent).
+//!   [--unfold] [--unless HASH] [--on M]` → `{rows: [{k, o, n, m, bg, s}],
+//!   truncated, first_change, empty, binary, hash}`: rows as the TUI
+//!   renders them; the palette's tints come as roles (`@ins`, `@del`,
+//!   `@ins_emph`, `@del_emph`, `@gutter`, `@fold`, `@fold_fg`) so the mod
+//!   paints them in the app's theme. `--cached`: HEAD vs index;
+//!   `--merge-base`: that commit vs the worktree; `--commit`: that commit's
+//!   own change to the file (vs its first parent). `hash` (32 hex digits)
+//!   is of everything the rows are made of (both sides' text, the path, the
+//!   theme, the context lines, the tab width, the engine's version), so the
+//!   same hash means the same reply. With `--unless` that hash: `{same:
+//!   true, hash}` and nothing else (the sides are read, nothing is
+//!   rendered).
 //! - `stage|unstage --repo DIR [--section changes|staged|conflicts] [--on M]
 //!   [--] PATH...` → `{ok, count}`: a folder covers what that section holds
 //!   under it (default: `changes` for stage, `staged` for unstage); a path
@@ -68,7 +89,10 @@
 //!   `git add -u` when `show_untracked` is off (`all: true`). `summary`:
 //!   `<short sha> <subject>`.
 //! - `file --repo DIR --path P [--side S] [--out DIR] [--max-bytes N] [--on
-//!   M]` → one side of a file, for the diff pane's preview. S:
+//!   M] [--unless HASH]` → one side of a file, for the diff pane's preview,
+//!   with a `hash` (32 hex digits; of the kind and the bytes, so the same
+//!   hash is the same reply); with `--unless` that hash: `{same: true,
+//!   hash}` and nothing else (no image written). S:
 //!   `worktree` (default; the file), `index` (`:P`), `head` (`HEAD:P`),
 //!   `commit:SHA` (`SHA:P`), `parent:SHA` (`SHA^:P`, a history file's
 //!   before), `base:SHA` (`SHA:P`, the branch's merge-base); SHA is a
@@ -158,7 +182,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::git::{ChangeKind, CommitInfo, FileEntry, Repo, Scope, StageState};
+use crate::git::{AppStatus, ChangeKind, CommitInfo, FileEntry, Repo, Scope, StageState};
 use crate::ipc::{BranchBase, ShowReq};
 use crate::list::rows::Section;
 
@@ -313,6 +337,9 @@ struct FileOut<'a> {
     letter: &'static str,
     add: Option<u32>,
     del: Option<u32>,
+    /// `status` only: see the module doc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rev: Option<&'a str>,
 }
 
 impl<'a> From<&'a FileEntry> for FileOut<'a> {
@@ -324,6 +351,7 @@ impl<'a> From<&'a FileEntry> for FileOut<'a> {
             letter: letter(f.kind),
             add: f.adds,
             del: f.dels,
+            rev: None,
         }
     }
 }
@@ -337,7 +365,7 @@ struct SectionOut<'a> {
 }
 
 impl<'a> SectionOut<'a> {
-    fn of(section: Section, title: &'static str, files: &'a [FileEntry]) -> Self {
+    fn of(section: Section, title: &'static str, status: &'a AppStatus) -> Self {
         let id = match section {
             Section::Conflicts => "conflicts",
             Section::Staged => "staged",
@@ -348,10 +376,14 @@ impl<'a> SectionOut<'a> {
             id,
             title,
             cached: section.cached(),
-            files: files
+            files: status
+                .entries
                 .iter()
                 .filter(|f| section.holds(f))
-                .map(FileOut::from)
+                .map(|f| FileOut {
+                    rev: status.revs.get(&f.path).map(String::as_str),
+                    ..FileOut::from(f)
+                })
                 .collect(),
         }
     }
@@ -369,6 +401,7 @@ struct StatusOut<'a> {
     base: Option<BranchBase>,
     sections: Vec<SectionOut<'a>>,
     editor: &'a [String],
+    ignored_dirs: &'a [PathBuf],
 }
 
 #[derive(Serialize)]
@@ -418,6 +451,8 @@ struct DiffOut {
     first_change: Option<u32>,
     empty: bool,
     binary: bool,
+    /// Of what the rows are made of; `--unless` it: `{same, hash}`.
+    hash: String,
 }
 
 // ---- status -------------------------------------------------------------------
@@ -445,25 +480,26 @@ fn status(a: &Args) -> Result<Value> {
                 BranchBase { label, merge_base }
             }
         };
-        let files = repo.branch_changes(&base.merge_base, cfg.show_untracked)?;
+        let st = repo.app_branch_status(&base.merge_base, cfg.show_untracked)?;
         return reply(StatusOut {
             root: &repo.root,
             branch,
             head,
             scope: Scope::Branch,
             base: Some(base.clone()),
-            sections: vec![SectionOut::of(Section::Flat, "", &files)],
+            sections: vec![SectionOut::of(Section::Flat, "", &st)],
             editor: &cfg.editor,
+            ignored_dirs: &st.ignored_dirs,
         });
     }
-    let files = repo.worktree_status(cfg.show_untracked)?;
+    let st = repo.app_worktree_status(cfg.show_untracked)?;
     let sections = [
         (Section::Conflicts, "merge conflicts"),
         (Section::Staged, "staged changes"),
         (Section::Changes, "changes"),
     ]
     .into_iter()
-    .map(|(s, title)| SectionOut::of(s, title, &files))
+    .map(|(s, title)| SectionOut::of(s, title, &st))
     .filter(|s| !s.files.is_empty())
     .collect();
     reply(StatusOut {
@@ -474,6 +510,7 @@ fn status(a: &Args) -> Result<Value> {
         base: None,
         sections,
         editor: &cfg.editor,
+        ignored_dirs: &st.ignored_dirs,
     })
 }
 
@@ -517,7 +554,25 @@ fn diff(a: &Args) -> Result<Value> {
             merge_base: merge_base.to_string(),
         });
     }
-    let doc = crate::preview::worker::load_doc(&repo, &cfg, &req).map_err(anyhow::Error::msg)?;
+    let (old, new) = crate::preview::worker::load_sides(&repo, &req).map_err(anyhow::Error::msg)?;
+    // Everything the rows are made of; the same hash, the same rows.
+    let hash = crate::appfile::digest(&[
+        env!("CARGO_PKG_VERSION").as_bytes(),
+        req.file.to_string_lossy().as_bytes(),
+        if cfg.theme.is_light() {
+            b"light"
+        } else {
+            b"dark"
+        },
+        &cfg.context_lines.to_le_bytes(),
+        &cfg.tab_width.to_le_bytes(),
+        old.as_bytes(),
+        new.as_bytes(),
+    ]);
+    if a.value("unless") == Some(hash.as_str()) {
+        return Ok(json!({ "same": true, "hash": hash }));
+    }
+    let doc = crate::preview::worker::build_doc(&cfg, &req, &old, &new);
     let text = doc.tagged_text();
     let rows = text
         .lines
@@ -553,6 +608,7 @@ fn diff(a: &Args) -> Result<Value> {
         first_change: doc.first_change,
         empty: doc.is_empty,
         binary: doc.binary,
+        hash,
     })
 }
 
@@ -730,6 +786,7 @@ fn file(a: &Args) -> Result<Value> {
         &side,
         a.value("out").map(Path::new),
         max,
+        a.value("unless"),
     )?)
 }
 

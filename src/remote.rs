@@ -257,6 +257,93 @@ impl Machine {
     }
 }
 
+/// [`Machine::fingerprints`] there, for the files named after `sh`: a line
+/// of `1`/`0` (a regular file or not), then `git hash-object`'s ids of the
+/// files, one per line.
+const FINGERPRINT: &str = r#"for f; do if [ -f "$f" ]; then printf 1; else printf 0; fi; done; echo
+for f; do if [ -f "$f" ]; then printf '%s\n' "$f"; fi; done | git hash-object --no-filters --stdin-paths"#;
+
+impl Machine {
+    /// A fingerprint of each of `paths` (relative to `dir`), in order, that
+    /// changes when the file's content does: its git object id (`git
+    /// hash-object --no-filters`, one `sh` per batch, through `hc exec`
+    /// there), so it's the same here and there. `-` when it isn't a file.
+    /// One that can't be told (a failed call, a newline in the name) is a
+    /// value never given before, so it never looks unchanged.
+    pub fn fingerprints(&self, dir: &Path, paths: &[&Path]) -> Vec<String> {
+        let mut out = Vec::with_capacity(paths.len());
+        for batch in paths.chunks(MEASURE_BATCH) {
+            let names: Vec<String> = batch
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            let asked: Vec<&str> = names
+                .iter()
+                .map(String::as_str)
+                .filter(|n| !n.contains('\n'))
+                .collect();
+            let mut argv = vec!["sh", "-c", FINGERPRINT, "sh"];
+            argv.extend(&asked);
+            let answer = if asked.is_empty() {
+                None
+            } else {
+                self.output(self.command(dir, &argv, Run::default()), "fingerprints")
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            };
+            let mut told = answer
+                .as_deref()
+                .and_then(|a| parse_fingerprints(a, asked.len()));
+            out.extend(names.iter().map(|n| match told.as_mut() {
+                Some(told) if !n.contains('\n') => told.next().unwrap_or_else(unknown),
+                _ => unknown(),
+            }));
+        }
+        out
+    }
+}
+
+/// [`FINGERPRINT`]'s answer for `n` names: each one's id, or `-`. `None`
+/// when it doesn't add up (a file went in between).
+fn parse_fingerprints(answer: &str, n: usize) -> Option<std::vec::IntoIter<String>> {
+    let mut lines = answer.lines();
+    let flags = lines.next()?;
+    if flags.len() != n {
+        return None;
+    }
+    let mut ids = lines.map(str::to_string);
+    let told: Option<Vec<String>> = flags
+        .chars()
+        .map(|c| {
+            if c == '1' {
+                ids.next()
+            } else {
+                Some("-".to_string())
+            }
+        })
+        .collect();
+    if ids.next().is_some() {
+        return None;
+    }
+    told.map(Vec::into_iter)
+}
+
+/// A fingerprint never given before (this process's id, the time, a count).
+fn unknown() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!(
+        "?{}.{now}.{}",
+        std::process::id(),
+        COUNT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// [`FileFacts`] for a file here: lines counted only up to
 /// [`MAX_COUNTED`] bytes and without a NUL in the first 8 KiB.
 fn measure_local(path: &Path) -> Option<FileFacts> {

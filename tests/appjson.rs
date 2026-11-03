@@ -378,7 +378,15 @@ fn status_carries_only_what_the_mods_read_and_takes_a_base_from_the_caller() {
         .collect();
     assert_eq!(
         keys,
-        ["root", "branch", "head", "scope", "sections", "editor"]
+        [
+            "root",
+            "branch",
+            "head",
+            "scope",
+            "sections",
+            "editor",
+            "ignored_dirs"
+        ]
     );
     let file = &status["sections"][0]["files"][0];
     let keys: Vec<&str> = file
@@ -387,7 +395,10 @@ fn status_carries_only_what_the_mods_read_and_takes_a_base_from_the_caller() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys, ["path", "orig", "kind", "letter", "add", "del"]);
+    assert_eq!(
+        keys,
+        ["path", "orig", "kind", "letter", "add", "del", "rev"]
+    );
 
     let branch = gv(&repo.dir, &["status", "--scope", "branch"]);
     assert_eq!(branch["base"]["label"], "main");

@@ -28,6 +28,9 @@
 //! - `json file` there: an image that doesn't arrive byte for byte (from
 //!   the worktree or from git), or text, binary, too big and missing told
 //!   apart differently from here, or a failed read there taken as missing;
+//! - the reload hints (`rev`, `ignored_dirs`, a diff's `hash` and its
+//!   `--unless`) told from this machine's files, or other there than here,
+//!   or the revs costing more than one call per status;
 //! - `json editor` there answered from this machine (its `PATH`, `$VISUAL`,
 //!   its system opener) instead of that machine's login shell.
 
@@ -58,6 +61,8 @@ case "$cwd" in
   *) echo "shim: cwd $cwd is not on the machine" >&2; exit 93 ;;
 esac
 [ "$1" = git ] && { shift; set -- "$SHIM_GIT" "$@"; }
+# The machine's own git is first on its PATH (for a script's `git`).
+PATH="${SHIM_GIT%/*}:$PATH"
 cd "$cwd" || exit 94
 [ -n "$stdin" ] || exec </dev/null
 if [ -n "$SHIM_FAIL_READS" ] && [ "$1" = sh ] && [[ "$3" == *"exit 44"* ]]; then
@@ -674,9 +679,10 @@ fn a_file_for_the_preview_arrives_from_the_machine_byte_for_byte() {
     let text = w.both(&["file", "--path", "notes.md", "--side", "head"]);
     assert_eq!(text["text"], "# notes ✓\r\n");
     assert_eq!(w.both(&["file", "--path", "blob.bin"])["kind"], "binary");
+    let big = w.both(&["file", "--path", "base.txt", "--max-bytes", "4"]);
     assert_eq!(
-        w.both(&["file", "--path", "base.txt", "--max-bytes", "4"]),
-        serde_json::json!({"kind": "too_big", "bytes": 14})
+        (&big["kind"], &big["bytes"]),
+        (&"too_big".into(), &14.into())
     );
     assert_eq!(
         w.both(&[
@@ -773,4 +779,51 @@ fn the_editor_is_picked_from_the_machines_login_shell() {
     for call in w.shim_log() {
         assert!(call.starts_with(&prefix), "unexpected hc call: {call}");
     }
+}
+
+#[test]
+fn the_reload_hints_come_from_the_machine_alike() {
+    let w = world("hints");
+    for repo in [&w.here, &w.remote_real] {
+        write(repo, ".gitignore", b"target/\n");
+        write(repo, "target/debug/x.o", b"o\n");
+    }
+    let calls_before = w.shim_log().len();
+    let status = w.both(&["status"]);
+    let hashing = w.shim_log()[calls_before..]
+        .iter()
+        .filter(|c| c.contains("hash-object"))
+        .count();
+    assert_eq!(hashing, 1, "one call for every file's rev");
+    assert_eq!(status["ignored_dirs"], serde_json::json!(["target/"]));
+    let rev = |s: &Value| {
+        s["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|s| s["files"].as_array().unwrap())
+            .find(|f| f["path"] == "base.txt")
+            .map(|f| f["rev"].clone())
+            .unwrap()
+    };
+    let diff = ["diff", "--path", "base.txt", "--kind", "modified"];
+    let hash = w.both(&diff)["hash"].as_str().unwrap().to_string();
+    let unless = [&diff[..], &["--unless", &hash]].concat();
+    assert_eq!(
+        w.run(&unless, true),
+        serde_json::json!({"same": true, "hash": hash})
+    );
+
+    // A same-size edit there (not here) moves its rev and its diff there.
+    let there = std::fs::read(w.remote_real.join("base.txt")).unwrap();
+    let mut edited = there.clone();
+    let last = edited
+        .iter()
+        .rposition(|b| b.is_ascii_alphabetic())
+        .unwrap();
+    edited[last] ^= 0x20; // the case of one letter
+    std::fs::write(w.remote_real.join("base.txt"), &edited).unwrap();
+    assert_ne!(rev(&w.run(&["status"], true)), rev(&status));
+    assert_eq!(rev(&w.run(&["status"], false)), rev(&status));
+    assert_ne!(w.run(&unless, true).get("same"), Some(&Value::Bool(true)));
 }

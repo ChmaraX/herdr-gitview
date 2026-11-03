@@ -92,6 +92,23 @@ pub enum FileOut {
     Missing,
 }
 
+/// The reply with its `hash` (of the kind and the bytes read, so the same
+/// hash is the same reply), or, when that's the `--unless` hash, just
+/// `{same: true, hash}`.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Reply {
+    Same {
+        same: bool,
+        hash: String,
+    },
+    File {
+        #[serde(flatten)]
+        file: FileOut,
+        hash: String,
+    },
+}
+
 /// An image's extension (lowercased), when `path` names one.
 fn image_ext(path: &Path) -> Option<String> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -114,14 +131,16 @@ fn inside(raw: &str) -> Result<PathBuf> {
 /// Read `raw` on `side` of `repo` and say what it is. An image is written
 /// to `out` (required then) as `<sha256>.<ext>`, unless that file is there
 /// already. `max`: the most bytes read (default [`TEXT_MAX`], or
-/// [`IMAGE_MAX`] for an image).
+/// [`IMAGE_MAX`] for an image). `unless`: the hash of a reply the caller
+/// has; when this one's is the same, [`Reply::Same`] (nothing written).
 pub fn file(
     repo: &Repo,
     raw: &str,
     side: &Side,
     out: Option<&Path>,
     max: Option<u64>,
-) -> Result<FileOut> {
+    unless: Option<&str>,
+) -> Result<Reply> {
     let path = inside(raw)?;
     let ext = image_ext(&path);
     let max = max.unwrap_or(if ext.is_some() { IMAGE_MAX } else { TEXT_MAX });
@@ -130,27 +149,61 @@ pub fn file(
         Some(spec) => repo.read_object(&spec, max)?,
     };
     let bytes = match contents {
-        Contents::Missing => return Ok(FileOut::Missing),
-        Contents::TooBig(bytes) => return Ok(FileOut::TooBig { bytes }),
+        Contents::Missing => return Ok(reply(FileOut::Missing, &[b"missing"], unless)),
+        Contents::TooBig(n) => {
+            return Ok(reply(
+                FileOut::TooBig { bytes: n },
+                &[b"too_big", &n.to_le_bytes()],
+                unless,
+            ));
+        }
         Contents::Bytes(bytes) => bytes,
     };
+    let hash = digest(&[b"bytes", ext.as_deref().unwrap_or("").as_bytes(), &bytes]);
+    if unless == Some(hash.as_str()) {
+        return Ok(Reply::Same { same: true, hash });
+    }
     let size = bytes.len() as u64;
-    if let Some(ext) = ext {
+    let file = if let Some(ext) = ext {
         let out = out.context("file: --out DIR, where an image is written")?;
         let path = cache(out, &bytes, &ext)?;
-        return Ok(FileOut::Image {
+        FileOut::Image {
             path,
             bytes: size,
             ext,
-        });
+        }
+    } else if bytes.contains(&0) {
+        FileOut::Binary { bytes: size }
+    } else {
+        match String::from_utf8(bytes) {
+            Ok(text) => FileOut::Text { text, bytes: size },
+            Err(_) => FileOut::Binary { bytes: size },
+        }
+    };
+    Ok(Reply::File { file, hash })
+}
+
+/// `file` with the hash of `parts`, or [`Reply::Same`] when that's `unless`.
+fn reply(file: FileOut, parts: &[&[u8]], unless: Option<&str>) -> Reply {
+    let hash = digest(parts);
+    if unless == Some(hash.as_str()) {
+        Reply::Same { same: true, hash }
+    } else {
+        Reply::File { file, hash }
     }
-    if bytes.contains(&0) {
-        return Ok(FileOut::Binary { bytes: size });
+}
+
+/// A hash of `parts` (each length-prefixed): 32 hex digits.
+pub fn digest(parts: &[&[u8]]) -> String {
+    let mut h = Sha256::new();
+    for part in parts {
+        h.update((part.len() as u64).to_le_bytes());
+        h.update(part);
     }
-    Ok(match String::from_utf8(bytes) {
-        Ok(text) => FileOut::Text { text, bytes: size },
-        Err(_) => FileOut::Binary { bytes: size },
-    })
+    h.finalize()[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// `<out>/<sha256 of bytes>.<ext>`, written (through a temp file and a
