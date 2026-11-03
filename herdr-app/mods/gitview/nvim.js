@@ -70,7 +70,7 @@ export const editorLabel = (root, on) => editors.get(editorKey(root, on))?.edito
 // comes back when nvim's pane goes).
 export async function openNvim(o) {
   try {
-    const args = ["nvim", "--repo", o.root, "--path", o.path, "--line", String(o.line || 1)];
+    const args = ["nvim", "--repo", o.root, "--root", "--path", o.path, "--line", String(o.line || 1)];
     if (o.tab) args.push("--tab", o.tab);
     if (o.space) args.push("--space", o.space);
     if (!o.on) args.push("--shown", layoutTerminals(layout()).join(","));

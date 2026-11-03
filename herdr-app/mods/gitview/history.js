@@ -23,7 +23,7 @@ export class History {
   async load(where) {
     this.loading = true;
     try {
-      const args = ["log", "--repo", where.root, "--limit", "200", ...onArgs(where.on)];
+      const args = ["log", "--repo", where.root, "--root", "--limit", "200", ...onArgs(where.on)];
       if (this.filter) {
         let base = where.base?.merge_base;
         if (!base) base = (await gv(["status", "--repo", where.root, "--scope", "branch", ...onArgs(where.on)])).base?.merge_base;
@@ -79,7 +79,7 @@ export function openCommit(v, c, cx) {
   const where = v.work?.where;
   if (!c || !where) return;
   v.loads.run(cx, "commit-files", async (cx) => {
-    const r = await gv(["commit-files", "--repo", where.root, "--sha", c.sha, ...onArgs(where.on)]);
+    const r = await gv(["commit-files", "--repo", where.root, "--root", "--sha", c.sha, ...onArgs(where.on)]);
     const list = new FileList({ sections: [{ id: "commit", title: "", cached: false, files: r.files ?? [] }] },
       { ...where, base: null, commit: c.sha, short: c.short, subject: c.subject });
     list.rebuild(treeMode());

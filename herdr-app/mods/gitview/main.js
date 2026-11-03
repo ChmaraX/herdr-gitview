@@ -63,6 +63,7 @@ export default class GitList extends View {
     this.seen = { asks: {} };
     this.roots = new Map(); // "<machine>:<folder>" → its repo's root
     this.tops = {}; // each view's scroll (setMode)
+    this.noSubmodules = new Set(); // repos (keys) whose status needs --ignore-submodules
     this.flash = new Flash(cx);
     this.loads = new Loads((m) => this.flash.set(m));
     this.watcher = {};
@@ -359,7 +360,10 @@ export default class GitList extends View {
       const known = base ? ["--base", base.label, "--merge-base", base.merge_base, ...(old.status.head ? ["--head", old.status.head] : [])] : [];
       let status;
       try {
-        status = await gv(["status", "--repo", ctx.cwd, "--scope", this.scope, ...known, ...onArgs(ctx.on)]);
+        // A repo whose plain status failed on a submodule (the engine said
+        // so): straight to the status that works.
+        const sub = this.noSubmodules.has(ctx.key) ? ["--ignore-submodules"] : [];
+        status = await gv(["status", "--repo", ctx.cwd, "--scope", this.scope, ...known, ...sub, ...onArgs(ctx.on)]);
       } catch (e) {
         if (current() && ctx.key === this.ctx.key) {
           const m = message(e);
@@ -375,6 +379,7 @@ export default class GitList extends View {
       }
       if (!current() || ctx.key !== this.ctx.key) return;
       this.roots.set(`${ctx.on ?? ""}:${ctx.cwd}`, status.root);
+      if (status.ignore_submodules) this.noSubmodules.add(JSON.stringify([status.root, ctx.on ?? null, this.scope]));
       // The key by repo from now on (the same list for this folder).
       ctx.key = this.ctx.key = JSON.stringify([status.root, ctx.on ?? null, this.scope]);
       const where = { root: status.root, on: ctx.on ?? null, base: status.base ?? null };
@@ -589,7 +594,7 @@ export default class GitList extends View {
     this.ownOp = { at: Date.now() + 60000, paths: args.slice(args.indexOf("--") + 1) };
     this.loads.run(cx, args[0], async (cx) => {
       try {
-        await gv([args[0], "--repo", where.root, ...onArgs(where.on), ...args.slice(1)]);
+        await gv([args[0], "--repo", where.root, "--root", ...onArgs(where.on), ...args.slice(1)]);
       } catch (e) {
         notify({ title: "gitview", body: message(e), level: "error" });
         if (asked) answer(asked.tab, asked.seq);
@@ -623,7 +628,7 @@ export default class GitList extends View {
     this.ownOp = { at: started + 60000, paths: [] }; // its index and refs writes
     this.loads.run(cx, "commit", async (cx) => {
       try {
-        const r = await gv(["commit", "--repo", work.where.root, ...onArgs(work.where.on), "--", text]);
+        const r = await gv(["commit", "--repo", work.where.root, "--root", ...onArgs(work.where.on), "--", text]);
         this.commitInput.set_value("");
         this.focusHere(cx);
         notify({ title: "Committed", body: r.summary ?? text, level: "success" });

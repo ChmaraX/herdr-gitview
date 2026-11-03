@@ -61,7 +61,7 @@ function reason(r) {
 // (`--unless` its hash), that comes back as it is.
 async function fetchSide(v, path, side, want, had) {
   const unless = had?.hash ? ["--unless", had.hash] : [];
-  const r = await gv(["file", "--repo", v.root, "--path", path, "--side", side, "--out", `${appHome()}/${CACHE}`, ...unless, ...onArgs(v.on)]);
+  const r = await gv(["file", "--repo", v.root, "--root", "--path", path, "--side", side, "--out", `${appHome()}/${CACHE}`, ...unless, ...onArgs(v.on)]);
   if (r.same) return had;
   if (r.kind !== want) throw new Error(`preview: ${reason(r)}`);
   if (want === "image") r.src = r.path.startsWith(`${appHome()}/`) ? r.path.slice(appHome().length + 1) : r.path;

@@ -124,7 +124,8 @@ export const sameShown = (a, b) => sameFile(a, b) && ["rev", "add", "del", "kind
 // `unless`: the hash of the rows shown now (the reply is {same} when they'd
 // be the same).
 export function diffArgs(view, { dark, unfold, unless = null }) {
-  const args = ["diff", "--repo", view.root, "--path", view.path, "--kind", view.kind, "--theme", dark ? "dark" : "light"];
+  // `--root`: view.root is a status's root (the engine skips looking it up).
+  const args = ["diff", "--repo", view.root, "--root", "--path", view.path, "--kind", view.kind, "--theme", dark ? "dark" : "light"];
   if (view.orig) args.push("--orig", view.orig);
   if (view.cached) args.push("--cached");
   if (view.base) args.push("--merge-base", view.base.merge_base, "--base", view.base.label);
