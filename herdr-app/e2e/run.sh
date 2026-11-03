@@ -91,6 +91,16 @@ expect '[ "$(view_of $TAB path)" = config.toml ]' "another click shows config.to
 [ "$(mod_panes | grep -c gitview-diff)" = 1 ] && ok "the same diff pane is reused" || fail "a second diff pane"
 status_has '"errors": \[\]' && ok "no mod errors in status" || fail "mod errors: $("$APP" status)"
 
+step "with the diff pane open, a file an agent writes shows in the list at once (not on the 10 s timer)"
+# Both copies watch the repo, and only the newest watch wakes (the pane's):
+# it stamps shared gitview.changed and the list follows.
+printf 'written by an agent\n' >"$S/agent.txt"
+expect '"$APP" do gitview.file:agent.txt >/dev/null && [ "$(view_of $TAB path)" = agent.txt ]' "agent.txt is in the list within 2 s" 2
+rm "$S/agent.txt"
+expect '"$APP" do gitview.file:agent.txt >/dev/null && [ "$(view_of $TAB path)" != agent.txt ]' "and gone from it within 2 s once deleted" 2
+do_ gitview.click:config.toml
+expect '[ "$(view_of $TAB path)" = config.toml ]' "(config.toml in the pane again)"
+
 step "keys: the footer's ? (or the key ?) opens every key; ? or esc closes it"
 do_ gitview.key:?
 expect 'overlay_open gitview-keys' "? in the list opens the keys card"
