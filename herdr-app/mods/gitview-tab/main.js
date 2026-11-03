@@ -5,37 +5,13 @@
 // draws nothing.
 
 import { View, div } from "gpui-kit";
-import { exec, focused, notify, run, spaces } from "herdr";
-import { gv, hostEnv, loadConfig, location } from "./engine.js"; // links to ../gitview (install copies them)
+import { focused, notify, run, spaces } from "herdr";
+import { appCli, gv, location } from "./engine.js"; // links to ../gitview (install copies them)
 import { oneShot } from "./modkit.js";
 import { origins, ownTab, setOrigin, setOwnTab } from "./shared.js";
 import { askToClose, editorState, liveEditor, quitEditor, setEditor } from "./editors.js";
 
 const LIST_PERCENT = 29;
-
-// What `herdr-app status` says (its focused space and tab), or null.
-async function appStatus() {
-  try {
-    const cfg = await loadConfig();
-    if (!cfg.herdr_app) return null;
-    const r = await exec("/usr/bin/env", [...hostEnv(cfg), cfg.herdr_app, "status"]);
-    return JSON.parse(r.stdout);
-  } catch {
-    return null;
-  }
-}
-
-// The spaces as the app has them now (`herdr-app ls`).
-async function appSpaces() {
-  const cfg = await loadConfig();
-  if (!cfg.herdr_app) return [];
-  const r = await exec("/usr/bin/env", [...hostEnv(cfg), cfg.herdr_app, "ls"]);
-  try {
-    return JSON.parse(r.stdout).spaces ?? [];
-  } catch {
-    return [];
-  }
-}
 
 export default class GitviewTab extends View {
   init(_props, cx) {
@@ -43,7 +19,7 @@ export default class GitviewTab extends View {
       // Where the person is, as the app has it now (`herdr-app status`): a
       // window that isn't drawn can leave this copy's focused() a step
       // behind (a tab just selected).
-      const now = await appStatus();
+      const now = await appCli(["status"]);
       const f = { ...focused(), ...(now?.space && now?.tab ? { space: now.space, tab: now.tab } : {}) };
       const space = spaces().find((s) => s.id === f?.space);
       if (!space) return notify({ title: "gitview", body: "Open a space first.", level: "warning" });
@@ -76,7 +52,7 @@ export default class GitviewTab extends View {
         if (!tab) await cx.sleep(50);
       }
       for (let i = 0; i < 16 && !tab; i++) {
-        tab = (await appSpaces()).find((s) => s.id === space.id)?.tabs.find(isNew)?.id ?? null;
+        tab = ((await appCli(["ls"]))?.spaces ?? []).find((s) => s.id === space.id)?.tabs.find(isNew)?.id ?? null;
         if (!tab) await cx.sleep(500);
       }
       if (!tab) throw new Error("the gitview tab didn't open");

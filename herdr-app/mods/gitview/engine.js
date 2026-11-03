@@ -37,6 +37,19 @@ export async function gv(args) {
   return out;
 }
 
+// `herdr-app <args>` (the app's own CLI: status, ls) as JSON, null when it
+// can't be asked. What the app has now: a window that isn't drawn can leave
+// a copy's live data a step behind.
+export async function appCli(args) {
+  try {
+    const cfg = await loadConfig();
+    if (!cfg.herdr_app) return null;
+    return JSON.parse((await exec("/usr/bin/env", [...hostEnv(cfg), cfg.herdr_app, ...args])).stdout);
+  } catch {
+    return null;
+  }
+}
+
 // The live terminals carrying a label (`hc ls --label k=v`), by address:
 // what herdr-core has now (a window that isn't drawn can leave a copy's
 // terminals() behind). [] when it can't be asked.
