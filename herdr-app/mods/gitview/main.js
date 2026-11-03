@@ -84,7 +84,9 @@ export default class GitList extends View {
     // The watch shows a local repo's changes; its poll is a backstop, only
     // after 30 s without a status.
     cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.place.shown() && Date.now() - (this.statusAt ?? 0) > 30000) this.refresh(cx, { poll: true, why: "poll" }); });
-    debugLook(cx, () => { if (this.stale()) this.kick(); trace("list", this.traceFields(), this); });
+    // As a render would: only while it's on screen (a hidden copy isn't
+    // drawn; its 300 ms look is all it has then).
+    debugLook(cx, () => { if (this.place.shown() && this.stale()) this.kick(); trace("list", this.traceFields(), this); });
     commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview", before: (cx) => this.notice(cx), handle: (c, cx) => runCommand(this, c, cx) });
     if (this.place.takesKeyboard) this.focusList(cx);
   }
@@ -312,10 +314,17 @@ export default class GitList extends View {
   // has no diff pane (hiding it closed them): from a fresh status, the
   // selected file, else the first one, opens there, as the TUI's toggle did.
   openOnShow(cx) {
-    this.refresh(cx);
+    // A status for this place under a second old is fresh enough.
+    const same = this.loadedKey === this.context().key;
+    if (!same || Date.now() - (this.statusAt ?? 0) > 1000) this.refresh(cx);
+    else this.ctx = { ...this.ctx, ...this.context() };
     const tab = this.tab();
     // A file handed to nvim comes back on its own (followHandoff).
     if (!tab || diffPane(tab) || handoffIn(tab)) return;
+    // The list it kept while hidden: its file at once (the refresh corrects
+    // it if it moved meanwhile: followSelection).
+    const known = same && this.list()?.shownFile();
+    if (known) return this.select(known, cx);
     cx.spawn(async (cx) => {
       await this.loads.idle(cx);
       const row = this.list()?.shownFile();

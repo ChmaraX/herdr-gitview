@@ -96,7 +96,7 @@ export default class GitDiff extends View {
     // What render notices (a new view, a theme switch) loads from here.
     this.kick = pump(cx, (cx) => this.sync(cx));
     this.sync(cx);
-    debugLook(cx, () => { this.renderLook(); trace("pane", this.traceFields(), this); });
+    debugLook(cx, () => { if (focused()?.tab === this.tab()) this.renderLook(); trace("pane", this.traceFields(), this); });
     commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview-diff", before: (cx) => this.sync(cx), handle: (c, cx) => this.command(c, cx) });
   }
 

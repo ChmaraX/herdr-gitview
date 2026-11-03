@@ -7,10 +7,10 @@
 // "mod.open:gitview-sidebar"; draws nothing.
 
 import { View, div } from "gpui-kit";
-import { exec, notify, run } from "herdr";
+import { exec, notify, run, spaces } from "herdr";
 import { hostEnv, loadConfig } from "./engine.js";
 import { oneShot } from "./modkit.js"; // links to ../gitview (install copies them)
-import { panelState } from "./shared.js";
+import { panelDiffPanes, panelState } from "./shared.js";
 
 // The overlays open now (`herdr-app status`), [] when it can't be asked.
 async function overlays() {
@@ -33,7 +33,15 @@ export default class GitviewPanel extends View {
       if (open.includes("confirm") || open.includes("gitview-ask")) return;
       const p = panelState();
       if (!p) return notify({ title: "gitview", body: "This layout has no gitview Changes panel (run gitview's install.sh).", level: "warning" });
-      if (p.shown) return run("layout.hide", { id: p.panel });
+      if (p.shown) {
+        // The diff panes go with it at once (the list, hidden from now on,
+        // would see the hide only on its next look; it still closes the rest
+        // of the unit then: nvim, an editor).
+        const space = spaces().find((s) => s.active);
+        const tabs = new Set(space?.tabs.map((t) => t.id) ?? []);
+        for (const pane of panelDiffPanes()) if (tabs.has(pane.tab)) run("pane.close", { pane: pane.pane });
+        return run("layout.hide", { id: p.panel });
+      }
       if (p.stack) run("layout.select", { stack: p.stack, child: p.slot });
       run("layout.show", { id: p.panel });
       await cx.sleep(150); // the list hears commands once it's drawn
