@@ -86,7 +86,7 @@ export default class GitList extends View {
     cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.place.shown() && Date.now() - (this.statusAt ?? 0) > 30000) this.refresh(cx, { poll: true, why: "poll" }); });
     // As a render would: only while it's on screen (a hidden copy isn't
     // drawn; its 300 ms look is all it has then).
-    debugLook(cx, () => { if (this.place.shown() && this.stale()) this.kick(); trace("list", this.traceFields(), this); });
+    debugLook(cx, () => { if (this.place.shown() && this.stale()) this.kick(); trace("list", () => this.traceFields(), this); });
     commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview", before: (cx) => this.notice(cx), handle: (c, cx) => runCommand(this, c, cx) });
     if (this.place.takesKeyboard) this.focusList(cx);
   }
@@ -742,7 +742,7 @@ export default class GitList extends View {
     const focused = this.showsFocus();
     const notes = this.notes();
     const mode = MODES[this.mode];
-    trace("list", this.traceFields(), this);
+    trace("list", () => this.traceFields(), this);
     return this.place
       .frame(v_flex().id("gitview").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13), t, focused)
       .track_focus(this.handle)

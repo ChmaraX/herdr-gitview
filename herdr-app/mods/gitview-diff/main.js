@@ -96,7 +96,7 @@ export default class GitDiff extends View {
     // What render notices (a new view, a theme switch) loads from here.
     this.kick = pump(cx, (cx) => this.sync(cx));
     this.sync(cx);
-    debugLook(cx, () => { if (focused()?.tab === this.tab()) this.renderLook(); trace("pane", this.traceFields(), this); });
+    debugLook(cx, () => { if (focused()?.tab === this.tab()) this.renderLook(); trace("pane", () => this.traceFields(), this); });
     commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview-diff", before: (cx) => this.sync(cx), handle: (c, cx) => this.command(c, cx) });
   }
 
@@ -584,8 +584,14 @@ export default class GitDiff extends View {
     // `cached` are the unstaged side's).
     const side = noteSide(of);
     const notes = key && of && side !== null ? notesOf(key).filter((n) => n.file === of.path && Boolean(n.cached) === side) : [];
-    this.display = diffs.displayRows(this.diff, notes, this.pendingNote ? this.pendingNote.after : -1);
-    this.scroll.measure(this.display.map(diffs.rowSize));
+    // The display rows and their heights only when what they're made of
+    // changed (a render comes on every wheel tick and any shared write).
+    const dispKey = [this.diff, notes.map((n) => `${n.id}:${n.text.length}`).join(), this.pendingNote ? this.pendingNote.after : -1];
+    if (!this.dispKey || dispKey.some((k, i) => k !== this.dispKey[i])) {
+      this.display = diffs.displayRows(this.diff, notes, dispKey[2]);
+      this.scroll.measure(this.display.map(diffs.rowSize));
+      this.dispKey = dispKey;
+    }
     if (this.pendingAnchor) {
       // The kept line back where it was on screen.
       const a = this.pendingAnchor;
@@ -639,7 +645,7 @@ export default class GitDiff extends View {
           )
       : div().flex_1() // a new pane's first file, on its way
     ).when(b.old && Date.now() - this.switchedAt > 150, (e) => e.opacity(0.55));
-    trace("pane", this.traceFields(), this);
+    trace("pane", () => this.traceFields(), this);
     return v_flex()
       .id("gitview-diff")
       .size_full()

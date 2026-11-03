@@ -153,12 +153,13 @@ export class Loads {
 // window that isn't drawn (started in the background) never renders, so a
 // debug copy also looks every 25 ms from a timer (`debugLook`), doing what
 // its render does: notice, and trace. Off: nothing, no timer.
+// `fields()` is called only then: off, a render builds nothing for it.
 export function trace(mod, fields, holder) {
   if (!shared("gitview.debug")) return;
-  const key = JSON.stringify(fields);
+  const key = JSON.stringify(fields());
   if (holder.lastTrace === key) return;
   holder.lastTrace = key;
-  console.log(`GVTRACE ${JSON.stringify({ t: Date.now(), mod, ...fields })}`);
+  console.log(`GVTRACE ${JSON.stringify({ t: Date.now(), mod, ...JSON.parse(key) })}`);
 }
 
 export function debugLook(cx, look) {
