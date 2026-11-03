@@ -269,8 +269,8 @@ Spaces on other machines work the same way.
   `filelist.js` (`FileList`: a status's rows, selection and folding, and
   `where` (root, machine, base or commit) the status came with, so every op
   goes to that repo; one for the working tree, one for a commit),
-  `modes.js` (each view's `{list, enter, header, body, under, keys,
-  hints}`: files, commit, log, notes; only `setMode` changes the view, and
+  `modes.js` (each view's `{title, list, enter, header, body, under,
+  keys}`, the keys a keymap.js table: files, commit, log, notes; only `setMode` changes the view, and
   it runs `enter`), `keys.js` (key and command dispatch),
   `listview.js` (rows and their buttons), `history.js` (the history, its
   rows and actions), `notesview.js` (note rows and actions), `model.js`
@@ -337,7 +337,7 @@ Spaces on other machines work the same way.
   2×2 px frameless windows that act once and close (`modkit.js` `oneShot`).
 - Files shared between mod folders (`engine.js`, `model.js`, `shared.js`,
   `nvim.js`, `scroller.js`, `chrome.js`, `modkit.js`, `actions.js`,
-  `placement.js`, `keymap.js`) are
+  `placement.js`, `keymap.js`, `editors.js`) are
   symlinks in the repo; install copies them (`cp -L`): a mod can't import
   from another mod's folder.
 - **The binary** (`mods/gitview/bin/herdr-gitview`, built from this repo;

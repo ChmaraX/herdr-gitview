@@ -16,9 +16,10 @@
 //   or previous one ("next", "prev": J/K).
 // - "gitview.answer": {<tab>: {seq, msg}}: the list did the ask `seq` (and
 //   wrote the view it led to); `msg`: what to say ("last file").
-// - "gitview.cursor": {<tab>: {root, on, path, section, commit, line, row,
-//   first, preview}}: where the pane's cursor is (the list's Enter opens
-//   nvim there); `preview`: the pane shows the file's Preview.
+// - "gitview.cursor": {<tab>: {root, on, path, section, commit, line,
+//   preview}}: where the pane's cursor is (the list's Enter opens nvim
+//   there); `preview`: the pane shows the file's Preview (the pane's own
+//   dedupe, and what the e2e reads).
 // - "gitview.keys": {overlay}: the keys card is open (keymap.js).
 // - "gitview.notes": {"<machine or ''>:<repo root>": [note]}: review notes,
 //   kept until sent. A note is {id, file, section, cached, start, end,
@@ -132,7 +133,7 @@ export function machineOf(address) {
 // The last change a watch saw in the (local) repo: {at, prev, paths} or null.
 export function stampOf(root) {
   const s = (shared("gitview.changed") ?? {})[notesKey(null, root)];
-  return typeof s === "number" ? { at: s, prev: 0, paths: "all" } : s ?? null;
+  return s ?? null;
 }
 
 export const changedAt = (root) => stampOf(root)?.at ?? 0;

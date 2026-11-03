@@ -15,7 +15,6 @@ import { takeKeyboard } from "./modkit.js";
 // focused tab's diff pane, which it opens on first use (not in cmd-g's
 // tabs: their own list drives those). It owns its show/hide cycle.
 const PANEL = {
-  panel: true,
   context: (keep) => location(keep),
   tab: (ctx) => (ctx?.tab && !isOwnTab(ctx.tab) ? ctx.tab : null),
   shown: () => Boolean(panelState()?.shown),
@@ -48,7 +47,6 @@ const PANEL = {
 // with it); the app frames it like any pane. It takes the keyboard when it
 // starts.
 const TAB = {
-  panel: false,
   context: () => {
     const p = props() ?? {};
     return { cwd: p.cwd ?? null, on: p.on ?? null, space: p.space ?? null, tab: p.tab ?? null };

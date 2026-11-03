@@ -19,9 +19,8 @@ export class Scroller {
     this.dragging = null;
   }
 
-  // Item heights (an array, or one number for all).
-  measure(sizes, count) {
-    const list = typeof sizes === "number" ? Array.from({ length: count }, () => sizes) : sizes;
+  // Item heights.
+  measure(list) {
     const offsets = new Array(list.length + 1);
     offsets[0] = 0;
     for (let i = 0; i < list.length; i++) offsets[i + 1] = offsets[i] + list[i];

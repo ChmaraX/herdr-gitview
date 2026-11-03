@@ -3,9 +3,9 @@
 //
 // 1. herdr-nvim installed: the engine runs `herdr-nvim open --tab <tab>
 //    --space <space> <file>:<line>`; its full-height nvim pane takes the diff
-//    pane's place at the tab's edge, so the diff pane closes (the next file
-//    click opens it again). Not in a gitview tab of its own (cmd-g), where
-//    the diff is half the tab.
+//    pane's place at the tab's edge, so the diff pane closes (the handoff:
+//    `:q` there, a click on the row or a hide and show bring it back). Not
+//    in a gitview tab of its own (cmd-g), where the diff is half the tab.
 // 2. An nvim already running in the tab (or in a layout block) takes the
 //    file (the engine finds it; never on another machine).
 // 3. Else the editor the engine picks on the repo's machine (`json editor`:

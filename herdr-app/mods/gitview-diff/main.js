@@ -34,7 +34,6 @@ import * as diffs from "./diffview.js";
 
 const EMPTY = { rows: [] };
 
-// Keys that act on the diff's lines: in Preview they say so instead.
 // Keys that act on the diff's lines: in Preview they say so instead, and
 // while the next file's diff is on its way (the old one still shows) they
 // wait for it (do nothing).
@@ -130,7 +129,7 @@ export default class GitDiff extends View {
 
   // ---- what to show -----------------------------------------------------------
 
-  // A new view from the list (or J/K here), or a theme switch: same file
+  // A new view from the list (J/K here ask it), or a theme switch: same file
   // keeps the cursor, another starts at its first change (or at the note
   // the list jumped to). The view's `showing` says whether another file was
   // shown since (the list moved on and back while this pane wasn't drawn):
@@ -222,8 +221,9 @@ export default class GitDiff extends View {
     }, { quiet });
   }
 
-  // m, or the header's Diff | Preview: kept per kind of file while the
-  // pane lives (Diff on a markdown file keeps markdown files in Diff).
+  // m, or the header's Diff | Preview: kept per kind of file, for every
+  // pane (shared gitview.previewOff: Diff on a markdown file keeps markdown
+  // files in Diff).
   togglePreview(cx, preview = !this.inPreview()) {
     const kind = previewKind(this.view);
     if (!kind) return this.flash.set("no preview for this file (markdown, images, SVGs have one)");

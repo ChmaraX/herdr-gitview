@@ -50,7 +50,7 @@ export function runCommand(view, command, cx) {
   // cmd-shift-g showed the panel: the keyboard and the app's focus (its
   // file opens as the panel shows, placement.js).
   else if (command === "focus:panel") {
-    if (view.place.panel) view.focusList(cx);
+    if (view.cycle) view.focusList(cx);
   } else if (what === "discard") view.discardConfirmed(command, cx);
   else if (what === "key") view.key(keyEvent(arg), cx);
   else if (what === "file") view.selectPath(arg, cx);

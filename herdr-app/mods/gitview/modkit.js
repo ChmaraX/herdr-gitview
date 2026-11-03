@@ -159,7 +159,7 @@ export class Loads {
   }
 }
 
-// While shared "gitview.debug" is set (the e2e's jank.sh), what a copy
+// While shared "gitview.debug" is set (every e2e run sets it), what a copy
 // draws, one line in the app's log each time it changes (GVTRACE): for
 // counting blank bodies, mode flips and spinner blinks without frames. A
 // window that isn't drawn (started in the background) never renders, so a

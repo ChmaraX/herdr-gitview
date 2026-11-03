@@ -66,8 +66,8 @@ export default class GitList extends View {
     this.flash = new Flash(cx);
     this.loads = new Loads((m) => this.flash.set(m));
     this.watcher = {};
-    // What render notices (another repo or space, the pane changed the
-    // repo or moved, the panel showed) is acted on from a task of this
+    // What render notices (stale(): another repo, space or tab, a stamp,
+    // the pane's ask, the panel's edges) is acted on from a task of this
     // copy's own, and from a light timer: a hidden or covered copy isn't
     // drawn, but its timers run.
     this.kick = debounced(cx, 0, (cx) => this.notice(cx));
@@ -77,11 +77,9 @@ export default class GitList extends View {
       cx.notify();
     });
     this.refresh(cx);
-    // Local repos: the folder watch (and a poll after 30 s without a
-    // status); remote ones: every 4 s. Only while it's on screen.
+    // Polls, while it's on screen: a remote repo every 4 s; a local one is
+    // the folder watch's, polled only after 30 s without a status.
     cx.timer.every(4000, (cx) => { if (this.ctx?.on && this.place.shown()) this.refresh(cx, { poll: true, why: "poll" }); });
-    // The watch shows a local repo's changes; its poll is a backstop, only
-    // after 30 s without a status.
     cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.place.shown() && Date.now() - (this.statusAt ?? 0) > 30000) this.refresh(cx, { poll: true, why: "poll" }); });
     // As a render would: only while it's on screen (a hidden copy isn't
     // drawn; its 300 ms look is all it has then).
@@ -139,7 +137,7 @@ export default class GitList extends View {
     if (this.loads.panesMoved()) return true;
     if (this.cycle && (this.cycle.shown !== this.place.shown() || this.cycle.asideStale())) return true;
     if (!this.place.shown()) return false;
-    if (this.place.panel) {
+    if (this.place.closesForHerdrNvim) {
       // followHandoff, on an edge only: the record not seen yet, or nvim's
       // pane came or went (not a redraw every look while nvim is open).
       const rec = handoffIn(this.tab());
@@ -174,7 +172,7 @@ export default class GitList extends View {
       this.followSelection();
     }
     this.followAsk(cx);
-    if (this.place.panel) this.followHandoff(cx);
+    if (this.place.closesForHerdrNvim) this.followHandoff(cx); // it hands its diff to herdr-nvim
   }
 
   // The diff pane's ask (gitview.ask): s/u/x on its file, or J/K. Done
@@ -205,9 +203,10 @@ export default class GitList extends View {
   // happens then:
   // - nvim's pane isn't in the app's lists yet right after the open: wait
   //   until it's seen (10 s at most, then forget it);
-  // - it's closed by cmd-e or the Files button: the panel leaves gitview,
-  //   and a hidden panel forgets every handoff (notice);
-  // - it's closed while the panel is hidden: the same;
+  // - the panel hidden by the person: nvim's pane closes with the unit
+  //   (closeUnit), the record stays, and shown again the diff comes back;
+  // - closed by cmd-e or the Files button: the diff comes back when the
+  //   panel shows on Changes again;
   // - the person left the tab: forgotten, so coming back doesn't restore;
   // - another diff opened meanwhile (the tab's view moved, or a diff pane is
   //   there): forgotten;
