@@ -9,7 +9,9 @@
 //!   pane here);
 //! - no fallback to the tab's focused pane, or a split of the focused pane
 //!   when it belongs to another tab;
-//! - the width not applied to the new pane.
+//! - the width not applied to the new pane;
+//! - the app asked for more than the split and the resize when the layout
+//!   document has the tab (its status costs a process per open).
 
 mod common;
 
@@ -133,7 +135,16 @@ fn a_local_tab_is_split_at_its_root_and_the_pane_gets_its_width() {
     assert!(ok, "{reply}");
     assert_eq!(reply, json!({"pane": "new-root1"}));
     assert_eq!(splits(&calls), ["root1"]);
-    let split: Value = serde_json::from_str(calls[1][2].as_str().unwrap()).unwrap();
+    let asked: Vec<&str> = calls
+        .iter()
+        .map(|c| c[1].as_str().unwrap_or("status"))
+        .collect();
+    assert_eq!(
+        asked,
+        ["pane.split", "layout.resize"],
+        "nothing else asked of the app"
+    );
+    let split: Value = serde_json::from_str(calls[0][2].as_str().unwrap()).unwrap();
     assert_eq!(split["mod"], "gitview-diff");
     assert_eq!(split["props"], json!({"tab": "x"}));
     let resize = calls.iter().find(|c| c[1] == "layout.resize").unwrap();

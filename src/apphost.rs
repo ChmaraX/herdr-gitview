@@ -357,8 +357,18 @@ pub fn open_mod_sidebar(
     props: Value,
     width_percent: u8,
 ) -> Result<String> {
-    let mut tried = Vec::new();
-    for target in split_targets(app, tab) {
+    let mut tried: Vec<(String, String)> = Vec::new();
+    // Best first, each looked up only when the ones before it didn't split:
+    // the usual open costs the layout document, the split and the resize.
+    let lookups: [&dyn Fn() -> Option<String>; 3] =
+        [&|| local_root(tab), &|| remote_root(tab), &|| {
+            focused_pane(app, tab)
+        }];
+    for lookup in lookups {
+        let Some(target) = lookup() else { continue };
+        if tried.iter().any(|(t, _)| *t == target) {
+            continue;
+        }
         let mut args = json!({ "direction": "right", "pane": target, "mod": module });
         if !props.is_null() {
             args["props"] = props.clone();
@@ -376,44 +386,46 @@ pub fn open_mod_sidebar(
                 weigh(app, &pane, f / (1.0 - f));
                 return Ok(pane);
             }
-            Err(err) => tried.push(format!("{target}: {err:#}")),
+            Err(err) => tried.push((target, format!("{err:#}"))),
         }
     }
     if tried.is_empty() {
         bail!("tab {tab} isn't in the app's layout and isn't focused");
     }
+    let tried: Vec<String> = tried.iter().map(|(t, e)| format!("{t}: {e}")).collect();
     bail!("no pane of tab {tab} could be split ({})", tried.join("; "))
 }
 
-/// The panes to split for a pane at `tab`'s right edge, best first.
-fn split_targets(app: &App, tab: &str) -> Vec<String> {
-    let root_in = |doc: &Value, id: &str| {
-        find_tab(doc, id)
-            .and_then(|t| t.pointer("/root/id")?.as_str())
-            .map(str::to_string)
-    };
-    let mut targets = Vec::new();
-    if let Some(root) = layout_doc(None).ok().and_then(|doc| root_in(&doc, tab)) {
-        targets.push(root);
-    }
-    if let Some((machine, id)) = tab.split_once('/')
-        && let Ok(doc) = layout_doc(Some(machine))
-        && let Some(root) = root_in(&doc, tab).or_else(|| root_in(&doc, id))
-    {
-        // Ids from that machine's own document, named as this app names
-        // that machine's panes (never a bare id: it could be a pane here).
-        targets.push(if root.contains('/') {
-            root
-        } else {
-            format!("{machine}/{root}")
-        });
-    }
-    if let Ok(status) = app.status()
-        && status.get("tab").and_then(Value::as_str) == Some(tab)
-        && let Some(pane) = status.get("focused_pane").and_then(Value::as_str)
-    {
-        targets.push(pane.to_string());
-    }
-    targets.dedup();
-    targets
+/// The id of `tab`'s root in `doc`.
+fn root_in(doc: &Value, id: &str) -> Option<String> {
+    find_tab(doc, id)
+        .and_then(|t| t.pointer("/root/id")?.as_str())
+        .map(str::to_string)
+}
+
+/// `tab`'s root in this machine's layout document.
+fn local_root(tab: &str) -> Option<String> {
+    root_in(&layout_doc(None).ok()?, tab)
+}
+
+/// A remote tab's (`machine/…`) root in that machine's own document, named
+/// as this app names that machine's panes (never a bare id: it could be a
+/// pane here).
+fn remote_root(tab: &str) -> Option<String> {
+    let (machine, id) = tab.split_once('/')?;
+    let doc = layout_doc(Some(machine)).ok()?;
+    let root = root_in(&doc, tab).or_else(|| root_in(&doc, id))?;
+    Some(if root.contains('/') {
+        root
+    } else {
+        format!("{machine}/{root}")
+    })
+}
+
+/// The app's focused pane, when it's in `tab`.
+fn focused_pane(app: &App, tab: &str) -> Option<String> {
+    let status = app.status().ok()?;
+    (status.get("tab").and_then(Value::as_str) == Some(tab))
+        .then(|| status.get("focused_pane")?.as_str().map(str::to_string))
+        .flatten()
 }
