@@ -15,7 +15,8 @@ import { treeMode } from "./shared.js";
 import { editorLabel } from "./nvim.js";
 
 // Enter's label: the editor it starts there (nvim, vim, open, …).
-const enterLabel = (v) => editorLabel(v.work?.where.root, v.work?.where.on);
+// On the row handed to herdr-nvim it brings the diff back.
+const enterLabel = (v) => (v.handedOff(v.list()?.row()) ? "diff" : editorLabel(v.list()?.where.root, v.list()?.where.on));
 import { NOTE_ROW, deleteNote, jumpToNote, noteMove, noteRow } from "./notesview.js";
 
 const down = (v, cx) => v.move(1, cx);
@@ -31,7 +32,7 @@ function filesBody(v, t, focused, list) {
   if (!rows.length) return empty(t, v.error ?? (v.loads.busy() ? "Loading changes…" : list ? "No changes" : "No folder"));
   v.scroll.measure(padded(rows.map(rowSize)));
   const ctx = {
-    t, selected: list.row()?.key, hover: v.hover, focused, tree: list.tree,
+    t, selected: list.row()?.key, hover: v.hover, focused, tree: list.tree, inNvim: (row) => v.handedOff(row),
     onClick: (row, e, cx) => v.clickRow(row, e, cx),
     onHover: (row, h, cx) => v.hoverRow(row.key, h, cx),
     onAction: (op, row, cx) => { v.handle.focus(); v.rowAction(op, row, cx); cx.notify(); },

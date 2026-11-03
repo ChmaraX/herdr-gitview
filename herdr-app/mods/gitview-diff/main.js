@@ -123,6 +123,7 @@ export default class GitDiff extends View {
     const fresh = (stored?.showing ?? 0) !== this.showing;
     this.seq = stored?.seq ?? 0;
     this.showing = stored?.showing ?? 0;
+    if (stored?.focus) takeKeyboard(this, cx); // back from nvim: the keys are the diff's
     const view = liveView(stored);
     const same = !fresh && sameFile(view, this.view);
     this.view = view;
@@ -286,7 +287,7 @@ export default class GitDiff extends View {
     const v = this.view;
     if (!v) return;
     if (v.kind === "deleted") return this.flash.set(`${v.path} is deleted`);
-    openNvim({ root: v.root, on: v.on, path: v.path, line: line ?? this.lineAt(this.cursor), tab: this.tab(), space: this.space(), closeDiff: this.place.closesForHerdrNvim });
+    openNvim({ root: v.root, on: v.on, path: v.path, line: line ?? this.lineAt(this.cursor), tab: this.tab(), space: this.space(), view: v, closeDiff: this.place.closesForHerdrNvim });
   }
 
   // s / u / x on the shown file (x asks first).

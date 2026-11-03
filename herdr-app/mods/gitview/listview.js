@@ -27,7 +27,7 @@ function actions(t, row, what, ctx) {
     .children(opsFor(row.section.id).map((a) => iconButton(t, `${a}-${row.key}`, ACTION[a].icon, ACTION[a].tip + what, (cx) => ctx.onAction(a, row, cx))));
 }
 
-// ctx: {t, selected (the selected row's key), hover, focused, tree, onClick(row, event, cx),
+// ctx: {t, selected (the selected row's key), hover, focused, tree, inNvim(row), onClick(row, event, cx),
 // onHover(row, hovered, cx), onAction(op, row, cx)}
 export function renderRow(row, ctx) {
   const { t } = ctx;
@@ -76,6 +76,7 @@ export function renderRow(row, ctx) {
     .when(ctx.tree, (e) => e.child(div().w(12).flex_none()))
     .child(letter(t, f.letter))
     .child(pathLabel(t, f.path, { folder: !ctx.tree }))
+    .when(Boolean(ctx.inNvim?.(row)), (e) => e.child(div().flex_none().px(5).rounded(5).border_1().border_color(t.border).text_size(10).text_color(t.muted).child("in nvim")))
     .when(!tools && f.add > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
     .when(!tools && f.del > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi1).child(`−${f.del}`)))
     .when(tools, (e) => e.child(actions(t, row, "", ctx)));

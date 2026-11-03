@@ -20,7 +20,7 @@
 
 import { exec, layout, notify, run } from "herdr";
 import { gv, message, onArgs } from "./engine.js";
-import { diffPane } from "./shared.js";
+import { diffPane, setHandoff, viewIn } from "./shared.js";
 
 // Terminals shown in the layout's blocks (an nvim panel, say).
 function layoutTerminals(node, out = []) {
@@ -64,7 +64,9 @@ export function knowEditor(root, on, cx) {
 // What Enter starts there, for the keycaps and the keys card.
 export const editorLabel = (root, on) => editors.get(editorKey(root, on))?.editor?.name ?? "editor";
 
-// {root, on, path, line, tab, space, closeDiff}
+// {root, on, path, line, tab, space, closeDiff, view}; `view`: the diff
+// shown for the file (with closeDiff, the handoff remembers it: the diff
+// comes back when nvim's pane goes).
 export async function openNvim(o) {
   try {
     const args = ["nvim", "--repo", o.root, "--path", o.path, "--line", String(o.line || 1)];
@@ -74,6 +76,10 @@ export async function openNvim(o) {
     const r = await gv([...args, ...onArgs(o.on)]);
     const pane = diffPane(o.tab);
     if (r.terminal === "herdr-nvim") {
+      if (o.closeDiff && o.view && o.tab) {
+        const v = o.view;
+        setHandoff(o.tab, { root: v.root, on: v.on ?? null, path: v.path, section: v.section, commit: v.commit ?? null, line: o.line || 1, seq: viewIn(o.tab)?.seq ?? 0, at: Date.now(), seen: false });
+      }
       if (pane && o.closeDiff) run("pane.close", { pane: pane.pane });
       return "herdr-nvim";
     }

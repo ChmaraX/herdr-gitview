@@ -13,12 +13,13 @@
 
 import { View } from "gpui-kit";
 import { v_flex, InputState } from "gpui-base";
-import { notify, theme } from "herdr";
+import { notify, run, theme } from "herdr";
 import { gv, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  cursorIn, diffPane, dirty, liveView, notesKey, notesOf, pump, setTreeMode, setView, takeKeyboard, treeMode, viewIn,
+  cursorIn, diffPane, dirty, handoffIn, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, pump, setHandoff, setTreeMode, setView, takeKeyboard,
+  treeMode, viewIn,
 } from "./shared.js";
 import { Flash, Loads, ModPanes, commandLoop, followStamp, stampMoved, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
@@ -99,6 +100,7 @@ export default class GitList extends View {
     if (this.modPanes.changed()) return true;
     if (this.cycle && this.cycle.shown !== this.place.shown()) return true;
     if (!this.place.shown()) return false;
+    if (this.place.panel && handoffIn(this.tab())) return true; // followHandoff watches nvim's pane
     if (stampMoved(this.watcher)) return true;
     const ctx = this.context();
     const d = dirty();
@@ -112,7 +114,11 @@ export default class GitList extends View {
   notice(cx) {
     if (this.modPanes.gone()) this.loads.afterClose(cx);
     if (this.cycle?.look() === "shown") this.openOnShow(cx);
-    if (!this.place.shown()) return;
+    if (!this.place.shown()) {
+      // Hidden (or on Files): no diff comes back for what nvim took.
+      if (this.cycle) for (const tab of Object.keys(handoffs())) setHandoff(tab, null);
+      return;
+    }
     const ctx = this.context();
     const d = dirty();
     const repoChanged = Boolean(d && d.at > this.seen.dirty && d.root === this.work?.where.root);
@@ -122,6 +128,66 @@ export default class GitList extends View {
     if (ctx.key !== this.ctx?.key || repoChanged || stamped) this.refresh(cx);
     else if (tabChanged) this.ctx = { ...this.ctx, tab: ctx.tab, space: ctx.space };
     this.followPane({ adopt: tabChanged });
+    if (this.place.panel) this.followHandoff(cx);
+  }
+
+  // ---- the handoff to herdr-nvim ----------------------------------------------
+  //
+  // Enter with herdr-nvim closes the diff pane and its nvim pane takes the
+  // place (nvim.js records the handoff). When that pane goes (`:q`), the diff
+  // comes back on the file, its cursor on the line, with the keyboard, as
+  // the TUI's diff did when nvim inside it quit. What can go wrong, and what
+  // happens then:
+  // - nvim's pane isn't in the app's lists yet right after the open: wait
+  //   until it's seen (10 s at most, then forget it);
+  // - it's closed by cmd-e or the Files button: the panel leaves gitview,
+  //   and a hidden panel forgets every handoff (notice);
+  // - it's closed while the panel is hidden: the same;
+  // - the person left the tab: forgotten, so coming back doesn't restore;
+  // - another diff opened meanwhile (the tab's view moved, or a diff pane is
+  //   there): forgotten;
+  // - the file left the list: forgotten, nothing shown;
+  // - nvim's pane closing drops an exec in flight: Loads.afterClose;
+  // - herdr-nvim's sync at the same moment: with the panel on Changes it
+  //   leaves the panel as it is (its sync-rule.js), and this acts only on
+  //   the next look.
+
+  // The row Enter handed to herdr-nvim in this tab.
+  handedOff(row) {
+    const rec = handoffIn(this.tab());
+    const w = this.list()?.where;
+    return Boolean(rec && w && row?.kind === "file" && rec.root === w.root && rec.on === (w.on ?? null) && rec.commit === (w.commit ?? null)
+      && rec.path === row.file.path && rec.section === row.section.id);
+  }
+
+  followHandoff(cx) {
+    const tab = this.tab();
+    for (const t of Object.keys(handoffs())) if (t !== tab) setHandoff(t, null); // the person left that tab
+    const rec = handoffIn(tab);
+    if (!rec) return;
+    const nvim = herdrNvimPanes(tab).length > 0;
+    if (!rec.seen) {
+      if (nvim) setHandoff(tab, { ...rec, seen: true });
+      else if (Date.now() - rec.at > 10000) setHandoff(tab, null);
+      return;
+    }
+    if (nvim) return;
+    setHandoff(tab, null);
+    if (diffPane(tab) || (viewIn(tab)?.seq ?? 0) !== rec.seq) return;
+    const list = this.list();
+    const row = list && list.where.root === rec.root && (list.where.commit ?? null) === rec.commit ? list.findFile(rec.path, rec.section) : null;
+    if (row) this.select(row, cx, { line: rec.line, focusPane: true });
+  }
+
+  // A click or Enter on the handed-off row: the diff again in nvim's place.
+  // nvim's pane closes; nvim keeps running (its daemon keeps the buffers,
+  // unsaved edits and cursor), and Enter in the diff goes back to it.
+  bringBack(row, cx) {
+    const tab = this.tab();
+    const rec = handoffIn(tab);
+    setHandoff(tab, null);
+    for (const p of herdrNvimPanes(tab)) run("pane.close", { pane: p.pane });
+    this.select(row, cx, { line: rec?.line ?? null, focusPane: true });
   }
 
   // The panel just showed (cmd-shift-g, the Changes button), and the tab
@@ -229,30 +295,32 @@ export default class GitList extends View {
 
   // Select a row; a file shows in the diff pane (`open`: open the pane when
   // the tab has none: a click or j/k, not a refresh; `line`: a note's).
-  select(row, cx, { open = true, line = null } = {}) {
+  // `focusPane`: the diff pane gets the keyboard (coming back from nvim).
+  select(row, cx, { open = true, line = null, focusPane = false } = {}) {
     const list = this.list();
     if (!list || !row) return;
     list.select(row);
     this.reveal(list.index(row), { margin: 28 });
-    if (row.kind === "file") this.show(row, { open, cx, line });
+    if (row.kind === "file") this.show(row, { open, cx, line, focusPane });
   }
 
-  show(row, { open = false, cx, line = null } = {}) {
+  show(row, { open = false, cx, line = null, focusPane = false } = {}) {
     const tab = this.tab();
     if (!tab) return;
-    this.seen.views[tab] = setView(tab, this.list().viewFor(row, line)).seq;
-    if (open && cx && this.place.opensDiffPane) this.ensurePane(tab, cx);
+    this.seen.views[tab] = setView(tab, { ...this.list().viewFor(row, line), focus: focusPane }).seq;
+    if (open && cx && this.place.opensDiffPane) this.ensurePane(tab, cx, { focusPane });
   }
 
   // The tab's diff pane, opened on first use: full height at the tab's
   // right edge (`json sidebar`), left of this panel.
-  ensurePane(tab, cx) {
+  ensurePane(tab, cx, { focusPane = false } = {}) {
     if (diffPane(tab) || this.opening === tab) return;
     this.opening = tab;
     cx.spawn(async (cx) => {
       try {
-        await gv(["sidebar", "--tab", tab, "--mod", "gitview-diff", "--props", JSON.stringify({ tab })]);
-        takeKeyboard(this, cx); // the new pane took the app's focus; the list keeps the keys
+        const { pane } = await gv(["sidebar", "--tab", tab, "--mod", "gitview-diff", "--props", JSON.stringify({ tab })]);
+        if (focusPane && pane) run("pane.focus", { pane }); // the pane takes the keys (its view says so)
+        else takeKeyboard(this, cx); // the new pane took the app's focus; the list keeps the keys
       } catch (e) {
         this.flash.set(message(e));
       } finally {
@@ -317,6 +385,7 @@ export default class GitList extends View {
 
   // nvim at the cursor the diff pane has on this file, else its first change.
   edit(row, cx) {
+    if (this.handedOff(row)) return this.bringBack(row, cx);
     if (row.file.kind === "deleted") return this.flash.set(`${row.file.path} is deleted`);
     const tab = this.tab();
     const list = this.list();
@@ -326,7 +395,7 @@ export default class GitList extends View {
       const cursor = cursorIn(tab);
       let line = cursor && sameFile(cursor, view) ? cursor.line : null;
       if (!line) line = (await gv(diffArgs(view, { dark: isDark(theme().background), unfold: false })))?.first_change ?? 1;
-      await openNvim({ root: list.where.root, on: list.where.on, path: row.file.path, line, tab, space, closeDiff: this.place.closesForHerdrNvim });
+      await openNvim({ root: list.where.root, on: list.where.on, path: row.file.path, line, tab, space, view, closeDiff: this.place.closesForHerdrNvim });
     });
   }
 
@@ -453,6 +522,7 @@ export default class GitList extends View {
       list.select(row);
       list.toggleFold(row);
     } else if (e.click_count >= 2) this.edit(row, cx);
+    else if (this.handedOff(row)) this.bringBack(row, cx);
     else if (!list.isSelected(row) || !liveView(viewIn(this.tab())) || !diffPane(this.tab())) this.select(row, cx);
     cx.notify();
   }

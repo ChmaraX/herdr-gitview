@@ -23,12 +23,17 @@
 //   saw the repo change. With two copies watching one folder only the
 //   newest wakes (herdr-app 0.1.12), so the copy that woke says so here and
 //   the others follow (modkit.js watch).
+// - "gitview.handoff": {<tab>: {root, on, path, section, commit, line, seq,
+//   at, seen}}: Enter handed the tab's diff to herdr-nvim's nvim (its pane
+//   took the diff pane's place). `seq`: the tab's view then; `seen`: the
+//   list saw nvim's pane. When that pane goes, the list brings the diff
+//   back (main.js followHandoff).
 // - "gitview.tree": the list shows folders as a tree.
 // - "gitview.own": {<space>: <tab>}: the space's gitview tab (cmd-g).
 // - "gitview.origins": {<space>: <tab>}: where cmd-g was pressed (it goes
 //   back there).
 
-import { focused, layout, panes, setShared, shared, spaces } from "herdr";
+import { focused, layout, panes, setShared, shared, spaces, terminals } from "herdr";
 import { sameFile } from "./model.js";
 
 export function views() {
@@ -106,6 +111,32 @@ export function changedAt(root) {
 
 export function stampChanged(root, at) {
   setShared("gitview.changed", { ...(shared("gitview.changed") ?? {}), [notesKey(null, root)]: at });
+}
+
+// ---- the handoff to herdr-nvim ----------------------------------------------------
+
+export function handoffs() {
+  return shared("gitview.handoff") ?? {};
+}
+
+export const handoffIn = (tab) => (tab ? handoffs()[tab] ?? null : null);
+
+// `rec` null: the tab has none.
+export function setHandoff(tab, rec) {
+  const all = { ...handoffs() };
+  if (rec) all[tab] = rec;
+  else if (tab in all) delete all[tab];
+  else return;
+  setShared("gitview.handoff", all);
+}
+
+// The panes herdr-nvim shows in the tab: its nvim's (a terminal labelled
+// herdr-nvim.sidebar=<tab>), or its preview in nvim's place (a herdr-nvim
+// mod pane). Closing them keeps nvim running (its daemon keeps buffers,
+// unsaved edits and the cursor; herdr-nvim's RECIPE).
+export function herdrNvimPanes(tab) {
+  const nvims = new Set(terminals().filter((t) => t.state === "live" && t.labels?.["herdr-nvim.sidebar"] === tab).map((t) => t.address));
+  return panes().filter((p) => p.tab === tab && ((p.terminal && nvims.has(p.terminal)) || (!p.terminal && p.mod === "herdr-nvim")));
 }
 
 // ---- notes ------------------------------------------------------------------
