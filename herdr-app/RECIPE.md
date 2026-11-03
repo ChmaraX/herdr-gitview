@@ -159,7 +159,16 @@ Spaces on other machines work the same way.
   bin/herdr-nvim`), `herdr-nvim open --tab <tab> --space <space>
   <file>:<line>`; its full-height nvim pane takes the diff pane's place, so
   gitview closes its diff pane (not in cmd-g's tab). herdr-nvim's sync
-  controller leaves the panel on Changes. Without it: an nvim already
+  controller leaves the panel on Changes. The way back, as the TUI's diff
+  had nvim inside it: when nvim's pane goes (`:q`), the diff pane comes
+  back on that file and side, its cursor on the line nvim opened at, with
+  the keyboard; meanwhile the file's row shows an `in nvim` mark (10 px
+  `muted` on a `border` box), and a click or Enter on it (the keycap reads
+  `[⏎] diff`) closes nvim's pane (nvim keeps running: its daemon keeps the
+  buffers, unsaved edits and cursor) and opens the diff in its place; Enter
+  in the diff goes to nvim again. Nothing comes back when the panel hid or
+  went to Files, the person left the tab, another diff opened meanwhile, or
+  the file left the list. Without it: an nvim already
   running in the tab (or a layout block) opens the file; else the editor
   the engine picks on the repo's machine (`json editor`: config.toml's
   `editor`, `$VISUAL`, `$EDITOR`, nvim, vim, vi; here, else the system's
@@ -276,7 +285,9 @@ Spaces on other machines work the same way.
   `gitview.views[<tab>]` on J/K, and `gitview.dirty` after s/u/x (the list
   refreshes and picks the next file); notes are `gitview.notes["<machine
   or ''>:<repo root>"]` (`{id, file, section, cached, start, end, text,
-  snippet}`; the engine gets `cached`); `gitview.changed` a folder watch saw a repo change; `gitview.tree` the list mode; `gitview.own[<space>]`
+  snippet}`; the engine gets `cached`); `gitview.changed` a folder watch saw a repo change; `gitview.handoff[<tab>]`
+  the file Enter handed to herdr-nvim (the diff comes back when its pane
+  goes); `gitview.tree` the list mode; `gitview.own[<space>]`
   cmd-g's tab; `gitview.origins[<space>]` where cmd-g came from.
 - **mods/gitview-agents**: the send dialog (`agents()`, then the binary's
   `send`, then the sent notes leave `gitview.notes`; its error shown in
@@ -387,6 +398,10 @@ Spaces on other machines work the same way.
   input without submitting and leaves the clipboard as it was; into a
   program without bracketed paste it says why and types nothing;
   shift+enter submits. A note can't be written on a commit's diff.
+- With herdr-nvim, quitting nvim brings the diff pane back on the file with
+  the keyboard; a click on the row does too, closing nvim's pane while
+  nvim keeps the buffer and an unsaved edit; after leaving the tab, nothing
+  comes back.
 - Enter opens nvim at the line (one nvim, reused); with config.toml's
   `editor` set to a vim, Enter starts it with `+line file`; with herdr-nvim it calls
   `herdr-nvim open --tab <tab> --space <space> <file>:<line>`, starts no
