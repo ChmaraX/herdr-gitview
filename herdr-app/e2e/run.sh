@@ -378,6 +378,7 @@ expect '[ -s "$BASE/vim.args" ]' "enter starts the config's editor"
 grep -qx "+3 $(cd "$ED" && pwd -P)/e.txt\|+3 $ED/e.txt" "$BASE/vim.args" && ok "with +3 and the file (a vim kind gets the line)" || fail "the editor got: $(cat "$BASE/vim.args")"
 rm -f "$GVCONF/config.toml"
 do_ space.select --index 1
+expect '"$APP" do gitview.click:src/app/a.rs >/dev/null && pane_on $TAB src/app/a.rs' "back in the first space, a click opens its diff pane again" 20
 
 # Keys need the window drawn: macOS doesn't draw a covered window, and a mod
 # takes the keyboard only when drawn. Covered (your windows in front; it's
