@@ -15,12 +15,19 @@ impl DiffDoc {
     /// lines stay plain until revealed). `None` when nothing is left, or
     /// the language is unknown.
     pub fn highlight_job(&self) -> Option<HighlightJob> {
+        self.highlight_job_within(usize::MAX)
+    }
+
+    /// [`DiffDoc::highlight_job`] for the first `rows` rows only: what a
+    /// caller that shows no more than those needs (the lines after them,
+    /// in a huge diff, aren't parsed at all).
+    pub fn highlight_job_within(&self, rows: usize) -> Option<HighlightJob> {
         if !self.colorable {
             return None;
         }
         let (mut old, mut new) = (Vec::new(), Vec::new());
         // Diff order keeps each side's line numbers ascending.
-        for (side, line, code) in self.rows.iter().filter_map(Row::code) {
+        for (side, line, code) in self.rows.iter().take(rows).filter_map(Row::code) {
             if code.runs.is_none() {
                 match side {
                     Side::Old => old.push(line),

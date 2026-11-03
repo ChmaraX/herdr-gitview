@@ -16,6 +16,9 @@
 //!   files the list hides, or takes unstaged changes while something is
 //!   staged;
 //! - a branch base passed back by the caller kept after HEAD moved;
+//! - a huge diff's last sent rows left without syntax colors (only the
+//!   rows sent are highlighted, so a cap counted wrong shows as plain
+//!   text);
 //! - HEAD's commit or branch misread: before the first commit, on a branch,
 //!   detached;
 //! - diff rows without their markers, numbers or tint roles; history, a
@@ -565,4 +568,33 @@ fn status_names_heads_commit_and_branch_as_git_has_them() {
     let st = gv(d, &["status"]);
     assert_eq!(st["branch"], "fresh");
     assert_eq!(st["head"], Value::Null, "before the first commit");
+}
+
+#[test]
+fn every_row_sent_of_a_huge_diff_has_its_syntax_colors() {
+    let repo = fixture("json-huge");
+    let d = &repo.dir;
+    let line = "fn f() -> u32 { 1 }\n";
+    write(d, "big.rs", &line.repeat(6000));
+    let v = gv(
+        d,
+        &[
+            "diff",
+            "--path",
+            "big.rs",
+            "--kind",
+            "untracked",
+            "--unfold",
+        ],
+    );
+    assert_eq!(v["truncated"], true, "more rows than are sent");
+    let rows = v["rows"].as_array().unwrap();
+    let code = |row: &Value| {
+        let spans = row["s"].as_array().unwrap();
+        let gutter = spans.iter().position(|s| s[1] == "@gutter").unwrap();
+        spans[gutter + 1..].to_vec()
+    };
+    let first = code(&rows[0]);
+    assert!(first.len() > 3, "colored: {first:?}");
+    assert_eq!(code(rows.last().unwrap()), first, "the last row sent");
 }

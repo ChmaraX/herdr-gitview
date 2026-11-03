@@ -346,9 +346,34 @@ pub fn build(
     context_lines: usize,
     tab_width: usize,
 ) -> DiffDoc {
+    build_within(
+        path,
+        old,
+        new,
+        hl,
+        theme,
+        context_lines,
+        tab_width,
+        usize::MAX,
+    )
+}
+
+/// [`build`], with syntax colors for the first `rows` rows only (the rest
+/// stay plain): for a caller that shows no more than those.
+#[allow(clippy::too_many_arguments)]
+pub fn build_within(
+    path: &Path,
+    old: &str,
+    new: &str,
+    hl: &Highlighter,
+    theme: crate::config::Theme,
+    context_lines: usize,
+    tab_width: usize,
+    rows: usize,
+) -> DiffDoc {
     let mut doc = build_plain(path, old, new, hl, theme, context_lines, tab_width);
     if let Some(h) = doc
-        .highlight_job()
+        .highlight_job_within(rows)
         .and_then(|job| job.run(hl, &mut || true))
     {
         doc.apply_highlights(&h);

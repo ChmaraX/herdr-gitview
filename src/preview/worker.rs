@@ -374,23 +374,25 @@ fn sources(req: &ShowReq) -> Result<(Source, Source), String> {
     })
 }
 
-/// Build `req`'s diff in one go (fetch, diff, highlight) — the native app
-/// panel's route (`herdr-gitview json diff`), with no cache or worker.
-pub fn load_doc(repo: &Repo, cfg: &Config, req: &ShowReq) -> Result<render::DiffDoc, String> {
-    let (old, new) = load_sides(repo, req)?;
-    Ok(build_doc(cfg, req, &old, &new))
-}
-
-/// The two sides [`load_doc`] renders: old and new text.
+/// The native app panel's route (`herdr-gitview json diff`), with no cache
+/// or worker: the two sides of `req`'s diff, old and new text, then
+/// [`build_doc`].
 pub fn load_sides(repo: &Repo, req: &ShowReq) -> Result<(String, String), String> {
     fetch(repo, req).map(|f| (f.old, f.new))
 }
 
-/// What [`load_doc`] makes of the sides [`load_sides`] read; nothing else
-/// goes in (with `cfg`'s theme, context lines and tab width).
-pub fn build_doc(cfg: &Config, req: &ShowReq, old: &str, new: &str) -> render::DiffDoc {
+/// The diff made of the sides [`load_sides`] read; nothing else
+/// goes in (with `cfg`'s theme, context lines and tab width). Syntax colors
+/// for the first `rows` rows only: the app sends no more.
+pub fn build_doc(
+    cfg: &Config,
+    req: &ShowReq,
+    old: &str,
+    new: &str,
+    rows: usize,
+) -> render::DiffDoc {
     let hl = crate::preview::highlight::Highlighter::new(cfg.theme);
-    render::build(
+    render::build_within(
         &req.file,
         old,
         new,
@@ -398,6 +400,7 @@ pub fn build_doc(cfg: &Config, req: &ShowReq, old: &str, new: &str) -> render::D
         cfg.theme,
         cfg.context_lines,
         cfg.tab_width,
+        rows,
     )
 }
 

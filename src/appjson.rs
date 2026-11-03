@@ -616,7 +616,7 @@ fn diff(a: &Args) -> Result<Value> {
     if a.value("unless") == Some(hash.as_str()) {
         return Ok(json!({ "same": true, "hash": hash }));
     }
-    let doc = crate::preview::worker::build_doc(&cfg, &req, &old, &new);
+    let doc = crate::preview::worker::build_doc(&cfg, &req, &old, &new, MAX_ROWS);
     let text = doc.tagged_text();
     let rows = text
         .lines
