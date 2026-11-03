@@ -503,7 +503,13 @@ expect '[ "$(view_of $OWN path)" = src/main.rs ]' "a click in its list shows the
 shot 15-own-tab 1.5
 do_ tab.select --index 1
 press 5:cmd cmd-g gitview-tab '[ "$(tab_active)" = gitview ]' "from another tab jumps to it"
+# An nvim gitview starts in that tab closes with it (clean: it quits).
+printf 'editor = ["nvim"]\n' >"$GVCONF/config.toml"
+do_ gitview-diff.key:enter
+expect '[ -n "$(shared "s.get(\"gitview.editors\",{}).get(\"$OWN\",{}).get(\"terminal\") or \"\"")" ] && nvim_up' "enter in cmd-g's tab: an nvim gitview keeps with that tab" 15
 press 5:cmd cmd-g gitview-tab '[ "$(tab_active)" = 1 ]' "from inside closes it, back to where you were"
+expect '! nvim_up' "and its clean nvim quit with it" 15
+rm -f "$GVCONF/config.toml"
 [ -n "$(terms | awk '$1=="'"$SHELL_T"'"')" ] && ok "the shell's tab is untouched" || fail "closed the wrong tab"
 
 # --- conflicts, and the last file ------------------------------------------------------------
