@@ -4,6 +4,7 @@
 
 import { closeOverlay, nextCommand, notify, panes, props, watchFolder } from "herdr";
 import { message } from "./engine.js";
+import { shared } from "herdr";
 import { changedAt, stampChanged } from "./shared.js";
 
 // At most one "gitview.changed" stamp per repo this often.
@@ -131,6 +132,24 @@ export class Loads {
   names() {
     return [...this.running.values()].map((l) => l.what).join(", ");
   }
+}
+
+// While shared "gitview.debug" is set (the e2e's jank.sh), what a copy
+// draws, one line in the app's log each time it changes (GVTRACE): for
+// counting blank bodies, mode flips and spinner blinks without frames. A
+// window that isn't drawn (started in the background) never renders, so a
+// debug copy also looks every 25 ms from a timer (`debugLook`), doing what
+// its render does: notice, and trace. Off: nothing, no timer.
+export function trace(mod, fields, holder) {
+  if (!shared("gitview.debug")) return;
+  const key = JSON.stringify(fields);
+  if (holder.lastTrace === key) return;
+  holder.lastTrace = key;
+  console.log(`GVTRACE ${JSON.stringify({ t: Date.now(), mod, ...fields })}`);
+}
+
+export function debugLook(cx, look) {
+  if (shared("gitview.debug")) cx.timer.every(25, () => look());
 }
 
 // Whether a mod pane went since the last look (any mod's: the app's drop

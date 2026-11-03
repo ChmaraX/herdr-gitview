@@ -21,7 +21,7 @@ import {
   cursorIn, diffPane, dirty, handoffIn, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, pump, setHandoff, setTreeMode, setView, takeKeyboard,
   treeMode, viewIn,
 } from "./shared.js";
-import { Flash, Loads, ModPanes, commandLoop, followStamp, stampMoved, watch } from "./modkit.js";
+import { Flash, Loads, ModPanes, commandLoop, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
 import { FileList } from "./filelist.js";
 import { History } from "./history.js";
@@ -73,6 +73,7 @@ export default class GitList extends View {
     // Only while it's on screen.
     cx.timer.every(4000, (cx) => { if (this.ctx?.on && this.place.shown()) this.refresh(cx, { poll: true }); });
     cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.place.shown()) this.refresh(cx, { poll: true }); });
+    debugLook(cx, () => { if (this.stale()) this.kick(); trace("list", this.traceFields(), this); });
     commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview", before: (cx) => this.notice(cx), handle: (c, cx) => runCommand(this, c, cx) });
     if (this.place.takesKeyboard) takeKeyboard(this, cx);
   }
@@ -536,12 +537,26 @@ export default class GitList extends View {
 
   // ---- view -----------------------------------------------------------------
 
+  // What the list draws now, for the debug trace (modkit.js trace).
+  traceFields() {
+    const list = this.list();
+    return {
+      tab: this.tab(),
+      mode: this.mode,
+      body: list?.rows.length ? "content" : this.loads.busy() ? "loading-text" : "empty-state",
+      spinner: this.loads.busy(),
+      header: this.mode === "files" ? `${this.work?.status.scope ?? "-"} ${this.work?.files() ?? 0} files` : this.mode,
+      selected: list?.row()?.key ?? null,
+    };
+  }
+
   render(cx) {
     if (this.stale()) this.kick();
     const t = theme();
     const focused = this.handle.is_focused();
     const notes = this.notes();
     const mode = MODES[this.mode];
+    trace("list", this.traceFields(), this);
     return this.place
       .frame(v_flex().id("gitview").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13), t, focused)
       .track_focus(this.handle)

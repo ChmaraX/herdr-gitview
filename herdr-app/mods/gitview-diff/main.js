@@ -22,7 +22,7 @@ import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
   addNote, cursorIn, diffPane, liveView, notesKey, notesOf, onScreen, pump, removeNotes, setCursor, setDirty, setView, takeKeyboard, viewIn,
 } from "./shared.js";
-import { Flash, Loads, ModPanes, commandLoop, followStamp, keyEvent, keyName, stampMoved, watch } from "./modkit.js";
+import { Flash, Loads, ModPanes, commandLoop, debugLook, followStamp, keyEvent, keyName, stampMoved, trace, watch } from "./modkit.js";
 import { panePlacement } from "./placement.js";
 import { editorLabel, knowEditor, openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
@@ -91,6 +91,7 @@ export default class GitDiff extends View {
     this.kick = pump(cx, (cx) => this.sync(cx));
     this.sync(cx);
     cx.timer.every(4000, (cx) => { if (this.view?.on && onScreen(this.tab())) this.reload(cx); });
+    debugLook(cx, () => { this.renderLook(); trace("pane", this.traceFields(), this); });
     commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview-diff", before: (cx) => this.sync(cx), handle: (c, cx) => this.command(c, cx) });
   }
 
@@ -450,9 +451,34 @@ export default class GitDiff extends View {
 
   // ---- view -----------------------------------------------------------------
 
+  // What a render notices, woken in the pump (never work from render).
+  renderLook() {
+    if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(theme().background) !== this.dark || this.modPanes.changed() || stampMoved(this.watcher)) this.kick();
+  }
+
+  // What the pane draws now, for the debug trace (modkit.js trace).
+  traceFields() {
+    const v = this.view;
+    const preview = this.inPreview();
+    return {
+      tab: this.tab(),
+      seq: this.seq,
+      file: v ? `${v.section}:${v.path}${v.commit ? `@${v.commit.slice(0, 7)}` : ""}` : null,
+      shown: viewIn(this.tab())?.path ?? null,
+      body: preview ? "content"
+        : v && this.wantsPreview() && this.preview?.view !== v ? "loading-text"
+        : !v ? "empty-state"
+        : this.diff.rows.length ? "content"
+        : (this.diff.empty || this.diff.binary) && !this.loads.busy() ? "empty-state" : "blank",
+      mode: v && previewKind(v) ? (preview ? "preview" : "diff") : "diff",
+      spinner: this.loads.busy(),
+      header: v ? `${v.letter ?? ""} ${v.path} +${v.add ?? 0} -${v.del ?? 0} ${v.scope}` : "Diff",
+    };
+  }
+
   render(cx) {
     const t = theme();
-    if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(t.background) !== this.dark || this.modPanes.changed() || stampMoved(this.watcher)) this.kick();
+    this.renderLook();
     const focused = this.handle.is_focused();
     const key = this.notesKey();
     // A note's card shows on the side it was written on (notes from before
@@ -503,6 +529,7 @@ export default class GitDiff extends View {
       : v_flex().flex_1().items_center().justify_center().gap(4).text_color(t.dim)
           .child(div().child("No file selected"))
           .child(div().text_size(12).child("Click a file in the gitview list."));
+    trace("pane", this.traceFields(), this);
     return v_flex()
       .id("gitview-diff")
       .size_full()
