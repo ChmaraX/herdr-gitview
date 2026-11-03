@@ -33,12 +33,15 @@
 //! Ops (exact usage):
 //!
 //! - `status --repo DIR [--scope worktree|branch] [--base LABEL --merge-base
-//!   SHA] [--on M]` → `{root, branch, scope, sections: [{id, title, cached,
-//!   files: [FILE]}], editor}`; branch scope adds `base: {label, merge_base}`
+//!   SHA --head SHA] [--on M]` → `{root, branch, head, scope, sections: [{id,
+//!   title, cached, files: [FILE]}], editor}`; `head` is HEAD's sha (`null`
+//!   before the first commit); branch scope adds `base: {label, merge_base}`
 //!   and has one section (`id: "branch"`). Worktree sections: `conflicts`,
 //!   `staged`, `changes` (empty ones left out). FILE is `{path, orig, kind,
-//!   letter, add, del}`. In branch scope, `--base`/`--merge-base` (what the
-//!   last reply said) skip the base detection, a dozen git calls.
+//!   letter, add, del}`. In branch scope, `--base`/`--merge-base`/`--head`
+//!   (what the last reply said) skip the base detection, a dozen git calls,
+//!   while HEAD is still at `--head`; when it moved (or `--head` is
+//!   missing), the base is resolved again.
 //! - `diff --repo DIR --path P --kind K [--orig P] [--cached]
 //!   [--merge-base SHA --base LABEL] [--commit SHA] [--theme dark|light]
 //!   [--unfold] [--on M]` → `{rows: [{k, o, n, m, bg, s}], truncated,
@@ -58,8 +61,12 @@
 //!   entirely (index and worktree), and a folder covers both sections. With
 //!   `--section changes`: a partly staged file only loses its worktree
 //!   changes (`git restore -- P`), keeping what's staged.
-//! - `commit --repo DIR [--all] [--on M] [--] MESSAGE` → `{ok, summary}`
-//!   (`--all`: `git add -A` first; `summary`: `<short sha> <subject>`).
+//! - `commit --repo DIR [--on M] [--] MESSAGE` → `{ok, all, summary}`: the
+//!   engine decides what goes in, at commit time. Unmerged paths: an error
+//!   (`resolve the merge conflicts first`), nothing changed. Else, anything
+//!   staged: just that. Else everything, staged first: `git add -A`, or
+//!   `git add -u` when `show_untracked` is off (`all: true`). `summary`:
+//!   `<short sha> <subject>`.
 //! - `log --repo DIR [--merge-base SHA] [--limit N] [--on M]` →
 //!   `{commits: [{sha, short, subject, author, when, refs}]}`, newest first,
 //!   at most N (200). `--merge-base`: only `SHA..HEAD`. `when`: relative
@@ -73,8 +80,10 @@
 //!   already running in tab T or in one of the `shown` terminals (`terminal`
 //!   is that terminal); `null` when there is none. With `--on`: herdr-nvim
 //!   only (it needs `--tab` and `--space`), never an nvim of this machine.
-//! - `notes [--] NOTES_JSON` (`[{file, start, end, text, snippet}]`) →
-//!   `{message}`: the text an agent gets.
+//! - `notes [--] NOTES_JSON` (`[{file, start, end, text, snippet,
+//!   cached}]`; `cached`: written on the staged diff, default false) →
+//!   `{message}`: the text an agent gets, as the TUI builds it (which
+//!   doesn't mark a note's side in the text).
 //! - `send --terminal T [--submit] [--] TEXT` → `{ok}`: without `--submit`,
 //!   place TEXT in the terminal's input without pressing Enter (a paste
 //!   through a framed `terminal.attach` over `hc connect`; no clipboard;
@@ -185,7 +194,7 @@ struct Args {
 
 impl Args {
     fn parse(args: &[String]) -> Args {
-        const FLAGS: [&str; 4] = ["cached", "submit", "unfold", "all"];
+        const FLAGS: [&str; 3] = ["cached", "submit", "unfold"];
         let mut pairs = Vec::new();
         let mut positional = Vec::new();
         let mut it = args.iter();
@@ -300,6 +309,9 @@ impl<'a> SectionOut<'a> {
 struct StatusOut<'a> {
     root: &'a Path,
     branch: Option<String>,
+    /// The commit HEAD is at (`None` before the first commit), for the
+    /// caller to pass back as `--head` with a branch-scope base.
+    head: Option<String>,
     scope: Scope,
     #[serde(skip_serializing_if = "Option::is_none")]
     base: Option<BranchBase>,
@@ -362,14 +374,20 @@ fn status(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
     let cfg = config();
     let branch = repo.head_branch();
+    let head = repo.head_sha();
     if a.value("scope") == Some("branch") {
         // The caller may pass back the base it got last time: base detection
-        // costs a dozen git calls, too many for every poll.
-        let base = match (a.value("base"), a.value("merge-base")) {
-            (Some(label), Some(merge_base)) => BranchBase {
-                label: label.to_string(),
-                merge_base: merge_base.to_string(),
-            },
+        // costs a dozen git calls, too many for every poll. It holds only
+        // while HEAD is where it was resolved for: after a rebase or a merge
+        // of the base, it's resolved again (the TUI's HeadMoved).
+        let given = (a.value("base"), a.value("merge-base"), a.value("head"));
+        let base = match given {
+            (Some(label), Some(merge_base), Some(was)) if head.as_deref() == Some(was) => {
+                BranchBase {
+                    label: label.to_string(),
+                    merge_base: merge_base.to_string(),
+                }
+            }
             _ => {
                 let (label, merge_base) = repo.resolve_base(&cfg.base)?;
                 BranchBase { label, merge_base }
@@ -379,6 +397,7 @@ fn status(a: &Args) -> Result<Value> {
         return reply(StatusOut {
             root: &repo.root,
             branch,
+            head,
             scope: Scope::Branch,
             base: Some(base.clone()),
             sections: vec![SectionOut::of(Section::Flat, "", &files)],
@@ -398,6 +417,7 @@ fn status(a: &Args) -> Result<Value> {
     reply(StatusOut {
         root: &repo.root,
         branch,
+        head,
         scope: Scope::Worktree,
         base: None,
         sections,
@@ -639,8 +659,8 @@ fn discard(a: &Args) -> Result<Value> {
 fn commit(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
     let message = a.positional.first().context("commit: no message")?;
-    repo.commit(message, a.flag("all"))?;
-    Ok(json!({ "ok": true, "summary": repo.last_commit_summary() }))
+    let all = repo.commit(message, config().show_untracked)?;
+    Ok(json!({ "ok": true, "all": all, "summary": repo.last_commit_summary() }))
 }
 
 // ---- history ------------------------------------------------------------------
@@ -729,6 +749,9 @@ struct NoteIn {
     text: String,
     #[serde(default)]
     snippet: String,
+    /// Written on the staged diff.
+    #[serde(default)]
+    cached: bool,
 }
 
 fn notes(raw: &str) -> Result<String> {
@@ -743,7 +766,7 @@ fn notes(raw: &str) -> Result<String> {
             end: n.end,
             text: n.text,
             snippet: n.snippet,
-            cached: false,
+            cached: n.cached,
         })
         .collect();
     Ok(crate::preview::session::notes_message(&notes))

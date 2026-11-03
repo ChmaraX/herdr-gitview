@@ -172,9 +172,15 @@ impl Repo {
         self.machine.git(&self.root, &argv, run)
     }
 
-    /// `git commit -m <message>` (`all`: `git add -A` first). Hooks may take
-    /// a while, so a remote commit gets hc's longest timeout.
-    pub fn commit(&self, message: &str, all: bool) -> Result<()> {
+    /// Commit what the person means, decided now rather than from a list
+    /// that may be stale: with unmerged paths, refuse and change nothing (an
+    /// `add` would mark the conflict markers resolved); with something
+    /// staged, commit just that; with nothing staged, stage every change
+    /// first (`add -A`, or `add -u` when untracked files are hidden, so
+    /// none the person can't see go in). Returns whether it staged
+    /// everything. Hooks may take a while, so a remote commit gets hc's
+    /// longest timeout.
+    pub fn commit(&self, message: &str, show_untracked: bool) -> Result<bool> {
         let run = |args: &[&str]| -> Result<()> {
             let out = self
                 .git_command(
@@ -191,10 +197,15 @@ impl Repo {
             }
             Ok(())
         };
-        if all {
-            run(&["add", "-A"])?;
+        if !self.git(&["ls-files", "--unmerged", "-z"])?.is_empty() {
+            bail!("resolve the merge conflicts first");
         }
-        run(&["commit", "-m", message])
+        let all = self.staged_count()? == 0;
+        if all {
+            run(&["add", if show_untracked { "-A" } else { "-u" }])?;
+        }
+        run(&["commit", "-m", message])?;
+        Ok(all)
     }
 
     /// `(adds, dels)` for untracked files: every line is an add; none for

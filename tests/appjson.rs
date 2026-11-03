@@ -9,19 +9,42 @@ use std::path::Path;
 use common::{fixture, write};
 use serde_json::Value;
 
-fn gv(repo: &Path, args: &[&str]) -> Value {
+/// `json <op> --repo REPO …`: whether it succeeded, and its one JSON object.
+/// The config is `REPO/.git/gitview-config/config.toml` when a test wrote
+/// one (see [`config`]), else the defaults.
+fn json(repo: &Path, args: &[&str]) -> (bool, Value) {
     let out = common::gitview()
         .arg("json")
         .arg(args[0])
         .args(["--repo", &repo.display().to_string()])
         .args(&args[1..])
-        // No personal config: defaults only.
-        .env("GITVIEW_CONFIG_DIR", repo.join(".no-config"))
+        .env("GITVIEW_CONFIG_DIR", repo.join(".git/gitview-config"))
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
         .output()
         .expect("spawn herdr-gitview");
     let v: Value = serde_json::from_slice(&out.stdout).expect("one JSON object");
-    assert!(out.status.success(), "json {args:?}: {v}");
+    (out.status.success(), v)
+}
+
+fn gv(repo: &Path, args: &[&str]) -> Value {
+    let (ok, v) = json(repo, args);
+    assert!(ok, "json {args:?}: {v}");
     v
+}
+
+fn gv_err(repo: &Path, args: &[&str]) -> String {
+    let (ok, v) = json(repo, args);
+    assert!(!ok, "json {args:?} should fail: {v}");
+    v["error"].as_str().unwrap().to_string()
+}
+
+/// The person's gitview config for this repo (inside `.git`, so it never
+/// shows as an untracked file).
+fn config(repo: &Path, toml: &str) {
+    write(repo, ".git/gitview-config/config.toml", toml);
 }
 
 fn section<'a>(status: &'a Value, id: &str) -> Vec<&'a str> {
@@ -97,20 +120,6 @@ fn discard_restores_the_file_and_notes_render_the_agent_message() {
         msg["message"],
         "base.txt:2-3 — why?\n  really\n```diff\n+x\n```\n"
     );
-}
-
-fn gv_err(repo: &Path, args: &[&str]) -> String {
-    let out = common::gitview()
-        .arg("json")
-        .arg(args[0])
-        .args(["--repo", &repo.display().to_string()])
-        .args(&args[1..])
-        .env("GITVIEW_CONFIG_DIR", repo.join(".no-config"))
-        .output()
-        .expect("spawn herdr-gitview");
-    assert!(!out.status.success(), "json {args:?} should fail");
-    let v: Value = serde_json::from_slice(&out.stdout).expect("one JSON object");
-    v["error"].as_str().unwrap().to_string()
 }
 
 #[test]
@@ -242,20 +251,44 @@ fn log_commit_files_and_a_commits_diff() {
     assert_eq!(root["rows"].as_array().unwrap().len(), 2);
 }
 
-#[test]
-fn a_folder_in_merge_conflicts_stages_the_conflicts_not_the_changes_under_it() {
-    let repo = fixture("json-conflicts");
-    let git = |args: &[&str]| common::git(&repo.dir, args);
-    write(&repo.dir, "dir/c.txt", "base\n");
+/// `git -C dir <args>`'s stdout.
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("spawn git");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The paths a commit changed.
+fn committed(dir: &Path, rev: &str) -> Vec<String> {
+    git_out(dir, &["show", "--format=", "--name-only", rev])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// `main` in the middle of a merge whose one file, `dir/c.txt`, conflicted.
+fn conflicted(repo: &Path) {
+    let git = |args: &[&str]| common::git(repo, args);
+    write(repo, "dir/c.txt", "base\n");
     git(&["add", "."]);
     git(&["commit", "-q", "-m", "c"]);
     git(&["checkout", "-q", "-b", "other"]);
-    write(&repo.dir, "dir/c.txt", "theirs\n");
+    write(repo, "dir/c.txt", "theirs\n");
     git(&["commit", "-q", "-am", "theirs"]);
     git(&["checkout", "-q", "main"]);
-    write(&repo.dir, "dir/c.txt", "ours\n");
+    write(repo, "dir/c.txt", "ours\n");
     git(&["commit", "-q", "-am", "ours"]);
-    common::git_lenient(&repo.dir, &["merge", "-q", "other"]);
+    common::git_lenient(repo, &["merge", "-q", "other"]);
+}
+
+#[test]
+fn a_folder_in_merge_conflicts_stages_the_conflicts_not_the_changes_under_it() {
+    let repo = fixture("json-conflicts");
+    conflicted(&repo.dir);
     write(&repo.dir, "dir/plain.txt", "unrelated change\n");
     let status = gv(&repo.dir, &["status"]);
     assert_eq!(section(&status, "conflicts"), ["dir/c.txt"]);
@@ -327,7 +360,10 @@ fn status_carries_only_what_the_mods_read_and_takes_a_base_from_the_caller() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys, ["root", "branch", "scope", "sections", "editor"]);
+    assert_eq!(
+        keys,
+        ["root", "branch", "head", "scope", "sections", "editor"]
+    );
     let file = &status["sections"][0]["files"][0];
     let keys: Vec<&str> = file
         .as_object()
@@ -340,8 +376,10 @@ fn status_carries_only_what_the_mods_read_and_takes_a_base_from_the_caller() {
     let branch = gv(&repo.dir, &["status", "--scope", "branch"]);
     assert_eq!(branch["base"]["label"], "main");
     assert!(branch.get("ahead").is_none());
-    // A base passed in is used as given, not detected again.
+    // A base passed in (with the HEAD it was for) is used as given, not
+    // detected again.
     let sha = branch["base"]["merge_base"].as_str().unwrap().to_string();
+    let head = branch["head"].as_str().unwrap().to_string();
     let given = gv(
         &repo.dir,
         &[
@@ -352,6 +390,8 @@ fn status_carries_only_what_the_mods_read_and_takes_a_base_from_the_caller() {
             "elsewhere",
             "--merge-base",
             &sha,
+            "--head",
+            &head,
         ],
     );
     assert_eq!(given["base"]["label"], "elsewhere");
@@ -365,4 +405,118 @@ fn status_carries_only_what_the_mods_read_and_takes_a_base_from_the_caller() {
         .map(String::as_str)
         .collect();
     assert_eq!(keys, ["sha", "short", "subject", "author", "when", "refs"]);
+}
+
+#[test]
+fn commit_refuses_while_files_are_in_conflict_and_stages_nothing() {
+    let repo = fixture("json-commit-conflicts");
+    conflicted(&repo.dir);
+    let head = git_out(&repo.dir, &["rev-parse", "HEAD"]);
+    let markers = std::fs::read_to_string(repo.dir.join("dir/c.txt")).unwrap();
+    assert!(markers.contains("<<<<<<<"), "{markers}");
+
+    let err = gv_err(&repo.dir, &["commit", "--", "merge other"]);
+    assert_eq!(err, "resolve the merge conflicts first");
+    // Nothing moved: no commit, the conflict still a conflict (an `add`
+    // would have marked the markers resolved), the merge still going.
+    assert_eq!(git_out(&repo.dir, &["rev-parse", "HEAD"]), head);
+    let status = gv(&repo.dir, &["status"]);
+    assert_eq!(section(&status, "conflicts"), ["dir/c.txt"]);
+    assert!(section(&status, "staged").is_empty());
+    assert!(repo.dir.join(".git/MERGE_HEAD").exists());
+}
+
+#[test]
+fn commit_with_nothing_staged_takes_every_change_but_hidden_untracked_files() {
+    let repo = fixture("json-commit-all");
+    config(&repo.dir, "show_untracked = false\n");
+    write(&repo.dir, "base.txt", "one\n2\n");
+    write(&repo.dir, "hidden.txt", "not on screen\n");
+    let done = gv(&repo.dir, &["commit", "--", "tracked only"]);
+    assert_eq!(done["all"], true, "{done}");
+    assert!(done["summary"].as_str().unwrap().ends_with(" tracked only"));
+    assert_eq!(committed(&repo.dir, "HEAD"), ["base.txt"]);
+    assert_eq!(
+        git_out(&repo.dir, &["status", "--porcelain"]),
+        "?? hidden.txt\n",
+        "an untracked file the list didn't show stays out"
+    );
+
+    // With untracked files shown, they're part of "everything".
+    config(&repo.dir, "show_untracked = true\n");
+    write(&repo.dir, "base.txt", "one\n3\n");
+    let done = gv(&repo.dir, &["commit", "--", "everything"]);
+    assert_eq!(done["all"], true);
+    assert_eq!(committed(&repo.dir, "HEAD"), ["base.txt", "hidden.txt"]);
+    assert_eq!(git_out(&repo.dir, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn commit_with_something_staged_takes_only_the_staged_changes() {
+    let repo = fixture("json-commit-staged");
+    write(&repo.dir, "staged.txt", "one\n");
+    write(&repo.dir, "base.txt", "one\nTWO\n");
+    gv(&repo.dir, &["stage", "--", "staged.txt", "base.txt"]);
+    // Changes made after staging: a partly staged file, a new untracked one.
+    write(&repo.dir, "base.txt", "one\nTWO\nthree\n");
+    write(&repo.dir, "later.txt", "later\n");
+
+    let done = gv(&repo.dir, &["commit", "--", "just the staged"]);
+    assert_eq!(done["all"], false, "{done}");
+    assert_eq!(committed(&repo.dir, "HEAD"), ["base.txt", "staged.txt"]);
+    assert_eq!(
+        git_out(&repo.dir, &["show", "HEAD:base.txt"]),
+        "one\nTWO\n",
+        "the staged version, not the worktree's"
+    );
+    let status = gv(&repo.dir, &["status"]);
+    assert!(section(&status, "staged").is_empty());
+    assert_eq!(section(&status, "changes"), ["base.txt", "later.txt"]);
+}
+
+#[test]
+fn a_branch_base_passed_back_is_resolved_again_once_head_moved() {
+    let repo = fixture("json-head-moved");
+    let git = |args: &[&str]| common::git(&repo.dir, args);
+    git(&["checkout", "-q", "-b", "feature"]);
+    write(&repo.dir, "mine.txt", "feature work\n");
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "feature work"]);
+    let first = gv(&repo.dir, &["status", "--scope", "branch"]);
+    let head = first["head"].as_str().unwrap().to_string();
+    let base = first["base"]["merge_base"].as_str().unwrap().to_string();
+    assert_eq!(head, git_out(&repo.dir, &["rev-parse", "HEAD"]).trim());
+    assert_eq!(section(&first, "branch"), ["mine.txt"]);
+    let again = |head: &str| {
+        gv(
+            &repo.dir,
+            &[
+                "status",
+                "--scope",
+                "branch",
+                "--base",
+                "main",
+                "--merge-base",
+                &base,
+                "--head",
+                head,
+            ],
+        )
+    };
+    // HEAD where it was: the base is used as given.
+    assert_eq!(again(&head)["base"]["merge_base"], base);
+
+    // main moves on and feature merges it: the old merge-base would show
+    // main's own file as this branch's change.
+    git(&["checkout", "-q", "main"]);
+    write(&repo.dir, "theirs.txt", "main moved on\n");
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "main work"]);
+    git(&["checkout", "-q", "feature"]);
+    git(&["merge", "-q", "--no-edit", "main"]);
+    let moved = again(&head);
+    let main = git_out(&repo.dir, &["rev-parse", "main"]);
+    assert_eq!(moved["base"]["merge_base"], main.trim(), "resolved again");
+    assert_eq!(section(&moved, "branch"), ["mine.txt"]);
+    assert_ne!(moved["head"], head.as_str());
 }

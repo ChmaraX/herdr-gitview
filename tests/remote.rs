@@ -21,7 +21,10 @@
 //! - untracked files measured with a process per file instead of one call
 //!   per batch;
 //! - a failed remote read shown as a deleted file, an unknown machine
-//!   falling back to this one.
+//!   falling back to this one;
+//! - a branch-scope base passed back after HEAD moved on the machine (a
+//!   rebase, a merge of the base) kept as is, or base detection run on every
+//!   poll while HEAD stays put.
 
 mod common;
 
@@ -366,6 +369,7 @@ fn status_diff_stage_discard_and_commit_match_with_and_without_on() {
     assert!(!paths(&status, "changes").contains(&"gone.txt".to_string()));
 
     let commit = w.both(&["commit", "remote commit"]);
+    assert_eq!(commit["all"], false, "staged changes only");
     assert!(
         commit["summary"]
             .as_str()
@@ -375,7 +379,8 @@ fn status_diff_stage_discard_and_commit_match_with_and_without_on() {
     );
     let status = w.both(&["status"]);
     assert!(paths(&status, "staged").is_empty());
-    let commit = w.both(&["commit", "--all", "everything"]);
+    let commit = w.both(&["commit", "everything"]);
+    assert_eq!(commit["all"], true, "nothing staged: everything");
     assert!(commit["summary"].as_str().unwrap().ends_with(" everything"));
     assert!(
         w.both(&["status"])["sections"]
@@ -540,4 +545,72 @@ fn a_failed_remote_read_is_an_error_not_a_deleted_file() {
             .contains("the connection dropped"),
         "{reply}"
     );
+}
+
+#[test]
+fn branch_scope_on_a_machine_resolves_the_base_again_once_head_moved_there() {
+    let w = world("head-moved");
+    let first = w.run(&["status", "--scope", "branch"], true);
+    let head = first["head"].as_str().unwrap().to_string();
+    let merge_base = first["base"]["merge_base"].as_str().unwrap().to_string();
+    let poll = |head: &str| {
+        w.run(
+            &[
+                "status",
+                "--scope",
+                "branch",
+                "--base",
+                "main",
+                "--merge-base",
+                &merge_base,
+                "--head",
+                head,
+            ],
+            true,
+        )
+    };
+
+    // HEAD where it was: the base passed back is used, nothing detected.
+    let calls_before = w.shim_log().len();
+    assert_eq!(poll(&head)["base"]["merge_base"], merge_base.as_str());
+    let detecting: Vec<String> = w.shim_log()[calls_before..]
+        .iter()
+        .filter(|c| c.contains(" merge-base "))
+        .cloned()
+        .collect();
+    assert!(detecting.is_empty(), "{detecting:?}");
+
+    // On the machine, main moves on and feature merges it.
+    let box_repo = &w.remote_real;
+    git(box_repo, &["add", "-A"]);
+    git(box_repo, &["commit", "-q", "-m", "wip"]);
+    git(box_repo, &["checkout", "-q", "main"]);
+    write(box_repo, "theirs.txt", b"main moved on\n");
+    git(box_repo, &["add", "."]);
+    git(box_repo, &["commit", "-q", "-m", "main work"]);
+    git(box_repo, &["checkout", "-q", "feature"]);
+    git(box_repo, &["merge", "-q", "--no-edit", "main"]);
+    let main_tip = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(box_repo)
+            .args(["rev-parse", "main"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+
+    let moved = poll(&head);
+    assert_eq!(
+        moved["base"]["merge_base"],
+        main_tip.trim(),
+        "resolved again"
+    );
+    assert!(
+        !paths(&moved, "branch").contains(&"theirs.txt".to_string()),
+        "main's own file isn't this branch's change: {moved}"
+    );
+    assert_ne!(moved["head"], head.as_str());
+    assert_eq!(w.trap_log(), "");
 }
