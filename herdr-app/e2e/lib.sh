@@ -40,8 +40,13 @@ export HERDR_PLUGIN_STATE_DIR="$BASE/gvstate"
 GV_LOG="$HERDR_PLUGIN_STATE_DIR/debug.log"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 mkdir -p "$HERDR_APP_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
-# GITVIEW_DEBUG=1: the gitview mods log a line per render (GVTRACE, jank.sh).
-if [ -n "${GITVIEW_DEBUG:-}" ]; then
+# The gitview mods' debug mode (shared gitview.debug): each copy logs what it
+# draws (GVTRACE, for jank.sh) and looks every 25 ms as its render would. The
+# private window starts in the background and never renders, so without it
+# a diff pane would notice the list's writes only on its own commands; a
+# window on screen renders on every change. GITVIEW_DEBUG=0 turns it off.
+GITVIEW_DEBUG="${GITVIEW_DEBUG:-1}"
+if [ "$GITVIEW_DEBUG" = 1 ]; then
   echo '{"frame.welcomed": true, "layout": "main", "gitview.debug": true}' >"$HERDR_APP_HOME/shared.json"
 else
   echo '{"frame.welcomed": true, "layout": "main"}' >"$HERDR_APP_HOME/shared.json"
