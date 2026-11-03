@@ -33,7 +33,7 @@ export const chipsFor = (view) => chipsOf(tables(view), view);
 // Every key of the list, the shown view's first.
 export function showKeys(view) {
   const order = [view.mode, ...Object.keys(MODES).filter((m) => m !== view.mode)];
-  toggleKeys("gitview: the file list", [...order.map((m) => ({ title: MODES[m].title, table: MODES[m].keys })), { title: "Everywhere", table: EVERYWHERE }]);
+  toggleKeys("gitview: the file list", [...order.map((m) => ({ title: MODES[m].title, table: MODES[m].keys })), { title: "Everywhere", table: EVERYWHERE }], view);
 }
 
 export function runCommand(view, command, cx) {

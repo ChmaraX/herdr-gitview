@@ -24,7 +24,7 @@ import {
 } from "./shared.js";
 import { Flash, Loads, ModPanes, commandLoop, followStamp, keyEvent, keyName, stampMoved, watch } from "./modkit.js";
 import { panePlacement } from "./placement.js";
-import { openNvim } from "./nvim.js";
+import { editorLabel, knowEditor, openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
 import { diffHeader, footer } from "./chrome.js";
 import { actionFor, chipsOf, toggleKeys } from "./keymap.js";
@@ -48,13 +48,13 @@ const KEYS = [
   { caps: ["m"], label: "diff / preview", rank: 3, when: (v) => Boolean(previewKind(v.view)), on: { m: (v, cx) => v.togglePreview(cx) } },
   { caps: ["v"], label: "select", rank: 4, when: diffShown, on: { v: inDiff((v) => { v.anchor = v.anchor === null ? v.cursor : null; }) } },
   { caps: ["a"], label: "note", rank: 5, when: diffShown, on: { a: inDiff((v) => v.annotate()) } },
-  { caps: ["enter"], label: "nvim", rank: 6, on: { enter: (v, cx) => v.enterKey(cx), e: (v) => v.edit() } },
+  { caps: ["enter"], label: (v) => editorLabel(v.view?.root, v.view?.on), rank: 6, on: { enter: (v, cx) => v.enterKey(cx), e: (v) => v.edit() } },
   { caps: ["J", "K"], label: "next / previous file", rank: 7, on: { J: (v) => v.nextFile(1), K: (v) => v.nextFile(-1) } },
   { caps: ["x"], label: "discard", rank: 8, on: { x: (v, cx) => v.act("discard", cx) } },
   { caps: ["p"], label: "send notes", rank: 9, on: { p: (v, cx) => v.send(cx) } },
   { caps: ["r"], label: "reload", on: { r: (v, cx) => v.reload(cx) } },
   { caps: ["escape"], label: "clear the selection", on: { escape: (v) => { v.anchor = null; } } },
-  { caps: ["?"], label: "all keys", on: { "?": () => toggleKeys("gitview: the diff pane", [{ title: "Diff pane", table: KEYS }]) } },
+  { caps: ["?"], label: "all keys", on: { "?": (v) => toggleKeys("gitview: the diff pane", [{ title: "Diff pane", table: KEYS }], v) } },
 ];
 const NOTE_KEYS = [{ caps: ["enter"], label: "save the note", rank: 1, on: {} }, { caps: ["escape"], label: "cancel", rank: 2, on: {} }];
 
@@ -136,6 +136,7 @@ export default class GitDiff extends View {
       this.scroll.top = 0;
     }
     if (!view) return;
+    knowEditor(view.root, view.on, cx);
     this.loadDiff(cx, { keep: same && !view.line, line: view.line });
     if (this.wantsPreview()) this.loadPreview(cx);
     if (!view.on) watch(this.watcher, view.root, cx, (cx) => { if (onScreen(this.tab())) this.reload(cx); });
@@ -285,7 +286,7 @@ export default class GitDiff extends View {
     const v = this.view;
     if (!v) return;
     if (v.kind === "deleted") return this.flash.set(`${v.path} is deleted`);
-    openNvim({ root: v.root, on: v.on, path: v.path, line: line ?? this.lineAt(this.cursor), tab: this.tab(), space: this.space(), editor: v.editor, closeDiff: this.place.closesForHerdrNvim });
+    openNvim({ root: v.root, on: v.on, path: v.path, line: line ?? this.lineAt(this.cursor), tab: this.tab(), space: this.space(), closeDiff: this.place.closesForHerdrNvim });
   }
 
   // s / u / x on the shown file (x asks first).

@@ -5,12 +5,24 @@
 // draws nothing.
 
 import { View, div } from "gpui-kit";
-import { focused, notify, run, spaces } from "herdr";
-import { gv, location } from "./engine.js"; // links to ../gitview (install copies them)
+import { exec, focused, notify, run, spaces } from "herdr";
+import { gv, hostEnv, loadConfig, location } from "./engine.js"; // links to ../gitview (install copies them)
 import { oneShot } from "./modkit.js";
 import { origins, ownTab, setOrigin, setOwnTab } from "./shared.js";
 
 const LIST_PERCENT = 29;
+
+// The spaces as the app has them now (`herdr-app ls`).
+async function appSpaces() {
+  const cfg = await loadConfig();
+  if (!cfg.herdr_app) return [];
+  const r = await exec("/usr/bin/env", [...hostEnv(cfg), cfg.herdr_app, "ls"]);
+  try {
+    return JSON.parse(r.stdout).spaces ?? [];
+  } catch {
+    return [];
+  }
+}
 
 export default class GitviewTab extends View {
   init(_props, cx) {
@@ -30,12 +42,18 @@ export default class GitviewTab extends View {
       const { cwd, on } = location();
       const before = new Set(space.tabs.map((t) => t.id));
       run("tab.new", { name: "gitview", space: space.id, mod: "gitview-diff", props: { space: space.id, own: true } });
-      // The new tab shows up in spaces() a moment later (seconds, in a
-      // busy app).
+      // The new tab shows up in spaces() a moment later; in a window that
+      // isn't drawn this copy's spaces() can lag for good, so after 2 s
+      // the app is asked (`herdr-app ls`).
+      const isNew = (t) => !before.has(t.id) && t.name === "gitview";
       let tab = null;
-      for (let i = 0; i < 200 && !tab; i++) {
-        tab = spaces().find((s) => s.id === space.id)?.tabs.find((t) => !before.has(t.id) && t.name === "gitview")?.id ?? null;
+      for (let i = 0; i < 40 && !tab; i++) {
+        tab = spaces().find((s) => s.id === space.id)?.tabs.find(isNew)?.id ?? null;
         if (!tab) await cx.sleep(50);
+      }
+      for (let i = 0; i < 16 && !tab; i++) {
+        tab = (await appSpaces()).find((s) => s.id === space.id)?.tabs.find(isNew)?.id ?? null;
+        if (!tab) await cx.sleep(500);
       }
       if (!tab) throw new Error("the gitview tab didn't open");
       setOwnTab(space.id, tab);

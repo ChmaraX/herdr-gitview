@@ -24,7 +24,7 @@ import { Flash, Loads, ModPanes, commandLoop, followStamp, stampMoved, watch } f
 import { listPlacement } from "./placement.js";
 import { FileList } from "./filelist.js";
 import { History } from "./history.js";
-import { openNvim } from "./nvim.js";
+import { knowEditor, openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
 import { footer } from "./chrome.js";
 import { chipsFor, handleKey, runCommand, showKeys } from "./keys.js";
@@ -168,7 +168,7 @@ export default class GitList extends View {
         return;
       }
       if (!current() || ctx.key !== this.ctx.key) return;
-      const where = { root: status.root, on: ctx.on ?? null, base: status.base ?? null, editor: status.editor ?? null };
+      const where = { root: status.root, on: ctx.on ?? null, base: status.base ?? null };
       const same = old && old.where.root === where.root && old.where.on === where.on && old.status.scope === status.scope;
       if (same) old.update(status, where);
       else {
@@ -183,6 +183,7 @@ export default class GitList extends View {
       else this.watcher.root = null; // a local repo's watch ends
       this.followPane();
       this.followSelection();
+      knowEditor(where.root, where.on, cx);
     });
   }
 
@@ -325,7 +326,7 @@ export default class GitList extends View {
       const cursor = cursorIn(tab);
       let line = cursor && sameFile(cursor, view) ? cursor.line : null;
       if (!line) line = (await gv(diffArgs(view, { dark: isDark(theme().background), unfold: false })))?.first_change ?? 1;
-      await openNvim({ root: list.where.root, on: list.where.on, path: row.file.path, line, tab, space, editor: list.where.editor, closeDiff: this.place.closesForHerdrNvim });
+      await openNvim({ root: list.where.root, on: list.where.on, path: row.file.path, line, tab, space, closeDiff: this.place.closesForHerdrNvim });
     });
   }
 

@@ -98,7 +98,7 @@ export function entryOf({ file, section }) {
 
 // What the diff pane shows for one file: everything it needs to load the
 // diff, stage it and send notes about it, without the list.
-// `where`: {root, on, base, commit, short, editor}.
+// `where`: {root, on, base, commit, short}.
 export function viewOf(entry, where) {
   return {
     root: where.root,
@@ -106,7 +106,6 @@ export function viewOf(entry, where) {
     base: entry.section === "branch" ? where.base ?? null : null,
     commit: where.commit ?? null,
     short: where.short ?? null,
-    editor: where.editor ?? null,
     ...entry,
     scope: scopeLabel(entry, where),
   };

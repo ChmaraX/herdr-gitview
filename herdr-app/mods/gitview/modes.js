@@ -12,6 +12,10 @@ import { commitBox, filesHeader, subHeader } from "./chrome.js";
 import { renderRow, rowSize } from "./listview.js";
 import { COMMIT_ROW, commitRow, loadLog, logMove, openCommit, openLog, toggleLogFilter } from "./history.js";
 import { treeMode } from "./shared.js";
+import { editorLabel } from "./nvim.js";
+
+// Enter's label: the editor it starts there (nvim, vim, open, …).
+const enterLabel = (v) => editorLabel(v.work?.where.root, v.work?.where.on);
 import { NOTE_ROW, deleteNote, jumpToNote, noteMove, noteRow } from "./notesview.js";
 
 const down = (v, cx) => v.move(1, cx);
@@ -63,7 +67,7 @@ export const MODES = {
       { caps: ["j", "k"], label: "move", on: { j: down, down, k: up, up } },
       { caps: ["s"], label: "stage", rank: 1, on: { s: (v, cx) => v.rowAction("stage", null, cx) } },
       { caps: ["u"], label: "unstage", rank: 2, on: { u: (v, cx) => v.rowAction("unstage", null, cx) } },
-      { caps: ["enter"], label: "nvim", rank: 3, on: { enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx) } },
+      { caps: ["enter"], label: enterLabel, rank: 3, on: { enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx) } },
       { caps: ["x"], label: "discard", rank: 4, on: { x: (v, cx) => v.rowAction("discard", null, cx) } },
       { caps: ["c"], label: "commit", rank: 5, on: { c: (v) => v.commitInput.focus() } },
       { caps: ["l"], label: "history", rank: 6, on: { l: (v, cx) => openLog(v, cx) } },
@@ -93,7 +97,7 @@ export const MODES = {
     body: (v, t, focused) => filesBody(v, t, focused, v.commitFiles),
     keys: [
       { caps: ["j", "k"], label: "move", on: { j: down, down, k: up, up } },
-      { caps: ["enter"], label: "nvim", rank: 1, on: { enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx) } },
+      { caps: ["enter"], label: enterLabel, rank: 1, on: { enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx) } },
       { caps: ["t"], label: "tree", rank: 2, on: { t: (v, cx) => v.toggleTree(cx) } },
       { caps: ["escape"], label: "back", rank: 3, on: { escape: back("log"), h: back("log"), left: back("log") } },
     ],

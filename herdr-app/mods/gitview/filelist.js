@@ -13,7 +13,7 @@ const isAt = (row, spot) =>
 
 export class FileList {
   // status: the engine's `status` (or `{sections}` for a commit);
-  // where: {root, on, base, editor, commit?, short?, subject?}.
+  // where: {root, on, base, commit?, short?, subject?}.
   constructor(status, where) {
     this.status = status;
     this.where = where;
