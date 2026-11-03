@@ -91,6 +91,19 @@ expect '[ "$(view_of $TAB path)" = config.toml ]' "another click shows config.to
 [ "$(mod_panes | grep -c gitview-diff)" = 1 ] && ok "the same diff pane is reused" || fail "a second diff pane"
 status_has '"errors": \[\]' && ok "no mod errors in status" || fail "mod errors: $("$APP" status)"
 
+step "keys: the footer's ? (or the key ?) opens every key; ? or esc closes it"
+do_ gitview.key:?
+expect 'overlay_open gitview-keys' "? in the list opens the keys card"
+expect '[ "$(shared "s.get(\"gitview.keys\") is not None")" = true ]' "(it says so in shared gitview.keys)"
+do_ gitview.key:?
+expect '! overlay_open gitview-keys' "? again closes it"
+do_ gitview-diff.key:?
+expect 'overlay_open gitview-keys' "? in the diff pane opens its keys card"
+do_ gitview-keys.key:escape
+expect '! overlay_open gitview-keys' "esc closes it"
+expect '[ "$(shared "s.get(\"gitview.keys\")")" = null ]' "and gitview.keys is cleared"
+shot 02b-keys 0.5
+
 step "J/K in the diff pane move through the list (the list follows)"
 do_ gitview-diff.key:J
 expect '[ "$(view_of $TAB path)" != config.toml ] && [ "$(view_of $TAB by)" = pane ]' "J: the next file, chosen by the pane"
@@ -421,7 +434,9 @@ gc merge -q other >/dev/null 2>&1 || true
 printf 'm changed\n' >"$C/dir/m.txt"
 git -C "$C" diff --name-only --diff-filter=U | grep -q dir/c.txt || fail "no conflict set up"
 "$APP" do space.new --name conflict --folder "$C" >>"$LOG"
-expect panel_up "the panel shows the conflicted repo" 20
+expect panel_up "the panel is up in the conflict space" 20
+CTAB=$(tab_id)
+expect '"$APP" do gitview.file:dir/m.txt >/dev/null && pane_on $CTAB dir/m.txt && [ "$(view_of $CTAB root)" = "$(cd "$C" && pwd -P)" ]' "the panel shows the conflicted repo (dir/m.txt in its diff pane)" 20
 CHEAD=$(git -C "$C" rev-parse HEAD) CSTATUS=$(git -C "$C" status --porcelain)
 do_ "gitview.commit:e2e: must not commit the conflict"
 do_ gitview.key:r # runs once the commit is done (commands wait for loads)
@@ -506,6 +521,37 @@ if perl -e 'alarm 40; exec @ARGV' hc machine add --via 'sh -c' --name fake --ses
 else
   fail "hc machine add --via 'sh -c' (the fake machine)"
 fi
+
+# --- the preview ---------------------------------------------------------------------------------
+step "Preview: markdown and images show rendered by default; m (kept per kind) switches to the diff"
+"$PY" -c "
+from PIL import Image
+Image.new('RGB', (40, 30), (200, 40, 40)).save('$S/pic.png')"
+printf '# Doc\n\nfirst\n' >"$S/doc.md"
+git -C "$S" add doc.md pic.png && git -C "$S" commit -qm "doc and pic" -- doc.md pic.png
+printf '# Doc\n\nfirst, *changed*\n\n- a list\n' >"$S/doc.md"
+"$PY" -c "
+from PIL import Image
+Image.new('RGB', (40, 30), (40, 160, 60)).save('$S/pic.png')"
+do_ gitview.key:r
+cursor_of() { shared "s.get('gitview.cursor',{}).get('$TAB',{}).get('$1')"; }
+expect '"$APP" do gitview.click:doc.md >/dev/null && pane_on $TAB doc.md && [ "$(cursor_of path)" = doc.md ] && [ "$(cursor_of preview)" = true ]' "a markdown file opens in Preview" 15
+N0=$(notes_n)
+do_ "gitview-diff.note:not in a preview"
+sleep 0.5
+[ "$(notes_n)" = "$N0" ] && ok "no notes in Preview" || fail "a note in Preview"
+shot 22a-preview-md 1
+do_ gitview-diff.key:m
+expect '[ "$(cursor_of preview)" = false ]' "m: the diff"
+expect '"$APP" do gitview.click:pic.png >/dev/null && pane_on $TAB pic.png && [ "$(cursor_of preview)" = true ]' "an image still opens in Preview (the choice is per kind)" 15
+CACHE="$HERDR_APP_HOME/mods/gitview-diff/.cache"
+AFTER=$(shasum -a 256 "$S/pic.png" | cut -c1-64) BEFORE=$(git -C "$S" show :pic.png | shasum -a 256 | cut -c1-64)
+expect '[ -e "$CACHE/$AFTER.png" ] && [ -e "$CACHE/$BEFORE.png" ]' "a changed image shows before (the index) and after (the worktree), byte for byte in the cache"
+shot 22b-preview-png 1
+expect '"$APP" do gitview.click:doc.md >/dev/null && pane_on $TAB doc.md && [ "$(cursor_of path)" = doc.md ] && [ "$(cursor_of preview)" = false ]' "back on the markdown file: still the diff (kept for markdown)"
+do_ gitview-diff.key:m
+expect '[ "$(cursor_of preview)" = true ]' "m again: the Preview"
+git -C "$S" checkout -q HEAD -- doc.md pic.png
 
 # --- looks: widths and a light theme ---------------------------------------------------------
 step "the panel at 280, 300 and 900 px and in a light theme: drawn without errors"

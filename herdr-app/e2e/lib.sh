@@ -53,7 +53,8 @@ find_app() {
 APP="$(find_app)"
 [ -n "$APP" ] || { echo "no herdr-app" >&2; exit 1; }
 export HERDR_APP_BIN="$APP"
-version=$(plutil -extract CFBundleShortVersionString raw "${APP%/MacOS/*}/Info.plist" 2>/dev/null || true)
+APP_REAL=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$APP") # ~/.local/bin/herdr-app is a link into the bundle
+version=$(plutil -extract CFBundleShortVersionString raw "${APP_REAL%/MacOS/*}/Info.plist" 2>/dev/null || true)
 echo "{\"last_run\": \"$version\", \"presented\": []}" >"$HERDR_APP_HOME/update-notes.json" # no "Updated" toast
 
 PY=
