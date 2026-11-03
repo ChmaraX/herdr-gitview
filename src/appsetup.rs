@@ -28,6 +28,10 @@
 //! * **`installed.json`** (which layouts are Herdr's own) must be readable:
 //!   without it a shipped layout would look personal and get edited, so both
 //!   stop before changing anything.
+//! * **Order**: install reads the app's status and chooses the layout before
+//!   any write, so a refused install (several copies, a foreign
+//!   `<name>-copy`) leaves `keys.json`, the mod folders and every layout as
+//!   they were. Key removals keep the order of the rest of `keys.json`.
 //!
 //! `--home`: the app home (default `$HERDR_APP_HOME`, else
 //! `$HOME/.config/herdr-app`). `--app`: the `herdr-app` binary (default
@@ -91,6 +95,9 @@ fn install(home: &Path, app: &str, ours: &Value) -> Result<()> {
         );
     }
     let shipped = shipped_layouts(home)?;
+    // Where the layout part goes is decided first: it may refuse, and then
+    // nothing has changed yet.
+    let (shown, target) = plan_layout(home, app, &shipped)?;
     let keys = home.join("keys.json");
     if !keys.exists() {
         fs::write(&keys, "{}\n")?;
@@ -116,7 +123,7 @@ fn install(home: &Path, app: &str, ours: &Value) -> Result<()> {
         .iter()
         .for_each(|l| say(format!("keys: kept yours: {l}")));
     remove_retired_mods(home)?;
-    install_layout(home, app, &shipped)
+    install_layout(home, app, &shown, target)
 }
 
 fn uninstall(home: &Path, ours: &Value) -> Result<()> {
@@ -258,18 +265,25 @@ pub fn choose(shown: &str, shown_is_shipped: bool, personal: &[(String, Value)])
     }
 }
 
-fn install_layout(home: &Path, app: &str, shipped: &HashSet<String>) -> Result<()> {
+/// The layout on screen and where the install goes, without changing
+/// anything (an error when [`choose`] refuses).
+fn plan_layout(home: &Path, app: &str, shipped: &HashSet<String>) -> Result<(String, Target)> {
     let status = app_call(app, home, &["status"])?;
     let shown = status
         .get("layout")
         .and_then(Value::as_str)
         .context("herdr-app status names no layout")?
         .to_string();
-    let target = match choose(
+    let target = choose(
         &shown,
         shipped.contains(&shown),
         &personal_layouts(home, shipped),
-    )? {
+    )?;
+    Ok((shown, target))
+}
+
+fn install_layout(home: &Path, app: &str, shown: &str, target: Target) -> Result<()> {
+    let target = match target {
         Target::Edit(name) => name,
         Target::Switch(copy) => {
             app_do(app, home, "layout.switch", json!({ "name": copy }))?;
@@ -391,7 +405,7 @@ pub fn unmerge_keys(keys: &mut Value, ours: &Value) -> Vec<String> {
         let had = removed.len();
         for (key, action) in bindings.as_object().into_iter().flatten() {
             if target.get(key) == Some(action) {
-                target.remove(key);
+                target.shift_remove(key);
                 removed.push(format!("{section} {key}"));
             }
         }
@@ -642,6 +656,18 @@ mod tests {
         assert_eq!(
             keys,
             json!({"global": {"cmd-g": "mod.open:something", "cmd-t": "tab.new"}})
+        );
+    }
+
+    #[test]
+    fn unmerging_a_key_in_the_middle_keeps_the_order_of_the_rest() {
+        let text = r#"{"global": {"cmd-a": "a", "cmd-alt-g": "mod.open:gitview-tui-tab", "cmd-b": "b", "cmd-c": "c"}}"#;
+        let mut keys: Value = serde_json::from_str(text).unwrap();
+        let retired: Value = serde_json::from_str(RETIRED_KEYS).unwrap();
+        assert_eq!(unmerge_keys(&mut keys, &retired), ["global cmd-alt-g"]);
+        assert_eq!(
+            keys.to_string(),
+            r#"{"global":{"cmd-a":"a","cmd-b":"b","cmd-c":"c"}}"#
         );
     }
 

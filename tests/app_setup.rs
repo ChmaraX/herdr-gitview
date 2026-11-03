@@ -10,7 +10,8 @@
 //! - a second clone, a switch or clone on uninstall, a deleted layout;
 //! - files not byte-identical after install + uninstall (keys and layouts);
 //! - a person's key replaced, or a retired key/mod removed that isn't ours;
-//! - an ambiguous copy guessed instead of refused.
+//! - an ambiguous copy guessed instead of refused, or a refused install
+//!   that already changed keys or removed retired mods.
 
 mod common;
 
@@ -242,17 +243,23 @@ fn install_then_uninstall_is_byte_identical_on_an_old_main_mods_herdr_nvim_patch
 }
 
 #[test]
-fn several_copies_stop_the_install_without_touching_a_layout() {
+fn several_copies_stop_the_install_before_any_change() {
     let h = home("ambiguous", "main");
     let mut copy = main_layout();
     copy["cloned_from"] = json!({"name": "main"});
     std::fs::write(h.dir.join("layouts/main-mods.json"), pretty(&copy)).unwrap();
     std::fs::write(h.dir.join("layouts/main-2.json"), pretty(&copy)).unwrap();
-    let layouts_before: Vec<_> = h
-        .snapshot()
-        .into_iter()
-        .filter(|(n, _)| n != "keys.json")
-        .collect();
+    // What an install would change otherwise: a retired key, a retired mod
+    // folder, a free key of ours.
+    std::fs::write(
+        h.dir.join("keys.json"),
+        "{\n  \"global\": {\n    \"cmd-alt-g\": \"mod.open:gitview-tui-tab\",\n    \"cmd-t\": \"tab.new\"\n  }\n}\n",
+    )
+    .unwrap();
+    let popup = h.dir.join("mods/gitview-popup");
+    std::fs::create_dir_all(&popup).unwrap();
+    std::fs::write(popup.join("mod.json"), r#"{"title":"gitview: popup"}"#).unwrap();
+    let before = h.snapshot();
     let out = common::gitview()
         .args(["app-setup", "install", "--home"])
         .arg(&h.dir)
@@ -264,12 +271,16 @@ fn several_copies_stop_the_install_without_touching_a_layout() {
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("several personal copies of main"));
-    let layouts_after: Vec<_> = h
-        .snapshot()
-        .into_iter()
-        .filter(|(n, _)| n != "keys.json")
-        .collect();
-    assert_eq!(layouts_after, layouts_before);
+    assert_eq!(h.snapshot(), before, "layouts and keys.json as they were");
+    assert!(
+        popup.join("mod.json").exists(),
+        "the retired mod is still there"
+    );
+    assert!(
+        h.calls().iter().all(|c| c[0] == "status"),
+        "no switch, no clone: {:?}",
+        h.calls()
+    );
 }
 
 #[test]
