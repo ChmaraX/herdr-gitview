@@ -279,7 +279,7 @@ impl Repo {
     /// Known limitation: a branch created *from this one* also has a recent
     /// divergence point. Candidates containing all of HEAD are skipped, which
     /// covers the common shape; set `base` in the config to pin it otherwise.
-    pub fn detect_fork_base(&self) -> Option<String> {
+    fn detect_fork_base(&self) -> Option<String> {
         let head = self.head_sha()?;
         let branch = self.head_branch();
         // A trunk is not cut *from* anything: every branch ever merged into
@@ -892,7 +892,7 @@ impl Repo {
 
     /// `git log [range]`, newest first. `range` is any revision range
     /// (`<base>..HEAD`); `None` walks all of HEAD's history.
-    pub fn log_range(&self, range: Option<&str>, limit: usize) -> Result<Vec<CommitInfo>> {
+    fn log_range(&self, range: Option<&str>, limit: usize) -> Result<Vec<CommitInfo>> {
         let n = limit.to_string();
         let mut args = vec![
             "log",

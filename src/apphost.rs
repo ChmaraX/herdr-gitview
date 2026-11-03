@@ -171,7 +171,7 @@ fn terminals_with(labels: Value) -> Vec<Value> {
 }
 
 /// The first remote-controllable nvim among `candidates` (terminal facts).
-pub fn find_nvim(candidates: Vec<Value>, exclude: &[&str]) -> Option<crate::herdr_cli::TabNvim> {
+fn find_nvim(candidates: Vec<Value>, exclude: &[&str]) -> Option<crate::herdr_cli::TabNvim> {
     for t in candidates {
         let Some(address) = t.get("address").and_then(Value::as_str) else {
             continue;

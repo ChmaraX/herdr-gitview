@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
         }
         Some(other) => {
             anyhow::bail!(
-                "unknown mode: {other} (expected list|preview|toggle|toggle-tab|open|close|ask|annotate|pick-agent|json|app-setup)"
+                "unknown mode: {other} (expected list|preview|toggle|toggle-tab|open|close|ask|pick-agent|json|app-setup)"
             )
         }
     }

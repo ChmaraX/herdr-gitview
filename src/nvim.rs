@@ -70,7 +70,7 @@ pub fn open_file(editor: &str, server: Option<&Path>, file: &Path) -> bool {
 /// name built from its code points (`list2str`) and escaped by nvim itself
 /// (`fnameescape`). No character of the name is ever read as a key, a
 /// command separator (`|`), a special file name (`%`, `#`) or a quote.
-pub fn edit_expr(file: &Path, line: u32) -> String {
+fn edit_expr(file: &Path, line: u32) -> String {
     let points: Vec<String> = file
         .to_string_lossy()
         .chars()
