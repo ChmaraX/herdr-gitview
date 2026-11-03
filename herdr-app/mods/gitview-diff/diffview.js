@@ -50,6 +50,59 @@ function color(c, t) {
   }
 }
 
+// ---- legible text on tinted rows -------------------------------------------
+// The syntax colors are gitview's (One Dark / One Light) and the tints are
+// the theme's own, so a dim color (a comment) can vanish on a green or red
+// line in some themes. A span's color that doesn't reach MIN_CONTRAST on
+// what's really behind it is lifted toward the theme's foreground just
+// enough; colors that already read keep their hue.
+const MIN_CONTRAST = 3.5;
+const legible = new Map();
+
+function rgba(hex) {
+  const h = String(hex).replace("#", "");
+  if (!/^[0-9a-f]{6}([0-9a-f]{2})?$/i.test(h)) return null;
+  const n = (i) => parseInt(h.slice(i, i + 2), 16);
+  return [n(0), n(2), n(4), h.length === 8 ? n(6) / 255 : 1];
+}
+
+// `top` (maybe translucent) over an opaque `under`.
+function over(top, under) {
+  const a = top[3];
+  return [0, 1, 2].map((i) => top[i] * a + under[i] * (1 - a)).concat(1);
+}
+
+function luminance(c) {
+  const f = (x) => {
+    x /= 255;
+    return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+}
+
+function contrast(a, b) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+const hex = (c) => `#${c.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, "0")).join("")}`;
+
+// `fg` as drawn on the layers in `behind` (bottom first, over t.background).
+export function readable(fg, behind, t) {
+  const key = `${fg}|${behind.join(",")}|${t.background}|${t.foreground}`;
+  if (legible.has(key)) return legible.get(key);
+  let out = fg;
+  const f = rgba(fg), base = rgba(t.background), ink = rgba(t.foreground);
+  if (f && base && ink) {
+    const bg = behind.map(rgba).filter(Boolean).reduce((under, top) => over(top, under), base);
+    let c = f;
+    for (let step = 1; step <= 20 && contrast(c, bg) < MIN_CONTRAST; step++) c = [0, 1, 2].map((i) => f[i] + (ink[i] - f[i]) * step / 20).concat(1);
+    out = c === f ? fg : hex(c);
+  }
+  legible.set(key, out);
+  return out;
+}
+
 // ctx: {t, cursor, selection: [a, b] | null, focused, composer (TextareaState),
 // pending (the note being written), onDown(index, event, cx), onMove(index, cx),
 // onDeleteNote(note, cx)}
@@ -73,8 +126,12 @@ export function renderRow(item, ctx) {
     .on_mouse_move((_e, cx) => ctx.onMove(index, cx))
     .children(
       row.s.map(([text, fg, bg]) => {
+        // A span tinted like its row is painted once: twice would stack the
+        // translucent tint (darker boxes behind the text).
+        const own = Boolean(bg) && !selected && bg !== row.bg;
+        const behind = [selected ? t.selection : row.bg && color(row.bg, t), own && color(bg, t)].filter(Boolean);
         const span = div().flex_none().child(text.replace(/ /g, "\u00a0"));
-        return span.when(Boolean(fg), (e) => e.text_color(color(fg, t))).when(Boolean(bg) && !selected, (e) => e.bg(color(bg, t)));
+        return span.when(Boolean(fg), (e) => e.text_color(readable(color(fg, t), behind, t))).when(own, (e) => e.bg(color(bg, t)));
       }),
     );
 }
