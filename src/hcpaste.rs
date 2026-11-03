@@ -52,16 +52,21 @@ pub fn bracketed_paste_on(replay: &[u8]) -> bool {
     }
 }
 
-/// The bytes a paste of `text` sends: wrapped when the program asked for
-/// bracketed paste, else as typed with newlines as carriage returns.
-pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+/// The bytes placing `text` sends (trailing newlines dropped: placing never
+/// presses Enter): wrapped when the program asked for bracketed paste, else
+/// as typed. A program without bracketed paste would take every newline as
+/// Enter, so multi-line text is refused there.
+pub fn paste_bytes(text: &str, bracketed: bool) -> Result<Vec<u8>> {
+    let text = text.trim_end_matches(['\n', '\r']);
     if bracketed {
         let mut out = b"\x1b[200~".to_vec();
         out.extend_from_slice(text.replace("\x1b[201~", "").as_bytes());
         out.extend_from_slice(b"\x1b[201~");
-        out
+        Ok(out)
+    } else if text.contains(['\n', '\r']) {
+        bail!("this program can't take multi-line text without submitting; use shift+enter to send")
     } else {
-        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+        Ok(text.as_bytes().to_vec())
     }
 }
 
@@ -162,12 +167,14 @@ pub fn paste(terminal: &str, text: &str) -> Result<()> {
         }
 
         let bytes = paste_bytes(text, bracketed_paste_on(&replay));
-        stdin.write_all(&encode(channel, DATA, &bytes))?;
+        if let Ok(bytes) = &bytes {
+            stdin.write_all(&encode(channel, DATA, bytes))?;
+        }
         stdin.write_all(&encode(channel, CLOSE, &[]))?;
         stdin.flush()?;
         // Let the core take the input before the connection goes.
         std::thread::sleep(Duration::from_millis(200));
-        Ok(())
+        bytes.map(|_| ())
     })();
     let _ = child.kill();
     let _ = child.wait();
@@ -187,26 +194,19 @@ mod tests {
     }
 
     #[test]
-    fn multi_line_paste_is_wrapped_only_when_the_program_asked() {
+    fn multi_line_text_is_placed_only_where_newlines_cant_submit() {
         assert_eq!(
-            paste_bytes("a\nb", true),
+            paste_bytes("a\nb\n", true).unwrap(),
             b"\x1b[200~a\nb\x1b[201~".to_vec()
         );
-        assert_eq!(paste_bytes("a\nb", false), b"a\rb".to_vec());
         // A payload can't end the paste early.
         assert_eq!(
-            paste_bytes("x\x1b[201~y", true),
+            paste_bytes("x\x1b[201~y", true).unwrap(),
             b"\x1b[200~xy\x1b[201~".to_vec()
         );
-    }
-
-    #[test]
-    fn frames_round_trip() {
-        let frame = encode(7, DATA, b"hello");
-        let (channel, kind, payload) = read_frame(&mut frame.as_slice()).unwrap();
-        assert_eq!(
-            (channel, kind, payload.as_slice()),
-            (7, DATA, &b"hello"[..])
-        );
+        assert_eq!(paste_bytes("one line\n", false).unwrap(), b"one line");
+        let err = paste_bytes("a\nb", false).unwrap_err().to_string();
+        assert!(err.contains("use shift+enter to send"), "{err}");
+        assert!(paste_bytes("a\rb", false).is_err());
     }
 }

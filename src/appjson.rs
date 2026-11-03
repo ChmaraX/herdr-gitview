@@ -69,11 +69,13 @@
 //!   only (it needs `--tab` and `--space`), never an nvim of this machine.
 //! - `notes [--] NOTES_JSON` (`[{file, start, end, text, snippet}]`) →
 //!   `{message}`: the text an agent gets.
-//! - `send --terminal T [--submit] [--] TEXT` → `{ok}`: place TEXT in the
-//!   terminal's input without pressing Enter (a paste through a framed
-//!   `terminal.attach` over `hc connect`, bracketed when the program asks;
-//!   no clipboard) or, with `--submit`, send it (`hc send`, which presses
-//!   Enter).
+//! - `send --terminal T [--submit] [--] TEXT` → `{ok}`: without `--submit`,
+//!   place TEXT in the terminal's input without pressing Enter (a paste
+//!   through a framed `terminal.attach` over `hc connect`; no clipboard;
+//!   trailing newlines dropped). Multi-line TEXT needs a program in
+//!   bracketed-paste mode; otherwise it's an error ("…use shift+enter to
+//!   send") and nothing is typed. `--submit`: send it with `hc send`, which
+//!   presses Enter.
 //! - `sidebar --tab T --mod NAME [--props JSON] [--percent N]` → `{pane}`: a
 //!   mod pane spanning the tab's full height at its right edge, N percent of
 //!   the tab wide (default: `view_width_percent`).

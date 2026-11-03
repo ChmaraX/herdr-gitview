@@ -3,6 +3,14 @@
 //! `--submit` goes through `hc send`. A fake `hc` (Python) plays herdr-core:
 //! it answers `terminal.get`, the framed attach and its screen replay, and
 //! records what was typed.
+//!
+//! Failure modes this catches:
+//! - placing reaches for anything but the framed attach (`hc send`, a
+//!   clipboard tool): the attach log is empty or an `argv` call shows up;
+//! - the attach resizes the terminal (cols/rows other than its own);
+//! - bracketed paste isn't detected from the replay, or newlines get typed
+//!   as Enter into a program without it (it must refuse instead);
+//! - `--submit` doesn't go through `hc send`, or sends trailing newlines.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -62,7 +70,12 @@ fn setup(name: &str) -> (PathBuf, PathBuf) {
     (dir, bin)
 }
 
-fn send(dir: &Path, hc: &Path, replay: &str, args: &[&str]) -> Vec<serde_json::Value> {
+fn send_raw(
+    dir: &Path,
+    hc: &Path,
+    replay: &str,
+    args: &[&str],
+) -> (bool, String, Vec<serde_json::Value>) {
     let log = dir.join("hc.log");
     let _ = std::fs::remove_file(&log);
     let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
@@ -71,19 +84,24 @@ fn send(dir: &Path, hc: &Path, replay: &str, args: &[&str]) -> Vec<serde_json::V
         .env("GITVIEW_HC", hc)
         .env("FAKE_HC_LOG", &log)
         .env("FAKE_HC_REPLAY", replay)
-        .env("GITVIEW_STATE_DIR", dir.join("state"))
         .output()
         .unwrap();
-    assert!(
-        out.status.success(),
-        "send failed: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    std::fs::read_to_string(&log)
+    let log = std::fs::read_to_string(&log)
         .unwrap_or_default()
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
-        .collect()
+        .collect();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        log,
+    )
+}
+
+fn send(dir: &Path, hc: &Path, replay: &str, args: &[&str]) -> Vec<serde_json::Value> {
+    let (ok, stdout, log) = send_raw(dir, hc, replay, args);
+    assert!(ok, "send failed: {stdout}");
+    log
 }
 
 fn entries<'a>(log: &'a [serde_json::Value], kind: &str) -> Vec<&'a serde_json::Value> {
@@ -93,7 +111,7 @@ fn entries<'a>(log: &'a [serde_json::Value], kind: &str) -> Vec<&'a serde_json::
 #[test]
 fn placing_pastes_through_a_framed_attach_at_the_terminals_size() {
     let (dir, hc) = setup("bracketed");
-    let log = send(&dir, &hc, "\\x1b[?2004h> ", &["note one\nnote two"]);
+    let log = send(&dir, &hc, "\\x1b[?2004h> ", &["--", "note one\nnote two\n"]);
     let attach = entries(&log, "attach");
     assert_eq!(attach.len(), 1, "{log:?}");
     assert_eq!(attach[0]["terminal"], "t9");
@@ -114,10 +132,16 @@ fn placing_pastes_through_a_framed_attach_at_the_terminals_size() {
 }
 
 #[test]
-fn placing_into_a_plain_program_types_carriage_returns() {
+fn placing_multi_line_text_into_a_plain_program_is_refused_and_types_nothing() {
     let (dir, hc) = setup("plain");
-    let log = send(&dir, &hc, "$ ", &["a\nb"]);
-    assert_eq!(entries(&log, "typed"), [&serde_json::json!("a\rb")]);
+    let (ok, stdout, log) = send_raw(&dir, &hc, "$ ", &["--", "a\nb"]);
+    assert!(!ok);
+    assert!(stdout.contains("use shift+enter to send"), "{stdout}");
+    assert!(entries(&log, "typed").is_empty(), "nothing typed: {log:?}");
+    assert_eq!(entries(&log, "closed").len(), 1, "detached cleanly");
+    // One line is fine there.
+    let log = send(&dir, &hc, "$ ", &["--", "one line\n"]);
+    assert_eq!(entries(&log, "typed"), [&serde_json::json!("one line")]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
