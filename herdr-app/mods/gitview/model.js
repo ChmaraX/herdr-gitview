@@ -93,6 +93,7 @@ export function entryOf({ file, section }) {
     del: file.del,
     cached: Boolean(section.cached),
     section: section.id,
+    rev: file.rev ?? null,
   };
 }
 

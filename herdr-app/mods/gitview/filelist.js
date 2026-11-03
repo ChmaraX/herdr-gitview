@@ -143,9 +143,17 @@ export class FileList {
     return null;
   }
 
-  // What the diff pane shows for a file row, with this list's order for J/K.
+  // What the diff pane shows for a file row.
   viewFor(row, line = null) {
-    const files = fileOrder(this.status, this.tree).slice(0, 2000).map(entryOf);
-    return { ...viewOf(entryOf(row), this.where), by: "list", files, line };
+    return { ...viewOf(entryOf(row), this.where), line };
+  }
+
+  // The file `delta` files on from the view's (J/K: the order the list
+  // shows, folded folders too), or null past the ends.
+  stepFile(view, delta) {
+    const order = fileOrder(this.status, this.tree);
+    const at = order.findIndex((r) => r.file.path === view.path && r.section.id === view.section);
+    const next = at >= 0 ? order[at + delta] : null;
+    return next ? this.findFile(next.file.path, next.section.id) : null;
   }
 }

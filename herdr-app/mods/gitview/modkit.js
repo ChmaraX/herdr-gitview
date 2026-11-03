@@ -322,6 +322,12 @@ export function commandLoop(cx, { loads, before, handle, flash, name }) {
       wake = null;
       const command = queue.shift();
       try {
+        // Focus doesn't wait for loads: the keys must arrive with it.
+        if (command === "focus" || command.startsWith("focus:")) {
+          handle(command, cx);
+          cx.notify();
+          continue;
+        }
         before?.(cx);
         const asked = Date.now();
         let said = false;

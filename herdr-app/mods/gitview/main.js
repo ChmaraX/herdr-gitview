@@ -13,12 +13,12 @@
 
 import { View } from "gpui-kit";
 import { v_flex, InputState } from "gpui-base";
-import { notify, run, theme } from "herdr";
+import { notify, run, shared, theme } from "herdr";
 import { gv, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  cursorIn, diffPane, dirty, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, pump, setHandoff, setTreeMode, setView, takeKeyboard,
+  answer, askIn, cursorIn, diffPane, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, pump, setHandoff, setTreeMode, setView, takeKeyboard,
   treeMode, viewIn,
 } from "./shared.js";
 import { Flash, Loads, ModPanes, commandLoop, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
@@ -53,7 +53,9 @@ export default class GitList extends View {
     this.commitFiles = null; // FileList: a commit's files (history)
     this.history = new History(false);
     this.noteSel = 0;
-    this.seen = { views: {}, dirty: dirty()?.at ?? 0 };
+    this.seen = { asks: {} };
+    this.roots = new Map(); // "<machine>:<folder>" → its repo's root
+    this.tops = {}; // each view's scroll (setMode)
     this.flash = new Flash(cx);
     this.loads = new Loads((m) => this.flash.set(m));
     this.modPanes = new ModPanes();
@@ -69,10 +71,12 @@ export default class GitList extends View {
       cx.notify();
     });
     this.refresh(cx);
-    // Local repos: the folder watch, and every 10 s; remote ones: every 4 s.
-    // Only while it's on screen.
-    cx.timer.every(4000, (cx) => { if (this.ctx?.on && this.place.shown()) this.refresh(cx, { poll: true }); });
-    cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.place.shown()) this.refresh(cx, { poll: true }); });
+    // Local repos: the folder watch (and a poll after 30 s without a
+    // status); remote ones: every 4 s. Only while it's on screen.
+    cx.timer.every(4000, (cx) => { if (this.ctx?.on && this.place.shown()) this.refresh(cx, { poll: true, why: "poll" }); });
+    // The watch shows a local repo's changes; its poll is a backstop, only
+    // after 30 s without a status.
+    cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.place.shown() && Date.now() - (this.statusAt ?? 0) > 30000) this.refresh(cx, { poll: true, why: "poll" }); });
     debugLook(cx, () => { if (this.stale()) this.kick(); trace("list", this.traceFields(), this); });
     commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview", before: (cx) => this.notice(cx), handle: (c, cx) => runCommand(this, c, cx) });
     if (this.place.takesKeyboard) takeKeyboard(this, cx);
@@ -90,16 +94,20 @@ export default class GitList extends View {
 
   // ---- data ---------------------------------------------------------------
 
+  // Keyed by the repo, not the folder: two terminals in one repo's
+  // folders (or /tmp and /private/tmp) are the same list. A folder not seen
+  // yet keys by itself until its status says which repo it's in.
   context() {
     const loc = this.place.context(this.ctx);
-    return { ...loc, key: JSON.stringify([loc.cwd, loc.on, this.scope]) };
+    const repo = this.roots.get(`${loc.on ?? ""}:${loc.cwd}`) ?? loc.cwd;
+    return { ...loc, key: JSON.stringify([repo, loc.on, this.scope]) };
   }
 
   // Whether something notice() acts on changed (render and the timer ask;
   // no side effects).
   stale() {
     if (this.modPanes.changed()) return true;
-    if (this.cycle && this.cycle.shown !== this.place.shown()) return true;
+    if (this.cycle && (this.cycle.shown !== this.place.shown() || this.cycle.asideStale())) return true;
     if (!this.place.shown()) return false;
     if (this.place.panel) {
       // followHandoff, on an edge only: the record not seen yet, or nvim's
@@ -109,16 +117,17 @@ export default class GitList extends View {
     }
     if (stampMoved(this.watcher)) return true;
     const ctx = this.context();
-    const d = dirty();
-    const view = viewIn(this.tab());
-    return ctx.key !== this.ctx?.key || ctx.tab !== this.ctx?.tab || Boolean(d && d.at > this.seen.dirty) || (view?.seq ?? 0) > (this.seen.views[this.tab()] ?? 0);
+    return ctx.key !== this.ctx?.key || ctx.tab !== this.ctx?.tab || (askIn(this.tab())?.seq ?? 0) > (this.seen.asks[this.tab()] ?? 0);
   }
 
-  // The panel showed; another repo or space or tab; the pane changed the
-  // repo or moved (J/K); a mod pane closed (Loads.revive). Before every command, and from the pump or the
+  // What stale() looks for: the panel showed; another repo, space or tab;
+  // another list's watch stamped the repo; the pane asked something
+  // (gitview.ask); a mod pane closed (Loads.revive); nvim's pane came or
+  // went (the handoff). Before every command, and from the pump or the
   // timer after stale().
   notice(cx) {
     if (this.modPanes.gone()) this.loads.afterClose(cx);
+    this.cycle?.stepAside();
     if (this.cycle?.look() === "shown") this.openOnShow(cx);
     if (!this.place.shown()) {
       // Hidden (or on Files): no diff comes back for what nvim took.
@@ -126,15 +135,37 @@ export default class GitList extends View {
       return;
     }
     const ctx = this.context();
-    const d = dirty();
-    const repoChanged = Boolean(d && d.at > this.seen.dirty && d.root === this.work?.where.root);
-    if (d) this.seen.dirty = Math.max(this.seen.dirty, d.at);
     const tabChanged = ctx.tab !== this.ctx?.tab;
-    const stamped = Boolean(followStamp(this.watcher)); // another copy's watch saw the repo change
-    if (ctx.key !== this.ctx?.key || repoChanged || stamped) this.refresh(cx, { quiet: ctx.key === this.ctx?.key });
+    const stamped = Boolean(followStamp(this.watcher)); // another list's watch saw the repo change
+    if (ctx.key !== this.ctx?.key || stamped) this.refresh(cx, { quiet: ctx.key === this.ctx?.key, why: ctx.key !== this.ctx?.key ? `place ${ctx.key}` : "stamp" });
     else if (tabChanged) this.ctx = { ...this.ctx, tab: ctx.tab, space: ctx.space };
-    this.followPane({ adopt: tabChanged });
+    // Another tab: its pane's file, and whether that changed meanwhile (its
+    // view is rewritten when its rev moved: the pane reloads it).
+    if (tabChanged) {
+      this.adoptPane();
+      this.followSelection();
+    }
+    this.followAsk(cx);
     if (this.place.panel) this.followHandoff(cx);
+  }
+
+  // The diff pane's ask (gitview.ask): s/u/x on its file, or J/K. Done
+  // here, the one writer of the tab's view, then answered (gitview.answer)
+  // once the view it leads to is written.
+  followAsk(cx) {
+    const tab = this.tab();
+    const a = askIn(tab);
+    if (!tab || !a || a.seq <= (this.seen.asks[tab] ?? 0)) return;
+    this.seen.asks[tab] = a.seq;
+    const v = a.view;
+    const list = this.list();
+    if ((a.op === "next" || a.op === "prev") && list && v) {
+      const row = list.stepFile(v, a.op === "next" ? 1 : -1);
+      if (row) this.select(row, cx, { open: false });
+      return answer(tab, a.seq, row ? null : a.op === "next" ? "last file" : "first file");
+    }
+    if (!["stage", "unstage", "discard"].includes(a.op) || !v || v.commit) return answer(tab, a.seq);
+    this.act([a.op, "--section", v.section, "--", v.path], { root: v.root, on: v.on }, cx, { tab, seq: a.seq });
   }
 
   // ---- the handoff to herdr-nvim ----------------------------------------------
@@ -219,7 +250,8 @@ export default class GitList extends View {
   // isn't the newest is dropped.
   // `quiet`: the same repo again (a watch batch, a stamp, a poll): no
   // spinner.
-  refresh(cx, { poll = false, quiet = poll } = {}) {
+  refresh(cx, { poll = false, quiet = poll, why = "" } = {}) {
+    if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "list", refresh: why })}`);
     this.ctx = this.context();
     if (!this.ctx.cwd) {
       this.work = null;
@@ -227,6 +259,8 @@ export default class GitList extends View {
       return;
     }
     this.loads.latest(cx, "status", async (cx, current) => {
+      const started = Date.now();
+      this.statusAt = started;
       const ctx = this.ctx;
       const old = this.work;
       const base = poll && this.scope === "branch" && this.loadedKey === ctx.key ? old?.where.base : null;
@@ -248,6 +282,9 @@ export default class GitList extends View {
         return;
       }
       if (!current() || ctx.key !== this.ctx.key) return;
+      this.roots.set(`${ctx.on ?? ""}:${ctx.cwd}`, status.root);
+      // The key by repo from now on (the same list for this folder).
+      ctx.key = this.ctx.key = JSON.stringify([status.root, ctx.on ?? null, this.scope]);
       const where = { root: status.root, on: ctx.on ?? null, base: status.base ?? null };
       const same = old && old.where.root === where.root && old.where.on === where.on && old.status.scope === status.scope;
       if (same) old.update(status, where);
@@ -260,10 +297,19 @@ export default class GitList extends View {
       this.error = null;
       this.loadedKey = ctx.key;
       if (!ctx.on) setIgnoredDirs(status.root, status.ignored_dirs ?? []);
-      if (!ctx.on) watch(this.watcher, status.root, cx, (cx) => { if (this.place.shown()) this.refresh(cx, { quiet: true }); });
+      if (!ctx.on) watch(this.watcher, status.root, cx, (cx, paths) => { if (this.place.shown() && !this.ownBatch(paths)) this.refresh(cx, { quiet: true, why: `watch ${JSON.stringify(paths).slice(0, 200)}` }); });
       else this.watcher.root = null; // a local repo's watch ends
-      this.followPane();
       this.followSelection();
+      // cmd-g's tab: its pane came with it, so its first file shows at once.
+      if (this.place.showsFirstFile && this.mode === "files" && !liveView(viewIn(this.tab()))) {
+        const first = this.work.shownFile();
+        if (first) this.select(first, cx, { open: false });
+      }
+      // The pane's s/u/x: answered once the status after it is shown.
+      if (this.toAnswer && started >= this.toAnswer.after) {
+        answer(this.toAnswer.tab, this.toAnswer.seq);
+        this.toAnswer = null;
+      }
       knowEditor(where.root, where.on, cx);
     }, { quiet });
   }
@@ -283,26 +329,22 @@ export default class GitList extends View {
     const there = work.findFile(view.path, view.section);
     if (there) {
       if (!work.row()) work.select(there);
-      // Its counts or kind moved (an agent wrote more to it): the pane's
-      // header follows.
+      // Its rev moved (an agent wrote to it, it was staged in part): the
+      // pane reloads it, and its header follows the counts.
       const now = work.viewFor(there);
-      if (["add", "del", "kind", "letter"].some((k) => now[k] !== view[k])) this.show(there);
+      if (["rev", "add", "del", "kind", "letter"].some((k) => now[k] !== view[k])) this.show(there);
       return;
     }
     const next = work.shownFile();
     if (next) this.show(next);
-    else this.seen.views[tab] = setView(tab, null).seq;
+    else setView(tab, null);
   }
 
-  // The diff pane moved to another file (J/K there): select it. `adopt`:
-  // the shown tab changed: select the file its pane shows, whoever wrote it.
-  followPane({ adopt = false } = {}) {
-    const tab = this.tab();
-    const view = viewIn(tab);
-    if (!view || (!adopt && view.seq <= (this.seen.views[tab] ?? 0))) return;
-    this.seen.views[tab] = view.seq;
+  // Another tab shows: the list selects the file its pane shows.
+  adoptPane() {
+    const view = liveView(viewIn(this.tab()));
     const list = this.list();
-    if ((!adopt && view.by !== "pane") || !liveView(view) || !list || view.root !== list.where.root || (view.commit ?? null) !== (list.where.commit ?? null)) return;
+    if (!view || !list || view.root !== list.where.root || (view.commit ?? null) !== (list.where.commit ?? null)) return;
     const row = list.findFile(view.path, view.section);
     if (row) {
       list.select(row);
@@ -330,8 +372,8 @@ export default class GitList extends View {
     // The same file as shown, the same way (j on the last row, a click on
     // the selected one): nothing to write, nothing for the pane to reload.
     const was = liveView(viewIn(tab));
-    const same = was && sameFile(was, next) && !line && !focusPane && ["add", "del", "kind", "letter", "scope"].every((k) => was[k] === next[k]);
-    if (!same) this.seen.views[tab] = setView(tab, next).seq;
+    const same = was && sameFile(was, next) && !line && !focusPane && ["rev", "add", "del", "kind", "letter", "scope"].every((k) => was[k] === next[k]);
+    if (!same) setView(tab, next);
     if (open && cx && this.place.opensDiffPane) this.ensurePane(tab, cx, { focusPane });
   }
 
@@ -447,15 +489,33 @@ export default class GitList extends View {
   }
 
   // One op on the repo the list came from, then a refresh.
-  act(args, where, cx) {
+  // `asked`: {tab, seq}: the pane's ask, answered when the status after
+  // the op has been shown.
+  act(args, where, cx, asked = null) {
+    // Its own watch batch can come before the op's reply: from now on.
+    this.ownOp = { at: Date.now() + 60000, paths: args.slice(args.indexOf("--") + 1) };
     this.loads.run(cx, args[0], async (cx) => {
       try {
         await gv([args[0], "--repo", where.root, ...onArgs(where.on), ...args.slice(1)]);
       } catch (e) {
         notify({ title: "gitview", body: message(e), level: "error" });
+        if (asked) answer(asked.tab, asked.seq);
+        this.ownOp = null;
+        return;
       }
+      if (asked) this.toAnswer = { ...asked, after: Date.now() };
+      this.ownOp.at = Date.now();
       this.refresh(cx);
     });
+  }
+
+  // A watch batch that's only this list's own op (git's files, the op's
+  // paths), while it runs or within 1.5 s after: the refresh after the op
+  // shows it already.
+  ownBatch(paths) {
+    const op = this.ownOp;
+    if (!op || Date.now() - op.at > 1500 || paths === "all") return false;
+    return paths.every((p) => p.startsWith(".git/") || op.paths.some((q) => p === q || (q.endsWith("/") && p.startsWith(q))));
   }
 
   // The engine decides at commit time (as the stock Changes panel commits):
@@ -467,6 +527,7 @@ export default class GitList extends View {
     if (!text || !work || this.scope !== "worktree" || this.committing) return;
     this.committing = true;
     const started = Date.now();
+    this.ownOp = { at: started + 60000, paths: [] }; // its index and refs writes
     this.loads.run(cx, "commit", async (cx) => {
       try {
         const r = await gv(["commit", "--repo", work.where.root, ...onArgs(work.where.on), "--", text]);
@@ -481,6 +542,7 @@ export default class GitList extends View {
       } finally {
         this.committing = false;
       }
+      this.ownOp.at = Date.now();
       this.refresh(cx);
     });
   }
@@ -493,11 +555,16 @@ export default class GitList extends View {
 
   // The one way the view changes: the mode's `enter` runs (modes.js) when
   // it changes, or when `how` says what to enter with.
+  // Each view keeps its own scroll: back in one, it's where it was.
   setMode(mode, cx, how = null) {
     const changed = mode !== this.mode;
+    if (changed) {
+      this.tops[this.mode] = this.scroll.top;
+      this.scroll.top = this.tops[mode] ?? 0;
+    }
     this.mode = mode;
     const list = this.list();
-    if (list) this.reveal(list.selectedIndex(), { center: true });
+    if (list && !(changed && mode in this.tops)) this.reveal(list.selectedIndex(), { center: true });
     if (changed || how) MODES[mode].enter?.(this, cx, how ?? {});
   }
 
@@ -509,7 +576,7 @@ export default class GitList extends View {
     const view = liveView(viewIn(tab));
     if (!tab || !this.work || !view) return;
     const row = this.work.shownFile();
-    if (!row) this.seen.views[tab] = setView(tab, null).seq;
+    if (!row) setView(tab, null);
     else if (!sameFile(view, this.work.viewFor(row))) this.select(row, cx, { open: false });
   }
 

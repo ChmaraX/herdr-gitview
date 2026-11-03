@@ -44,14 +44,16 @@ export const message = (e) => String(e?.message ?? e);
 
 // The shown space's folder, as the stock Changes panel finds it: the focused
 // pane's live folder, else the space's. `on`: the machine it's on (null:
-// this one). A mod pane (gitview's own diff pane) has no folder: `keep` (the
-// place before, in the same tab) stays.
+// this one). A mod pane (gitview's own diff pane) has no folder, and a
+// dialog over the tab focuses nothing: `keep` (the place before, in the same
+// tab) stays.
 export function location(keep) {
   const f = focused();
   const space = spaces().find((s) => s.active);
   const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
   const on = f?.pane === null ? machineOf(f?.terminal) : space?.machine ?? null;
-  if (pane && !pane.terminal && keep && keep.tab === f?.tab) return keep;
+  // A mod pane, or nothing in the tab (a dialog over it): the place stays.
+  if (keep && keep.tab === f?.tab && ((pane && !pane.terminal) || (!f?.pane && !f?.terminal))) return keep;
   return {
     cwd: pane?.cwd || f?.cwd || space?.folder || null,
     on,

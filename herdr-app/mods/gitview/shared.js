@@ -3,13 +3,19 @@
 // is read and written here. Shared by the gitview mods (linked; install
 // copies it).
 //
-// - "gitview.views": {<tab>: view}: what the tab's diff pane shows (written
-//   by the list on a file click, j/k or after a change, by the pane on J/K).
-//   A view is model.js viewOf() plus `seq` (bumped on every write),
-//   `showing` (bumped when the write shows another file than the one
-//   before: the pane starts it afresh), `by` ("list" or "pane"), `files`
-//   (the list's file order, for J/K) and `line` (a note to jump to);
-//   `{empty: true, seq, showing}` when there's nothing to show.
+// - "gitview.views": {<tab>: view}: what the tab's diff pane shows, written
+//   only by the tab's list (a click, j/k, after a change, on the pane's
+//   ask). A view is model.js viewOf() (with the file's `rev`, which moves
+//   when its diff can: the pane reloads then) plus `seq` (bumped on every
+//   write), `showing` (bumped when the write shows another file than the
+//   one before: the pane starts it afresh), `line` (a note to jump to) and
+//   `focus` (the pane takes the keyboard); `{empty: true, seq, showing}`
+//   when there's nothing to show.
+// - "gitview.ask": {<tab>: {seq, op, view}}: the diff pane asks the tab's
+//   list to stage, unstage or discard its file (`op`), or to show the next
+//   or previous one ("next", "prev": J/K).
+// - "gitview.answer": {<tab>: {seq, msg}}: the list did the ask `seq` (and
+//   wrote the view it led to); `msg`: what to say ("last file").
 // - "gitview.cursor": {<tab>: {root, on, path, section, commit, line, row,
 //   first, preview}}: where the pane's cursor is (the list's Enter opens
 //   nvim there); `preview`: the pane shows the file's Preview.
@@ -17,8 +23,6 @@
 // - "gitview.notes": {"<machine or ''>:<repo root>": [note]}: review notes,
 //   kept until sent. A note is {id, file, section, cached, start, end,
 //   text, snippet}; `cached`: written on the staged diff.
-// - "gitview.dirty": {root, on, at}: the pane staged or discarded something
-//   (the list refreshes and picks the file the pane shows next).
 // - "gitview.changed": {"<machine or ''>:<repo root>": {at, prev, paths}}: a
 //   folder watch saw the repo change; `paths`: the batch's repo-relative
 //   paths that matter (at most 50), or "all"; `prev`: the stamp before. With
@@ -34,6 +38,8 @@
 //   list saw nvim's pane. When that pane goes, the list brings the diff
 //   back (main.js followHandoff).
 // - "gitview.previewOff": [kind]: kinds of file shown as Diff, not Preview.
+// - "gitview.paneWidth": px: the diff pane's last width (a new one lays out
+//   at it right away).
 // - "gitview.tree": the list shows folders as a tree.
 // - "gitview.own": {<space>: <tab>}: the space's gitview tab (cmd-g).
 // - "gitview.origins": {<space>: <tab>}: where cmd-g was pressed (it goes
@@ -69,6 +75,26 @@ export function setView(tab, view) {
   return all[tab];
 }
 
+export function askIn(tab) {
+  return (shared("gitview.ask") ?? {})[tab] ?? null;
+}
+
+// Returns the ask's seq.
+export function ask(tab, op, view) {
+  const all = shared("gitview.ask") ?? {};
+  const seq = (all[tab]?.seq ?? 0) + 1;
+  setShared("gitview.ask", { ...all, [tab]: { seq, op, view } });
+  return seq;
+}
+
+export function answerIn(tab) {
+  return (shared("gitview.answer") ?? {})[tab] ?? null;
+}
+
+export function answer(tab, seq, msg = null) {
+  setShared("gitview.answer", { ...(shared("gitview.answer") ?? {}), [tab]: { seq, msg } });
+}
+
 export function cursorIn(tab) {
   return (shared("gitview.cursor") ?? {})[tab] ?? null;
 }
@@ -78,14 +104,6 @@ export function setCursor(tab, cursor) {
   const all = Object.fromEntries(Object.entries(shared("gitview.cursor") ?? {}).filter(([t]) => live.has(t)));
   all[tab] = cursor;
   setShared("gitview.cursor", all);
-}
-
-export function dirty() {
-  return shared("gitview.dirty") ?? null;
-}
-
-export function setDirty(root, on) {
-  setShared("gitview.dirty", { root, on: on ?? null, at: Date.now() });
 }
 
 export function treeMode() {

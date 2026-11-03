@@ -15,15 +15,15 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
-import { run, settings, spaces, theme, notify } from "herdr";
-import { gv, message, onArgs } from "./engine.js";
-import { diffArgs, isDark, sameFile, viewOf } from "./model.js";
+import { run, setShared, settings, shared, spaces, theme } from "herdr";
+import { gv, message } from "./engine.js";
+import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  addNote, cursorIn, diffPane, liveView, notesKey, notesOf, onScreen, previewOff, pump, removeNotes, setCursor, setDirty, setPreviewOff, setView,
-  takeKeyboard, viewIn,
+  addNote, answerIn, ask, cursorIn, diffPane, liveView, notesKey, notesOf, previewOff, pump, removeNotes, setCursor, setPreviewOff, takeKeyboard,
+  viewIn,
 } from "./shared.js";
-import { Flash, Loads, ModPanes, commandLoop, debounced, debugLook, followStamp, keyEvent, keyName, stampMoved, trace, watch } from "./modkit.js";
+import { Flash, Loads, ModPanes, commandLoop, debounced, debugLook, keyEvent, keyName, trace } from "./modkit.js";
 import { panePlacement } from "./placement.js";
 import { editorLabel, knowEditor, openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
@@ -53,7 +53,7 @@ const KEYS = [
   { caps: ["v"], label: "select", rank: 5, when: diffShown, on: { v: inDiff((v) => { v.anchor = v.anchor === null ? v.cursor : null; }) } },
   { caps: ["a"], label: "note", rank: 6, when: diffShown, on: { a: inDiff((v) => v.annotate()) } },
   { caps: ["enter"], label: (v) => editorLabel(v.view?.root, v.view?.on), rank: 3, on: { enter: (v, cx) => v.enterKey(cx), e: (v) => v.edit() } },
-  { caps: ["J", "K"], label: "next / previous file", rank: 7, on: { J: (v) => v.nextFile(1), K: (v) => v.nextFile(-1) } },
+  { caps: ["J", "K"], label: "next / previous file", rank: 7, on: { J: (v, cx) => v.nextFile(1, cx), K: (v, cx) => v.nextFile(-1, cx) } },
   { caps: ["x"], label: "discard", rank: 8, on: { x: (v, cx) => v.act("discard", cx) } },
   { caps: ["p"], label: "send notes", rank: 9, on: { p: (v, cx) => v.send(cx) } },
   { caps: ["r"], label: "reload", on: { r: (v, cx) => v.reload(cx) } },
@@ -65,17 +65,6 @@ const NOTE_KEYS = [{ caps: ["enter"], label: "save the note", rank: 1, on: {} },
 // Notes are written on staged or unstaged changes, as the TUI's: the side
 // (cached or not) of a view that takes them, null for a commit's or the
 // branch's diff.
-// Whether a change to `paths` (repo-relative, or "all": watch batches,
-// modkit.js batchPaths) can change the view's diff: its file (or where it
-// was renamed from), or git's index, HEAD or refs; never a commit's.
-function touches(view, paths) {
-  if (!view) return false;
-  if (paths === "all") return true;
-  if (view.commit) return false;
-  const git = (p) => p === ".git/index" || p === ".git/HEAD" || p === ".git/packed-refs" || p.startsWith(".git/refs/");
-  return paths.some((p) => p === view.path || p === view.orig || git(p));
-}
-
 const noteSide = (v) => (!v || v.commit || v.section === "branch" ? null : Boolean(v.cached));
 
 export default class GitDiff extends View {
@@ -93,7 +82,7 @@ export default class GitDiff extends View {
     this.anchor = null;
     this.dragging = false;
     this.unfold = false;
-    this.width = 0;
+    this.width = shared("gitview.paneWidth") ?? 0; // the last pane's: a new pane lays out right away
     this.preview = null; // {view, kind, …} (preview.js), or {view, failed}
     this.diffView = null; // the view `diff` is of
     this.lastBody = null; // "diff" | "preview": what the body showed last
@@ -104,11 +93,9 @@ export default class GitDiff extends View {
     this.flash = new Flash(cx);
     this.loads = new Loads((m) => this.flash.set(m));
     this.modPanes = new ModPanes();
-    this.watcher = {};
     // What render notices (a new view, a theme switch) loads from here.
     this.kick = pump(cx, (cx) => this.sync(cx));
     this.sync(cx);
-    cx.timer.every(4000, (cx) => { if (this.view?.on && onScreen(this.tab())) this.reload(cx); });
     debugLook(cx, () => { this.renderLook(); trace("pane", this.traceFields(), this); });
     commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview-diff", before: (cx) => this.sync(cx), handle: (c, cx) => this.command(c, cx) });
   }
@@ -132,10 +119,6 @@ export default class GitDiff extends View {
   // then this one starts afresh too.
   sync(cx) {
     if (this.modPanes.gone()) this.loads.afterClose(cx); // Loads.revive
-    // Another copy's watch saw the repo change: reload when that can change
-    // this diff (`touches`).
-    const stamped = followStamp(this.watcher);
-    if (stamped && touches(this.view, stamped) && onScreen(this.tab())) this.reload(cx);
     if (isDark(theme().background) !== this.dark) {
       this.dark = !this.dark;
       this.reload(cx);
@@ -150,7 +133,7 @@ export default class GitDiff extends View {
     const same = !fresh && sameFile(view, this.view);
     // The same file written again (the list's j on the last row, a refresh):
     // load again only when its change did (the counts) or a line was asked.
-    const changed = !same || view.line || ["add", "del", "kind", "letter", "cached", "scope"].some((k) => view[k] !== this.view?.[k]);
+    const changed = !same || view.line || ["rev", "add", "del", "kind", "letter", "cached", "scope"].some((k) => view[k] !== this.view?.[k]);
     this.view = view;
     if (!same) {
       // Another file: the old body stays until the new one is here (dimmed
@@ -164,12 +147,12 @@ export default class GitDiff extends View {
     }
     if (!view) return;
     knowEditor(view.root, view.on, cx);
+    // The list is the one that watches the repo: it writes the view again
+    // when the file's rev moves, and this loads again then.
     if (changed) {
       this.loadDiff(cx, { keep: same && !view.line, line: view.line, quiet: same });
       if (this.wantsPreview()) this.loadPreview(cx, { quiet: same });
     }
-    if (!view.on) watch(this.watcher, view.root, cx, (cx, paths) => { if (touches(this.view, paths) && onScreen(this.tab())) this.reload(cx); });
-    else this.watcher.root = null; // a local repo's watch ends
   }
 
   // The shown file again (the repo changed): no spinner.
@@ -263,6 +246,10 @@ export default class GitDiff extends View {
       }
       if (!sameFile(this.view, view)) return;
       const another = !sameFile(this.diffView, view);
+      // The same file again (an agent's edit, unfold): the cursor, the
+      // selection's anchor and the view stay on their lines, not on their
+      // row numbers, which move when lines come or go above them.
+      const keepLines = keep && !line && !another ? { cursor: this.lineKey(this.cursor), anchor: this.lineKey(this.anchor), offset: this.rowOffset(this.cursor) } : null;
       this.diff = diff;
       this.diffView = view;
       this.lastBody = "diff";
@@ -272,11 +259,42 @@ export default class GitDiff extends View {
         this.cursor = Math.max(0, at);
         if (another) this.scroll.top = 0;
         this.pendingReveal = { row: this.cursor, center: true }; // once `display` has these rows
+      } else if (keepLines) {
+        const at = this.rowOf(keepLines.cursor);
+        if (at >= 0) {
+          this.cursor = at;
+          if (keepLines.offset !== null) this.pendingAnchor = { row: at, offset: keepLines.offset };
+        }
+        if (this.anchor !== null) this.anchor = Math.max(0, this.rowOf(keepLines.anchor));
       }
       this.cursor = Math.min(this.cursor, Math.max(0, n - 1));
       if (this.anchor !== null) this.anchor = Math.min(this.anchor, Math.max(0, n - 1));
       this.publishCursor();
     });
+  }
+
+  // Row i as a line: its new-side number, else its old side's (null: a
+  // fold, nothing).
+  lineKey(i) {
+    const r = i === null ? null : this.diff.rows[i];
+    return r ? (r.n ? { n: r.n } : r.o ? { o: r.o } : null) : null;
+  }
+
+  // The row of that line in the diff now; a line that went: the nearest.
+  rowOf(key) {
+    if (!key) return -1;
+    const rows = this.diff.rows;
+    const exact = rows.findIndex((r) => (key.n ? r.n === key.n : r.o === key.o));
+    if (exact >= 0 || !key.n) return exact;
+    let best = -1;
+    rows.forEach((r, i) => { if (r.n && (best < 0 || Math.abs(r.n - key.n) < Math.abs(rows[best].n - key.n))) best = i; });
+    return best;
+  }
+
+  // How far row i is below the top of the view (px), null when not drawn.
+  rowOffset(i) {
+    const at = this.display?.findIndex((d) => d.index === i) ?? -1;
+    return at >= 0 && this.scroll.offsets[at] !== undefined ? this.scroll.offsets[at] - this.scroll.top : null;
   }
 
   // The line under row i (a deleted line: the next line that's there).
@@ -318,13 +336,8 @@ export default class GitDiff extends View {
   }
 
   // J/K: the next or previous file of the list.
-  nextFile(delta) {
-    const v = this.view;
-    const files = v?.files ?? [];
-    const at = files.findIndex((f) => f.path === v?.path && f.section === v?.section);
-    const next = at >= 0 ? files[at + delta] : null;
-    if (!next) return this.flash.set(delta > 0 ? "last file" : "first file");
-    setView(this.tab(), { ...viewOf(next, v), files: v.files, by: "pane", line: null });
+  nextFile(delta, cx) {
+    if (this.view) this.askList(cx, delta > 0 ? "next" : "prev", this.view);
   }
 
   // ---- actions --------------------------------------------------------------
@@ -355,26 +368,20 @@ export default class GitDiff extends View {
     if (!v || v.commit) return;
     if (!allowed(op, v.section)) return this.flash.set(`can't ${op} it: it's ${v.scope}`);
     if (op === "discard") this.pendingDiscard = confirmDiscard("gitview-diff", v.path, { view: v });
-    else this.applyOp(op, v, cx);
+    else this.askList(cx, op, v);
   }
 
-  // The op, and the repo is marked changed: the list refreshes and shows
-  // here where the file went (staged), or the next file when it's gone.
-  // Until it has (5 s at most), this counts as loading, so the next command
-  // acts on that file, not on the one that moved.
-  applyOp(op, v, cx) {
+  // s/u/x and J/K: the tab's list (the one writer of its view) does them
+  // (gitview.ask) and writes the view they lead to. Until it answers (5 s
+  // at most) this counts as loading, so the next key acts on that view.
+  askList(cx, op, v) {
     const tab = this.tab();
+    if (!tab) return;
+    const seq = ask(tab, op, v);
     this.loads.run(cx, op, async (cx) => {
-      const seq = viewIn(tab)?.seq ?? 0;
-      try {
-        await gv([op, "--repo", v.root, ...onArgs(v.on), "--section", v.section, "--", v.path]);
-      } catch (e) {
-        notify({ title: "gitview", body: message(e), level: "error" });
-        return;
-      } finally {
-        setDirty(v.root, v.on);
-      }
-      for (let i = 0; i < 50 && (viewIn(tab)?.seq ?? 0) === seq; i++) await cx.sleep(100);
+      for (let i = 0; i < 50 && (answerIn(tab)?.seq ?? 0) < seq; i++) await cx.sleep(100);
+      const a = answerIn(tab);
+      if (a?.seq === seq && a.msg) this.flash.set(a.msg);
       this.sync(cx);
     });
   }
@@ -459,7 +466,7 @@ export default class GitDiff extends View {
       const p = takeDiscard(this.pendingDiscard, command);
       if (!p) return;
       this.pendingDiscard = null;
-      if (sameFile(p.view, this.view)) this.applyOp("discard", p.view, cx);
+      if (sameFile(p.view, this.view)) this.askList(cx, "discard", p.view);
     } else if (what === "key") this.key(keyEvent(rest.join(":")), cx);
     else if (what === "drag") {
       // A mouse drag over new-side lines <a> to <b>, for scripts.
@@ -511,7 +518,7 @@ export default class GitDiff extends View {
 
   // What a render notices, woken in the pump (never work from render).
   renderLook() {
-    if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(theme().background) !== this.dark || this.modPanes.changed() || stampMoved(this.watcher)) this.kick();
+    if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(theme().background) !== this.dark || this.modPanes.changed()) this.kick();
   }
 
   // What the body shows: {kind: "diff" | "preview" | null, old}: the shown
@@ -555,6 +562,16 @@ export default class GitDiff extends View {
     const notes = key && of && side !== null ? notesOf(key).filter((n) => n.file === of.path && Boolean(n.cached) === side) : [];
     this.display = diffs.displayRows(this.diff, notes, this.pendingNote ? this.pendingNote.after : -1);
     this.scroll.measure(this.display.map(diffs.rowSize));
+    if (this.pendingAnchor) {
+      // The kept line back where it was on screen.
+      const a = this.pendingAnchor;
+      this.pendingAnchor = null;
+      const at = this.display.findIndex((d) => d.index === a.row);
+      if (at >= 0) {
+        this.scroll.top = this.scroll.offsets[at] - a.offset;
+        this.scroll.clamp();
+      }
+    }
     if (this.pendingReveal) {
       // Rows and their display places now agree: scroll to the one asked for.
       const r = this.pendingReveal;
@@ -612,6 +629,7 @@ export default class GitDiff extends View {
       .on_size_change((size, cx) => {
         if (size.width === this.width) return;
         this.width = size.width;
+        if (Math.abs((shared("gitview.paneWidth") ?? 0) - size.width) > 20) setShared("gitview.paneWidth", Math.round(size.width));
         cx.notify();
       })
       .on_key_down((e, cx) => {
@@ -628,7 +646,7 @@ export default class GitDiff extends View {
       .child(body)
       .child(footer(t, {
         flash: this.flash.text,
-        chips: chipsOf([this.pendingNote ? NOTE_KEYS : KEYS], this),
+        chips: this.view ? chipsOf([this.pendingNote ? NOTE_KEYS : KEYS], this) : [], // nothing shown: no keys for it
         width: this.width,
         onKeys: (cx) => { KEYS.at(-1).on["?"](this, cx); },
         id: "gitview-diff-keys-button",

@@ -4,7 +4,7 @@
 // Everything that differs between the two is here, so the mods never ask
 // "am I the panel?". Shared (linked; install copies it).
 
-import { props, run, spaces } from "herdr";
+import { focused, props, run, spaces } from "herdr";
 import { location } from "./engine.js";
 import { isOwnTab, onScreen, ownTab, panelDiffPanes, panelState } from "./shared.js";
 
@@ -39,6 +39,7 @@ const TAB = {
   opensDiffPane: false,
   closesForHerdrNvim: false,
   takesKeyboard: true,
+  showsFirstFile: true, // its pane opens with it: the first file shows at once
   frame: (e) => e,
   cycle: () => null,
 };
@@ -58,6 +59,30 @@ class PanelCycle {
   constructor() {
     this.shown = null; // not looked yet
     this.space = null;
+    this.aside = false; // hidden for cmd-g's tab (stepAside)
+  }
+
+  // cmd-g's tab has a list of its own: while it shows, the panel steps
+  // aside (its diff panes stay), and it comes back when the person leaves
+  // that tab, if it stepped aside.
+  stepAside() {
+    const p = panelState();
+    if (!p) return;
+    const own = isOwnTab(focused()?.tab);
+    if (own && p.shown && !this.aside) {
+      this.aside = true;
+      this.shown = false; // not a hide: nothing closes
+      run("layout.hide", { id: p.panel });
+    } else if (!own && this.aside) {
+      this.aside = false;
+      if (p.stack) run("layout.select", { stack: p.stack, child: p.slot });
+      run("layout.show", { id: p.panel });
+    }
+  }
+
+  // Whether stepAside has something to do.
+  asideStale() {
+    return isOwnTab(focused()?.tab) ? Boolean(panelState()?.shown) && !this.aside : this.aside;
   }
 
   // "shown" on the edge to shown (the first look counts), else null.
