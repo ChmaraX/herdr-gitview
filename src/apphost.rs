@@ -61,6 +61,19 @@ pub fn app_do(command: &str, args: Value) -> Result<Value> {
     Ok(reply)
 }
 
+/// What the window shows (`herdr-app status`): focused space, tab, pane.
+pub fn app_status() -> Result<Value> {
+    let bin = app_bin();
+    let out = Command::new(&bin)
+        .arg("status")
+        .output()
+        .with_context(|| format!("spawning {}", bin.to_string_lossy()))?;
+    if !out.status.success() {
+        bail!("herdr-app status failed: is the Herdr app open?");
+    }
+    serde_json::from_slice(&out.stdout).context("herdr-app status: bad JSON")
+}
+
 /// One herdr-core API call over `hc connect` (JSON-RPC, one line each).
 pub fn hc_rpc(method: &str, params: Value) -> Result<Value> {
     let bin = hc_bin();
@@ -456,8 +469,13 @@ pub fn context() -> Result<AppCtx> {
 }
 
 /// The app's layout document (spaces → tabs → split trees), from the core.
-fn layout_doc() -> Result<Value> {
-    Ok(hc_rpc("doc.get", json!({ "name": "herdr-app" }))?
+/// `on`: another machine's (a remote space's tabs live there).
+fn layout_doc(on: Option<&str>) -> Result<Value> {
+    let mut params = json!({ "name": "herdr-app" });
+    if let Some(machine) = on {
+        params["on"] = json!(machine);
+    }
+    Ok(hc_rpc("doc.get", params)?
         .get("value")
         .cloned()
         .unwrap_or(Value::Null))
@@ -476,7 +494,7 @@ fn find_tab<'a>(doc: &'a Value, tab: &str) -> Option<&'a Value> {
 /// the whole tab, which is how the sidebar gets full height without the
 /// herdr TUI's park-and-rebuild dance.
 pub fn tab_root(tab: &str) -> Result<String> {
-    let doc = layout_doc()?;
+    let doc = layout_doc(None)?;
     find_tab(&doc, tab)
         .and_then(|t| t.pointer("/root/id")?.as_str())
         .map(str::to_string)
@@ -494,7 +512,7 @@ pub fn pane_of(terminal: &str) -> Result<String> {
             .iter()
             .find_map(|c| walk(c, terminal))
     }
-    let doc = layout_doc()?;
+    let doc = layout_doc(None)?;
     doc.get("spaces")
         .and_then(Value::as_array)
         .into_iter()
@@ -657,28 +675,76 @@ fn wait_for<T>(mut f: impl FnMut() -> Result<T>) -> Result<T> {
     Err(last.unwrap())
 }
 
-/// A mod pane (`pane.split {mod}`) split off the tab's root: full height on
-/// the right, `width_percent` of the tab. Returns its pane id.
+/// A mod pane (`pane.split {mod}`) at the tab's right edge, `width_percent`
+/// of the tab wide: split off the tab's root, so it spans the tab's full
+/// height, when the layout document has the tab (this machine's, or for a
+/// remote tab `machine/…` that machine's); else split off the tab's focused
+/// pane. Returns its pane id.
 pub fn open_mod_sidebar(
     tab: &str,
     module: &str,
     props: Value,
     width_percent: u8,
 ) -> Result<String> {
-    let root = tab_root(tab)?;
-    let mut args = json!({ "direction": "right", "pane": root, "mod": module });
-    if !props.is_null() {
-        args["props"] = props;
+    let mut tried = Vec::new();
+    for target in split_targets(tab) {
+        let mut args = json!({ "direction": "right", "pane": target, "mod": module });
+        if !props.is_null() {
+            args["props"] = props.clone();
+        }
+        let pane = app_do("pane.split", args).and_then(|reply| {
+            reply
+                .get("pane")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .context("no pane in pane.split reply")
+        });
+        match pane {
+            Ok(pane) => {
+                let f = f64::from(width_percent) / 100.0;
+                weigh(&pane, f / (1.0 - f));
+                return Ok(pane);
+            }
+            Err(err) => tried.push(format!("{target}: {err:#}")),
+        }
     }
-    let reply = app_do("pane.split", args)?;
-    let pane = reply
-        .get("pane")
-        .and_then(Value::as_str)
-        .context("no pane in pane.split reply")?
-        .to_string();
-    let f = f64::from(width_percent) / 100.0;
-    weigh(&pane, f / (1.0 - f));
-    Ok(pane)
+    if tried.is_empty() {
+        bail!("tab {tab} isn't in the app's layout and isn't focused");
+    }
+    bail!("no pane of tab {tab} could be split ({})", tried.join("; "))
+}
+
+/// The panes to split for a pane at `tab`'s right edge, best first.
+fn split_targets(tab: &str) -> Vec<String> {
+    let root_in = |doc: &Value, id: &str| {
+        find_tab(doc, id)
+            .and_then(|t| t.pointer("/root/id")?.as_str())
+            .map(str::to_string)
+    };
+    let mut targets = Vec::new();
+    if let Some(root) = layout_doc(None).ok().and_then(|doc| root_in(&doc, tab)) {
+        targets.push(root);
+    }
+    if let Some((machine, id)) = tab.split_once('/')
+        && let Ok(doc) = layout_doc(Some(machine))
+        && let Some(root) = root_in(&doc, tab).or_else(|| root_in(&doc, id))
+    {
+        // Ids from that machine's own document, named as this app names
+        // that machine's panes (never a bare id: it could be a pane here).
+        targets.push(if root.contains('/') {
+            root
+        } else {
+            format!("{machine}/{root}")
+        });
+    }
+    if let Ok(status) = app_status()
+        && status.get("tab").and_then(Value::as_str) == Some(tab)
+        && let Some(pane) = status.get("focused_pane").and_then(Value::as_str)
+    {
+        targets.push(pane.to_string());
+    }
+    targets.dedup();
+    targets
 }
 
 pub fn select_tab(tab: &str) -> Result<()> {

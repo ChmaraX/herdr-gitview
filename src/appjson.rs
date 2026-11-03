@@ -77,8 +77,12 @@
 //!   send") and nothing is typed. `--submit`: send it with `hc send`, which
 //!   presses Enter.
 //! - `sidebar --tab T --mod NAME [--props JSON] [--percent N]` → `{pane}`: a
-//!   mod pane spanning the tab's full height at its right edge, N percent of
-//!   the tab wide (default: `view_width_percent`).
+//!   mod pane at the tab's right edge, N percent of the tab wide (default:
+//!   `view_width_percent`). It's split off the tab's root, spanning the
+//!   tab's full height, when the layout document has the tab: this
+//!   machine's, or for a remote tab `MACHINE/…` that machine's (`doc.get
+//!   {on}`); otherwise off the tab's focused pane (`herdr-app status`).
+//!   Neither: an error, nothing split.
 //!
 //! The app install's layout and key setup is `herdr-gitview app-setup
 //! install|uninstall --keys FILE [--home DIR] [--app BIN]` (see
