@@ -32,9 +32,10 @@
 // - "gitview.ignored": {"<machine or ''>:<repo root>": [dir/]}: the repo's
 //   outermost ignored folders, from the last status (a watch batch under
 //   them is no change).
-// - "gitview.handoff": {<tab>: {root, on, path, section, commit, line, seq,
-//   at, seen}}: Enter handed the tab's diff to herdr-nvim's nvim (its pane
-//   took the diff pane's place). `seq`: the tab's view then; `seen`: the
+// - "gitview.handoff": {<tab>: {root, on, path, section, commit, line,
+//   showing, at, seen}}: Enter handed the tab's diff to herdr-nvim's nvim
+//   (its pane took the diff pane's place). `showing`: the tab's view's then
+//   (another file shown since: no restore); `seen`: the
 //   list saw nvim's pane. When that pane goes, the list brings the diff
 //   back (main.js followHandoff).
 // - "gitview.previewOff": [kind]: kinds of file shown as Diff, not Preview.

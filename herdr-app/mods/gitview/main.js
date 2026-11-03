@@ -219,9 +219,7 @@ export default class GitList extends View {
   // The row Enter handed to herdr-nvim in this tab.
   handedOff(row) {
     const rec = handoffIn(this.tab());
-    const w = this.list()?.where;
-    return Boolean(rec && w && row?.kind === "file" && rec.root === w.root && rec.on === (w.on ?? null) && rec.commit === (w.commit ?? null)
-      && rec.path === row.file.path && rec.section === row.section.id);
+    return Boolean(rec && row?.kind === "file" && this.list() && sameFile(rec, this.list().viewFor(row)));
   }
 
   followHandoff(cx) {
@@ -238,7 +236,9 @@ export default class GitList extends View {
     }
     if (nvim) return;
     setHandoff(tab, null);
-    if (diffPane(tab) || (viewIn(tab)?.seq ?? 0) !== rec.seq) return;
+    // Another file shown meanwhile (not the same one written again: a :w
+    // there moves its rev, and the view is rewritten): nothing comes back.
+    if (diffPane(tab) || (viewIn(tab)?.showing ?? 0) !== rec.showing) return;
     const list = this.list();
     const row = list && list.where.root === rec.root && (list.where.commit ?? null) === rec.commit ? list.findFile(rec.path, rec.section) : null;
     // Back on the diff, the keys on the list (v1: :q came back to the list).

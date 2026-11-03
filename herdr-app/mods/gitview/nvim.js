@@ -79,7 +79,7 @@ export async function openNvim(o) {
     if (r.terminal === "herdr-nvim") {
       if (o.closeDiff && o.view && o.tab) {
         const v = o.view;
-        setHandoff(o.tab, { root: v.root, on: v.on ?? null, path: v.path, section: v.section, commit: v.commit ?? null, line: o.line || 1, seq: viewIn(o.tab)?.seq ?? 0, at: Date.now(), seen: false });
+        setHandoff(o.tab, { root: v.root, on: v.on ?? null, path: v.path, section: v.section, commit: v.commit ?? null, line: o.line || 1, showing: viewIn(o.tab)?.showing ?? 0, at: Date.now(), seen: false });
       }
       if (pane && o.closeDiff) run("pane.close", { pane: pane.pane });
       return "herdr-nvim";
