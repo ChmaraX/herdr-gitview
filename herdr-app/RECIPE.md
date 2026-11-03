@@ -174,8 +174,8 @@ Spaces on other machines work the same way.
   gitview closes its diff pane (not in cmd-g's tab). herdr-nvim's sync
   controller leaves the panel on Changes. The way back, as the TUI's diff
   had nvim inside it: when nvim's pane goes (`:q`), the diff pane comes
-  back on that file and side, its cursor on the line nvim opened at, with
-  the keyboard; meanwhile the file's row shows an `in nvim` mark (10 px
+  back on that file and side, its cursor on the line nvim opened at, the
+  keys on the list (as v1); meanwhile the file's row shows an `in nvim` mark (10 px
   `muted` on a `border` box), and a click or Enter on it (the keycap reads
   `[⏎] diff`) closes nvim's pane (nvim keeps running: its daemon keeps the
   buffers, unsaved edits and cursor) and opens the diff in its place; Enter
