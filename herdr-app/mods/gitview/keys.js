@@ -6,6 +6,7 @@
 
 import { keyEvent, keyName } from "./modkit.js";
 import { MODES } from "./modes.js";
+import { panelReopens } from "./shared.js";
 
 const EVERYWHERE = {
   r: (v, cx) => v.refresh(cx),
@@ -26,7 +27,13 @@ export function runCommand(view, command, cx) {
   const arg = rest.join(":");
   if (command === "focus") view.takeKeyboard(cx);
   else if (command === "focus:panel") {
-    if (!view.isPane()) view.takeKeyboard(cx);
+    // cmd-shift-g showed the panel: the keyboard, and its file in the diff pane.
+    if (view.isPane()) return;
+    view.takeKeyboard(cx);
+    if (panelReopens()) {
+      view.wantOpen = true;
+      view.openOnShow(cx);
+    }
   } else if (what === "discard") view.discardConfirmed(command, cx);
   else if (what === "key") view.key(keyEvent(arg), cx);
   else if (what === "file") view.selectPath(arg, cx);

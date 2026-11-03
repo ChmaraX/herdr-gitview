@@ -17,7 +17,8 @@ import { gv, location, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  cursorIn, diffPane, dirty, liveView, notesKey, notesOf, onScreen, pump, setTreeMode, setView, takeKeyboard, treeMode, viewIn,
+  cursorIn, diffPane, dirty, liveView, notesKey, notesOf, onScreen, panelReopens, pump, setPanelReopens, setTreeMode, setView, takeKeyboard,
+  treeMode, viewIn,
 } from "./shared.js";
 import { Flash, LOST_MS, Loads, commandLoop, watch } from "./modkit.js";
 import { FileList } from "./filelist.js";
@@ -104,6 +105,25 @@ export default class GitList extends View {
     if (ctx.key !== this.ctx?.key || repoChanged) this.refresh(cx);
     else if (ctx.tab !== this.ctx.tab) this.ctx = { ...this.ctx, tab: ctx.tab, space: ctx.space };
     this.followPane();
+    this.openOnShow(cx);
+  }
+
+  // The panel just showed (cmd-shift-g, the Changes button) after its diff
+  // pane closed with it, or for the first time: the selected file, else the
+  // first one, opens in the diff pane, as the TUI's toggle did.
+  openOnShow(cx) {
+    if (!this.wantOpen || this.loading || this.isPane()) return;
+    if (!this.shown()) {
+      this.wantOpen = false; // hidden again meanwhile
+      return;
+    }
+    if (!this.work && !this.error) return; // not loaded yet: refresh calls again
+    this.wantOpen = false;
+    setPanelReopens(false);
+    if (this.mode !== "files" || !this.work) return;
+    const selected = this.work.row();
+    const row = selected?.kind === "file" ? selected : this.work.rows.find((r) => r.kind === "file");
+    if (row) this.select(row.key, cx);
   }
 
   // `poll`: a timer's look; in branch scope the base found last time is
@@ -152,7 +172,7 @@ export default class GitList extends View {
         if (this.again) {
           this.again = false;
           this.refresh(cx);
-        }
+        } else this.openOnShow(cx);
       }
     });
   }
@@ -413,6 +433,10 @@ export default class GitList extends View {
     const d = dirty();
     if (ctx.key !== this.ctx?.key || (d && d.at > this.seen.dirty)) this.kick();
     this.followPane();
+    if (!this.isPane() && !this.wantOpen && panelReopens() && this.shown()) {
+      this.wantOpen = true;
+      this.kick();
+    }
     const t = theme();
     const focused = this.handle.is_focused();
     const notes = this.notes();

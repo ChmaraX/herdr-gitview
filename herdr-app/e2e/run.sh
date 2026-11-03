@@ -66,14 +66,19 @@ for m in gitview gitview-diff gitview-agents gitview-tab gitview-sidebar; do
 done
 
 # --- the panel and its diff pane ---------------------------------------------------------
-step "Changes button → gitview's file list; a click opens the diff pane left of it"
+step "Changes button → gitview's file list, with its first file already in the diff pane left of it"
 do_ pane.focus --terminal "$SHELL_T"
 expect panel_up "the panel is up (it takes gitview.* commands)" 20
 expect '[ "$(panel_state)" = "open changes" ]' "the panel shows Changes"
-mod_panes | grep -q "gitview-diff" && fail "a diff pane before any click" || ok "no diff pane until a file is clicked"
+# The list notices it's shown when it draws (a covered window doesn't).
+if drawn; then
+  expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "showing the panel opens the diff pane in this tab"
+  expect '[ -n "$(view_of $TAB path)" ] && [ "$(view_of $TAB by)" = list ]' "on the list's first file"
+else
+  skip "showing the panel opens the diff pane on the first file (the window is covered: the list doesn't draw)"
+fi
 shot 01-panel-list
 do_ gitview.click:src/main.rs
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "clicking a file opens the diff pane in this tab"
 expect '[ "$(view_of $TAB path)" = src/main.rs ] && [ "$(view_of $TAB scope)" = uncommitted ]' "the pane shows src/main.rs (uncommitted)"
 shot 02-click-opens-diff 1.5
 [ "$(mod_panes | grep -c gitview-diff)" = 1 ] || fail "one diff pane"
@@ -359,8 +364,10 @@ else
 fi
 
 step "cmd-shift-g toggles the Changes panel; cmd-g opens gitview's own tab"
-press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ]' "hides the panel"
-press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "open changes" ]' "shows it, on gitview"
+expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "(the diff pane is open before cmd-shift-g)"
+SEL=$(view_of $TAB path)
+press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ] && ! mod_panes | grep -q gitview-diff' "hides the panel and its diff pane together"
+press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "open changes" ] && mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = "$SEL" ]' "shows both again, on the file that was selected ($SEL)"
 if [ "$KEYS" = 1 ]; then
   sleep 0.5
   P0=$(view_of $TAB path)
@@ -370,7 +377,16 @@ else
   skip "the list has the keyboard after cmd-shift-g (the window is covered)"
 fi
 shot 14-cmd-shift-g 1
-press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ]' "hides it again"
+press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ] && ! mod_panes | grep -q gitview-diff' "hides both again"
+if [ "$KEYS" = 1 ]; then # the Changes button's path is noticed when the mods draw
+  do_ layout.select '{"stack":"panel-body","child":"changes"}'
+  do_ layout.show --id panel
+  expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "the Changes button shows both too"
+  do_ layout.hide --id panel
+  expect '! mod_panes | grep -q gitview-diff' "and hiding the panel (the Changes button again) closes the diff pane"
+else
+  skip "the Changes button shows and hides both (the window is covered: the mods don't draw)"
+fi
 press 5:cmd cmd-g gitview-tab '[ "$(tab_active)" = gitview ]' "opens the gitview tab"
 OWN=$(tab_id)
 expect 'mod_panes | grep -q "^$OWN .* gitview-diff$" && mod_panes | grep -q "^$OWN .* gitview$"' "diff pane and list pane"

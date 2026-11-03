@@ -17,6 +17,9 @@
 // - "gitview.own": {<space>: <tab>}: the space's gitview tab (cmd-g).
 // - "gitview.origins": {<space>: <tab>}: where cmd-g was pressed (it goes
 //   back there).
+// - "gitview.panel": {closed: bool}: the panel was hidden and the diff pane
+//   it opened closed with it; the next time it shows, the list opens its
+//   selected (else first) file again. Unset: the panel hasn't shown yet.
 
 import { focused, layout, panes, setShared, shared, spaces } from "herdr";
 
@@ -117,6 +120,13 @@ export function diffPane(tab) {
   return panes().find((p) => p.tab === tab && p.mod === "gitview-diff") ?? null;
 }
 
+// The diff panes the Changes panel opened, in every tab (not the ones in
+// cmd-g's gitview tabs, which belong to their own list).
+export function panelDiffPanes() {
+  const own = new Set(Object.values(shared("gitview.own") ?? {}));
+  return panes().filter((p) => p.mod === "gitview-diff" && !own.has(p.tab));
+}
+
 // The space's gitview tab (cmd-g), while it's there.
 export function ownTab(space) {
   const tab = (shared("gitview.own") ?? {})[space];
@@ -157,6 +167,16 @@ export function panelState() {
     panel: panel.id,
     shown: visible && (!stack || stack.active === slot.id),
   };
+}
+
+// The panel opened beside it a diff pane that closed when it was hidden
+// (or it never showed): showing it again opens one.
+export function panelReopens() {
+  return (shared("gitview.panel") ?? { closed: true }).closed !== false;
+}
+
+export function setPanelReopens(closed) {
+  if (panelReopens() !== closed || shared("gitview.panel") == null) setShared("gitview.panel", { closed });
 }
 
 // Whether this copy is on screen: a pane copy while its tab shows, the

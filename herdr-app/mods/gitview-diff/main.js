@@ -18,7 +18,8 @@ import { gv, message, onArgs } from "./engine.js";
 import { diffArgs, fileOrder, isDark, sameFile, scopeLabel, viewOf } from "./model.js";
 import { allowed, confirmDiscard, entryOf, sendNotes, takeDiscard } from "./actions.js";
 import {
-  addNote, cursorIn, diffPane, liveView, notesKey, notesOf, onScreen, ownTab, pump, removeNotes, setCursor, setDirty, setView, takeKeyboard, treeMode, viewIn,
+  addNote, cursorIn, diffPane, liveView, notesKey, notesOf, onScreen, ownTab, panelDiffPanes, panelState, pump, removeNotes, setCursor, setDirty, setPanelReopens,
+  setView, takeKeyboard, treeMode, viewIn,
 } from "./shared.js";
 import { Flash, Loads, commandLoop, keyEvent, keyName, watch } from "./modkit.js";
 import { openNvim } from "./nvim.js";
@@ -70,15 +71,24 @@ export default class GitDiff extends View {
   // keeps the cursor, another starts at its first change (or at the note
   // the list jumped to).
   sync(cx) {
+    if (this.panelGone) {
+      this.panelGone = false;
+      this.panelHidden();
+      return;
+    }
     if (isDark(theme().background) !== this.dark) {
       this.dark = !this.dark;
       this.reload(cx);
     }
     const stored = viewIn(this.tab());
     if ((stored?.seq ?? 0) === this.seq) return;
+    // More than one write since the last look (the pane wasn't drawn while
+    // the list moved on and back): another file was shown in between, so
+    // this one starts afresh too.
+    const skipped = (stored?.seq ?? 0) > this.seq + 1;
     this.seq = stored?.seq ?? 0;
     const view = liveView(stored);
-    const same = sameFile(view, this.view);
+    const same = !skipped && sameFile(view, this.view);
     this.view = view;
     if (!same) {
       this.diff = EMPTY;
@@ -196,6 +206,16 @@ export default class GitDiff extends View {
         notify({ title: "gitview", body: message(e), level: "error" });
       }
     });
+  }
+
+  // The Changes panel that opened this pane was hidden (cmd-shift-g, the
+  // Changes button, or the Files button): the pane goes with it, and the
+  // panel opens one again when it shows (the TUI's toggle closed both).
+  panelHidden() {
+    if (props()?.own || this.closing) return;
+    this.closing = true;
+    for (const pane of panelDiffPanes()) run("pane.close", { pane: pane.pane }); // every tab's
+    if (!panelState()?.shown) setPanelReopens(true);
   }
 
   // (Not `close`: the app calls that one when the pane goes.)
@@ -342,6 +362,14 @@ export default class GitDiff extends View {
   render(cx) {
     const t = theme();
     if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(t.background) !== this.dark) this.kick();
+    if (!props()?.own) {
+      const shown = Boolean(panelState()?.shown);
+      if (this.panelShown && !shown) {
+        this.panelGone = true;
+        this.kick();
+      }
+      this.panelShown = shown;
+    }
     const focused = this.handle.is_focused();
     const key = this.notesKey();
     const notes = key ? notesOf(key).filter((n) => n.file === this.view.path) : [];
