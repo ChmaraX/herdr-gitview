@@ -560,7 +560,7 @@ fn context_candidates(ctx: &Value) -> Vec<PathBuf> {
 }
 
 fn git_toplevel(dir: &Path) -> Option<PathBuf> {
-    let out = Command::new("git")
+    let out = Command::new(crate::remote::git_bin())
         .arg("-C")
         .arg(dir)
         .args(["rev-parse", "--show-toplevel"])

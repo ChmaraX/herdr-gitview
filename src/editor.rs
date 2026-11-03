@@ -237,7 +237,7 @@ fn local_paths(names: &[String]) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-fn on_path(name: &str) -> Option<String> {
+pub(crate) fn on_path(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(name))
@@ -245,7 +245,7 @@ fn on_path(name: &str) -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
-fn executable(path: &Path) -> bool {
+pub(crate) fn executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }

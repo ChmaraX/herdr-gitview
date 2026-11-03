@@ -386,7 +386,7 @@ impl Session {
 
     /// Does the user have an editor configured for git itself?
     fn has_core_editor(&self) -> bool {
-        std::process::Command::new("git")
+        std::process::Command::new(crate::remote::git_bin())
             .arg("-C")
             .arg(&self.app.repo.root)
             .args(["config", "--get", "core.editor"])

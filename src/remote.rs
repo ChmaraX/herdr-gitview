@@ -4,15 +4,44 @@
 //! command, a file's bytes, or the facts about untracked files, and never
 //! checks which machine it is on.
 
-use std::ffi::OsString;
-use std::path::Path;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 
 /// The `hc` binary: `GITVIEW_HC`, else `hc` on `PATH`.
 pub fn hc_bin() -> OsString {
     std::env::var_os("GITVIEW_HC").unwrap_or_else(|| "hc".into())
+}
+
+/// The git this machine runs: `GITVIEW_GIT`, else `git` on `PATH` — but on
+/// macOS, when that's Apple's `/usr/bin/git` shim (it looks for the real
+/// one through xcrun on every call, about 6 ms each), the real one in the
+/// selected developer folder (`DEVELOPER_DIR`, else `xcode-select`'s), when
+/// it's there.
+pub fn git_bin() -> &'static OsStr {
+    static BIN: OnceLock<OsString> = OnceLock::new();
+    BIN.get_or_init(|| {
+        if let Some(bin) = std::env::var_os("GITVIEW_GIT").filter(|b| !b.is_empty()) {
+            return bin;
+        }
+        if cfg!(target_os = "macos")
+            && crate::editor::on_path("git").as_deref() == Some("/usr/bin/git")
+        {
+            let developer = std::env::var_os("DEVELOPER_DIR")
+                .filter(|d| !d.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| std::fs::read_link("/var/db/xcode_select_link").ok())
+                .unwrap_or_else(|| "/Library/Developer/CommandLineTools".into());
+            let real = developer.join("usr/bin/git");
+            if crate::editor::executable(&real) {
+                return real.into_os_string();
+            }
+        }
+        "git".into()
+    })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -120,7 +149,7 @@ impl Machine {
     pub fn git(&self, dir: &Path, args: &[&str], run: Run) -> Command {
         match self {
             Machine::Local => {
-                let mut cmd = Command::new("git");
+                let mut cmd = Command::new(git_bin());
                 cmd.arg("-C")
                     .arg(dir)
                     .env("GIT_OPTIONAL_LOCKS", "0")
@@ -261,7 +290,7 @@ impl Machine {
 /// of `1`/`0` (a regular file or not), then `git hash-object`'s ids of the
 /// files, one per line.
 const FINGERPRINT: &str = r#"for f; do if [ -f "$f" ]; then printf 1; else printf 0; fi; done; echo
-for f; do if [ -f "$f" ]; then printf '%s\n' "$f"; fi; done | git hash-object --no-filters --stdin-paths"#;
+for f; do if [ -f "$f" ]; then printf '%s\n' "$f"; fi; done | "${GITVIEW_GIT_BIN:-git}" hash-object --no-filters --stdin-paths"#;
 
 impl Machine {
     /// A fingerprint of each of `paths` (relative to `dir`), in order, that
@@ -287,7 +316,11 @@ impl Machine {
             let answer = if asked.is_empty() {
                 None
             } else {
-                self.output(self.command(dir, &argv, Run::default()), "fingerprints")
+                let mut cmd = self.command(dir, &argv, Run::default());
+                if *self == Machine::Local {
+                    cmd.env("GITVIEW_GIT_BIN", git_bin());
+                }
+                self.output(cmd, "fingerprints")
                     .ok()
                     .filter(|o| o.status.success())
                     .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
