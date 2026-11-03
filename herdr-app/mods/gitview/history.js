@@ -6,6 +6,7 @@ import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { gv, onArgs } from "./engine.js";
 import { FileList } from "./filelist.js";
+import { treeMode } from "./shared.js";
 
 export const COMMIT_ROW = 44;
 
@@ -36,6 +37,11 @@ export class History {
     }
   }
 
+  toggleFilter() {
+    this.filter = !this.filter;
+    this.selected = 0;
+  }
+
   move(delta) {
     const n = this.commits.length;
     if (n) this.selected = Math.min(n - 1, Math.max(0, this.selected + delta));
@@ -49,19 +55,17 @@ export class History {
 // ---- what the list does in it (v: the list's view) ---------------------
 
 export function openLog(v, cx) {
-  v.history = new History(v.scope === "branch");
-  v.setMode("log", cx);
+  v.setMode("log", cx, { history: new History(v.scope === "branch") });
 }
 
 export function loadLog(v, cx) {
   const where = v.work?.where;
   const history = v.history;
-  if (where) v.loads.run(cx, () => history.load(where));
+  if (where) v.loads.run(cx, "log", () => history.load(where));
 }
 
 export function toggleLogFilter(v, cx) {
-  v.history.filter = !v.history.filter;
-  v.history.selected = 0;
+  v.history.toggleFilter();
   loadLog(v, cx);
 }
 
@@ -74,17 +78,12 @@ export function logMove(v, delta) {
 export function openCommit(v, c, cx) {
   const where = v.work?.where;
   if (!c || !where) return;
-  v.loads.run(cx, async () => {
+  v.loads.run(cx, "commit-files", async (cx) => {
     const r = await gv(["commit-files", "--repo", where.root, "--sha", c.sha, ...onArgs(where.on)]);
     const list = new FileList({ sections: [{ id: "commit", title: "", cached: false, files: r.files ?? [] }] },
       { ...where, base: null, commit: c.sha, short: c.short, subject: c.subject });
-    list.rebuild(v.tree());
-    list.selected = list.rows.find((x) => x.kind === "file")?.key ?? null;
-    v.commitFiles = list;
-    v.mode = "commit";
-    v.scroll.top = 0;
-    const first = list.row();
-    if (first) v.show(first, { open: true, cx });
+    list.rebuild(treeMode());
+    v.setMode("commit", cx, { list });
   });
 }
 

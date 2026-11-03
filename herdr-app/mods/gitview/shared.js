@@ -4,24 +4,26 @@
 // copies it).
 //
 // - "gitview.views": {<tab>: view}: what the tab's diff pane shows (written
-//   by the list on a file click or j/k, by the pane on J/K and after s/u/x).
-//   A view is model.js viewOf() plus `seq` (bumped on every write), `by`
-//   ("list" or "pane"), `files` (the list's file order, for J/K) and `line`
-//   (a note to jump to); `{empty: true, seq}` when there's nothing to show.
+//   by the list on a file click, j/k or after a change, by the pane on J/K).
+//   A view is model.js viewOf() plus `seq` (bumped on every write),
+//   `showing` (bumped when the write shows another file than the one
+//   before: the pane starts it afresh), `by` ("list" or "pane"), `files`
+//   (the list's file order, for J/K) and `line` (a note to jump to);
+//   `{empty: true, seq, showing}` when there's nothing to show.
 // - "gitview.cursor": {<tab>: {root, on, path, section, commit, line, row,
 //   first}}: where the pane's cursor is (the list's Enter opens nvim there).
 // - "gitview.notes": {"<machine or ''>:<repo root>": [note]}: review notes,
-//   kept until sent. A note is {id, file, start, end, text, snippet}.
-// - "gitview.dirty": {root, on, at}: the pane staged or discarded something.
+//   kept until sent. A note is {id, file, section, cached, start, end,
+//   text, snippet}; `cached`: written on the staged diff.
+// - "gitview.dirty": {root, on, at}: the pane staged or discarded something
+//   (the list refreshes and picks the file the pane shows next).
 // - "gitview.tree": the list shows folders as a tree.
 // - "gitview.own": {<space>: <tab>}: the space's gitview tab (cmd-g).
 // - "gitview.origins": {<space>: <tab>}: where cmd-g was pressed (it goes
 //   back there).
-// - "gitview.panel": {closed: bool}: the panel was hidden and the diff pane
-//   it opened closed with it; the next time it shows, the list opens its
-//   selected (else first) file again. Unset: the panel hasn't shown yet.
 
 import { focused, layout, panes, setShared, shared, spaces } from "herdr";
+import { sameFile } from "./model.js";
 
 export function views() {
   return shared("gitview.views") ?? {};
@@ -42,8 +44,10 @@ const liveTabs = () => new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)))
 export function setView(tab, view) {
   const live = liveTabs();
   const all = Object.fromEntries(Object.entries(views()).filter(([t]) => live.has(t)));
-  const seq = (all[tab]?.seq ?? 0) + 1;
-  all[tab] = view ? { ...view, empty: false, seq } : { empty: true, seq };
+  const before = all[tab];
+  const seq = (before?.seq ?? 0) + 1;
+  const showing = (before?.showing ?? 0) + (sameFile(liveView(before), view) ? 0 : 1);
+  all[tab] = view ? { ...view, empty: false, seq, showing } : { empty: true, seq, showing };
   setShared("gitview.views", all);
   return all[tab];
 }
@@ -123,8 +127,12 @@ export function diffPane(tab) {
 // The diff panes the Changes panel opened, in every tab (not the ones in
 // cmd-g's gitview tabs, which belong to their own list).
 export function panelDiffPanes() {
-  const own = new Set(Object.values(shared("gitview.own") ?? {}));
-  return panes().filter((p) => p.mod === "gitview-diff" && !own.has(p.tab));
+  return panes().filter((p) => p.mod === "gitview-diff" && !isOwnTab(p.tab));
+}
+
+// One of cmd-g's gitview tabs.
+export function isOwnTab(tab) {
+  return Object.values(shared("gitview.own") ?? {}).includes(tab);
 }
 
 // The space's gitview tab (cmd-g), while it's there.
@@ -169,21 +177,9 @@ export function panelState() {
   };
 }
 
-// The panel opened beside it a diff pane that closed when it was hidden
-// (or it never showed): showing it again opens one.
-export function panelReopens() {
-  return (shared("gitview.panel") ?? { closed: true }).closed !== false;
-}
-
-export function setPanelReopens(closed) {
-  if (panelReopens() !== closed || shared("gitview.panel") == null) setShared("gitview.panel", { closed });
-}
-
-// Whether this copy is on screen: a pane copy while its tab shows, the
-// panel while it's open on gitview.
+// Whether a pane copy in that tab is on screen: while its tab shows.
 export function onScreen(tab) {
-  if (tab) return focused()?.tab === tab;
-  return Boolean(panelState()?.shown);
+  return Boolean(tab) && focused()?.tab === tab;
 }
 
 // Work that render() asks for runs here, in a task of the copy's own (from

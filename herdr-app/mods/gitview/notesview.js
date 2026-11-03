@@ -21,15 +21,16 @@ export function deleteNote(v, note) {
   if (note) removeNotes(v.notesKey(), [note.id]);
 }
 
-// The note's file in the diff pane, its cursor on the note.
+// The section a note was written in (notes from before `section`: by side).
+export const noteSection = (note) => note.section ?? (note.cached ? "staged" : "changes");
+
+// The note's file in the diff pane, its cursor on the note: the side it was
+// written on, else (staged or unstaged since) wherever the file is now.
 export function jumpToNote(v, note, cx) {
   if (!note || !v.work) return;
-  v.mode = "files";
-  const row = v.work.findFile(note.file, "changes") ?? v.work.findFile(note.file);
+  const row = v.work.findFile(note.file, noteSection(note)) ?? v.work.findFile(note.file);
   if (!row) return v.flash.set(`${note.file} has no changes now`);
-  v.work.selected = row.key;
-  v.reveal(v.work.index(row.key), { center: true });
-  v.show(row, { open: true, cx, line: note.end || note.start || null });
+  v.setMode("files", cx, { row, line: note.end || note.start || null });
 }
 
 // ctx: {t, selected (index), hover (id), focused, onClick(i, event, cx), onHover, onDelete}

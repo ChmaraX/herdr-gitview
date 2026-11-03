@@ -27,7 +27,7 @@ function actions(t, row, what, ctx) {
     .children(opsFor(row.section.id).map((a) => iconButton(t, `${a}-${row.key}`, ACTION[a].icon, ACTION[a].tip + what, (cx) => ctx.onAction(a, row, cx))));
 }
 
-// ctx: {t, selected, hover, focused, tree, onClick(row, event, cx),
+// ctx: {t, selected (the selected row's key), hover, focused, tree, onClick(row, event, cx),
 // onHover(row, hovered, cx), onAction(op, row, cx)}
 export function renderRow(row, ctx) {
   const { t } = ctx;

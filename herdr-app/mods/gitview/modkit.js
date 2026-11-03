@@ -5,11 +5,13 @@
 import { closeOverlay, nextCommand, notify, props, watchFolder } from "herdr";
 import { message } from "./engine.js";
 
-// Loads in flight. `run(cx, work)` counts one; `idle(cx)` resolves
-// when none runs. A load that hasn't finished after LOST_MS is taken as
-// lost (its task never came back) and no longer counts, so it can't hold
-// the commands or the spinner for good; the log names it.
-export const LOST_MS = 15000;
+// Loads in flight. `run(cx, what, work)` counts one; `latest(cx, what,
+// work)` runs one at a time per name, coalescing; `idle(cx)` resolves when
+// none runs. `exec` settles within 30 s, so a load that hasn't finished
+// after LOST_MS is taken as lost (its task never came back) and no longer
+// counts, so it can't hold the commands or the spinner for good; the log
+// names it.
+const LOST_MS = 35000;
 
 export class Loads {
   constructor(onError) {
@@ -17,6 +19,7 @@ export class Loads {
     this.seq = 0;
     this.waiters = [];
     this.onError = onError;
+    this.slots = new Map(); // what → {started, at, next}: latest()'s
   }
 
   live() {
@@ -34,11 +37,8 @@ export class Loads {
     return this.live() > 0;
   }
 
-  get count() {
-    return this.running.size;
-  }
-
-  run(cx, work, what = String(work).replace(/\s+/g, " ").slice(0, 80)) {
+  // `what` names it in the log.
+  run(cx, what, work) {
     const id = ++this.seq;
     this.running.set(id, { what, at: Date.now() });
     cx.spawn(async (cx) => {
@@ -50,6 +50,33 @@ export class Loads {
         this.running.delete(id);
         if (!this.busy()) this.waiters.splice(0).forEach((resolve) => resolve());
         cx.notify();
+      }
+    });
+  }
+
+  // The newest `work` named `what`, one run at a time: asked again while
+  // one runs, it runs once more afterwards (the last ask's work; the ones
+  // between are dropped). `work(cx, current)`: `current()` turns false once
+  // a later run started (after a lost one), so an older reply is ignored,
+  // never written over a newer one.
+  latest(cx, what, work) {
+    let slot = this.slots.get(what);
+    if (!slot) this.slots.set(what, (slot = { started: 0, at: 0, next: null }));
+    if (slot.at && Date.now() - slot.at < LOST_MS) {
+      slot.next = work;
+      return;
+    }
+    const seq = ++slot.started;
+    slot.at = Date.now();
+    slot.next = null;
+    this.run(cx, what, async (cx) => {
+      try {
+        await work(cx, () => slot.started === seq);
+      } finally {
+        if (slot.started === seq) {
+          slot.at = 0;
+          if (slot.next) this.latest(cx, what, slot.next);
+        }
       }
     });
   }

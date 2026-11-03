@@ -24,7 +24,7 @@ function layoutTerminals(node, out = []) {
   return out;
 }
 
-// {root, on, path, line, tab, space, editor, own}
+// {root, on, path, line, tab, space, editor, closeDiff}
 export async function openNvim(o) {
   try {
     const args = ["nvim", "--repo", o.root, "--path", o.path, "--line", String(o.line || 1)];
@@ -34,7 +34,7 @@ export async function openNvim(o) {
     const r = await gv([...args, ...onArgs(o.on)]);
     const pane = diffPane(o.tab);
     if (r.terminal === "herdr-nvim") {
-      if (pane && !o.own) run("pane.close", { pane: pane.pane });
+      if (pane && o.closeDiff) run("pane.close", { pane: pane.pane });
       return "herdr-nvim";
     }
     if (r.terminal) {

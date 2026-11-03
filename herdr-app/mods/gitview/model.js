@@ -82,6 +82,20 @@ export function scopeLabel(entry, where) {
   return entry.cached ? "staged" : "uncommitted";
 }
 
+// One file of a list ({file, section}), as the diff pane needs it.
+export function entryOf({ file, section }) {
+  return {
+    path: file.path,
+    orig: file.orig ?? null,
+    kind: file.kind,
+    letter: file.letter,
+    add: file.add,
+    del: file.del,
+    cached: Boolean(section.cached),
+    section: section.id,
+  };
+}
+
 // What the diff pane shows for one file: everything it needs to load the
 // diff, stage it and send notes about it, without the list.
 // `where`: {root, on, base, commit, short, editor}.

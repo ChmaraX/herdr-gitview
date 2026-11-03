@@ -3,8 +3,13 @@
 // on which machine, and for a commit which one: it was loaded with the
 // status, so an op always goes to the repo the rows came from.
 
-import { fileOrder, listRows, parentDirs, viewOf } from "./model.js";
-import { entryOf } from "./actions.js";
+import { entryOf, fileOrder, listRows, parentDirs, viewOf } from "./model.js";
+
+// Where a row is, as the selection keeps it: {section, path} (a folder's
+// path ends in "/"). Section headers aren't selectable.
+const spotOf = (row) => (row && row.kind !== "header" ? { section: row.section.id, path: row.kind === "file" ? row.file.path : row.path } : null);
+const isAt = (row, spot) =>
+  Boolean(spot) && row.kind !== "header" && row.section.id === spot.section && (row.kind === "file" ? row.file.path : row.path) === spot.path;
 
 export class FileList {
   // status: the engine's `status` (or `{sections}` for a commit);
@@ -12,7 +17,7 @@ export class FileList {
   constructor(status, where) {
     this.status = status;
     this.where = where;
-    this.selected = null;
+    this.selected = null; // {section, path}
     this.collapsed = new Set();
     this.rows = [];
   }
@@ -23,32 +28,67 @@ export class FileList {
   }
 
   // A new status for the same list: the same row, else the same file in its
-  // new section (just staged), else whatever is now where it was.
+  // new section (just staged), else (it went) the file now where it was,
+  // else the last one.
   update(status, where) {
-    const previous = { key: this.selected, index: this.index(this.selected) };
+    const was = this.selected;
+    const index = this.selectedIndex();
     this.status = status;
     this.where = where;
     this.rebuild(this.tree);
-    const rows = this.rows.filter((r) => r.kind !== "header");
-    if (rows.some((r) => r.key === previous.key)) return;
-    const path = previous.key?.slice(previous.key.indexOf(":") + 1);
-    const moved = rows.find((r) => r.kind === "file" && r.file.path === path);
-    const near = this.rows.slice(Math.max(0, previous.index)).find((r) => r.kind !== "header") ?? rows[rows.length - 1];
-    this.selected = (moved ?? (previous.key ? near : null) ?? null)?.key ?? null;
+    if (!was || this.row()) return;
+    const folder = was.path.endsWith("/");
+    const moved = folder ? null : this.rows.find((r) => r.kind === "file" && r.file.path === was.path);
+    const wanted = (r) => (folder ? r.kind !== "header" : r.kind === "file");
+    const near = this.rows.slice(Math.max(0, index)).find(wanted) ?? this.rows.findLast(wanted);
+    this.select(moved ?? near ?? null);
+  }
+
+  select(row) {
+    this.selected = spotOf(row);
+  }
+
+  isSelected(row) {
+    return isAt(row, this.selected);
   }
 
   files() {
     return this.status?.sections.reduce((n, s) => n + s.files.length, 0) ?? 0;
   }
 
-  index(key) {
-    return this.rows.findIndex((r) => r.key === key);
+  index(row) {
+    return row ? this.rows.findIndex((r) => r.key === row.key) : -1;
+  }
+
+  selectedIndex() {
+    return this.rows.findIndex((r) => isAt(r, this.selected));
   }
 
   row() {
-    return this.rows.find((r) => r.key === this.selected) ?? null;
+    return this.rows.find((r) => isAt(r, this.selected)) ?? null;
   }
 
+  // What the diff pane shows for this list: the selected file, else the
+  // first one (null: no files).
+  shownFile() {
+    const row = this.row();
+    return row?.kind === "file" ? row : this.rows.find((r) => r.kind === "file") ?? null;
+  }
+
+  // The selected folder (tree mode) is gone from the rows (flat): the
+  // first file under it in its section.
+  selectIntoFolder() {
+    const s = this.selected;
+    if (!s?.path.endsWith("/") || this.row()) return;
+    this.select(this.rows.find((r) => r.kind === "file" && r.section.id === s.section && r.file.path.startsWith(s.path)) ?? null);
+  }
+
+  // The files a row stands for: a header's or a folder's, as listed.
+  filesOf(row) {
+    if (row.kind === "file") return [row.file.path];
+    const files = row.section.files.map((f) => f.path);
+    return row.kind === "dir" ? files.filter((p) => p.startsWith(row.path)) : files;
+  }
   // The row a script names: a file path, "folder/", "section:<id>", or
   // "in:<section>:<path or folder/>" for the one in that section.
   find(what) {
@@ -80,7 +120,7 @@ export class FileList {
   step(delta) {
     const rows = this.rows.filter((r) => r.kind !== "header");
     if (!rows.length) return null;
-    const at = rows.findIndex((r) => r.key === this.selected);
+    const at = rows.findIndex((r) => isAt(r, this.selected));
     if (at < 0) return rows[delta > 0 ? 0 : rows.length - 1];
     return rows[Math.min(rows.length - 1, Math.max(0, at + delta))];
   }

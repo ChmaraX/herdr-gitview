@@ -18,20 +18,6 @@ export function opsFor(section) {
   return ["stage", "unstage", "discard"].filter((op) => allowed(op, section));
 }
 
-// One file of a list ({file, section}), as the diff pane needs it.
-export function entryOf({ file, section }) {
-  return {
-    path: file.path,
-    orig: file.orig ?? null,
-    kind: file.kind,
-    letter: file.letter,
-    add: file.add,
-    del: file.del,
-    cached: Boolean(section.cached),
-    section: section.id,
-  };
-}
-
 // Asks first (the app's confirm dialog). Its Confirm runs
 // `<mod>.discard:<token>`, and every copy of the mod hears it, so only the
 // copy holding that token acts, once. Returns the pending discard to keep.
@@ -60,7 +46,9 @@ export function takeDiscard(pending, command) {
 export async function sendNotes(key, space) {
   const notes = key ? notesOf(key) : [];
   if (!notes.length) return false;
-  const { message } = await gv(["notes", "--", JSON.stringify(notes.map(({ id, ...note }) => note))]);
+  // The engine takes each note's side (`cached`), not our id or section.
+  const plain = notes.map(({ id, section, ...note }) => ({ ...note, cached: Boolean(note.cached) }));
+  const { message } = await gv(["notes", "--", JSON.stringify(plain)]);
   const height = Math.min(420, 140 + 32 * Math.max(1, agents().length));
   openOverlay({ mod: "gitview-agents", kind: "dialog", modal: true, width: 460, height, props: { message, count: notes.length, space, key, ids: notes.map((n) => n.id) } });
   return true;

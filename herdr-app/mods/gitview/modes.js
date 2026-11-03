@@ -1,13 +1,16 @@
-// The list's views, one entry each: which file list it acts on, its header,
-// body, the commit row under it, its keys and its key hints. The view looks
-// its mode up here instead of asking "which mode?" everywhere.
+// The list's views, one entry each: which file list it acts on, what
+// entering it does, its header, body, the commit row under it, its keys and
+// its key hints. The view looks its mode up here instead of asking "which
+// mode?" everywhere; only the list's setMode() changes the mode, and it
+// runs the entry's `enter(v, cx, how)`.
 //   files: the changed files · commit: one commit's files (from history)
 //   log: the history · notes: the review notes
 
 import { div } from "gpui-kit";
 import { commitBox, filesHeader, subHeader } from "./chrome.js";
 import { renderRow, rowSize } from "./listview.js";
-import { COMMIT_ROW, commitRow, logMove, openCommit, openLog, toggleLogFilter } from "./history.js";
+import { COMMIT_ROW, commitRow, loadLog, logMove, openCommit, openLog, toggleLogFilter } from "./history.js";
+import { treeMode } from "./shared.js";
 import { NOTE_ROW, deleteNote, jumpToNote, noteMove, noteRow } from "./notesview.js";
 
 const down = (v, cx) => v.move(1, cx);
@@ -23,7 +26,7 @@ function filesBody(v, t, focused, list) {
   if (!rows.length) return empty(t, v.error ?? (v.loads.busy() ? "Loading changes…" : list ? "No changes" : "No folder"));
   v.scroll.measure(padded(rows.map(rowSize)));
   const ctx = {
-    t, selected: list.selected, hover: v.hover, focused, tree: list.tree,
+    t, selected: list.row()?.key, hover: v.hover, focused, tree: list.tree,
     onClick: (row, e, cx) => v.clickRow(row, e, cx),
     onHover: (row, h, cx) => v.hoverRow(row.key, h, cx),
     onAction: (op, row, cx) => { v.handle.focus(); v.rowAction(op, row, cx); cx.notify(); },
@@ -34,6 +37,11 @@ function filesBody(v, t, focused, list) {
 export const MODES = {
   files: {
     list: (v) => v.work,
+    // s/u/x, the commit row and following the repo act on it.
+    actsOnWork: true,
+    // `row`: show that one (a note's file, `line`: the note); else the diff
+    // pane goes back from a commit's file to the list's.
+    enter: (v, cx, { row, line } = {}) => (row ? v.select(row, cx, { line }) : v.reshowWork(cx)),
     hints: "j/k · enter nvim · s/u/x stage/unstage/discard · t tree · l log · n notes · p send · c commit · w scope",
     header: (v, t, notes) => filesHeader(t, {
       status: v.work?.status,
@@ -41,7 +49,7 @@ export const MODES = {
       notes: notes.length,
       loading: v.loads.busy(),
       wide: v.width >= 340,
-      tree: v.tree(),
+      tree: treeMode(),
       onNotes: (cx) => { v.setMode("notes", cx); cx.notify(); },
       onTree: (cx) => v.toggleTree(cx),
       onLog: (cx) => { openLog(v, cx); cx.notify(); },
@@ -67,6 +75,14 @@ export const MODES = {
   },
   commit: {
     list: (v) => v.commitFiles,
+    // `list`: the commit's files; the first one shows.
+    enter: (v, cx, { list } = {}) => {
+      if (!list) return;
+      v.commitFiles = list;
+      v.scroll.top = 0;
+      const first = list.shownFile();
+      if (first) v.select(first, cx);
+    },
     hints: "j/k · enter nvim · t tree · esc back",
     header: (v, t) => {
       const c = v.commitFiles;
@@ -83,6 +99,11 @@ export const MODES = {
   },
   log: {
     list: () => null,
+    // `history`: a fresh one (`l`); loaded when it has no commits yet.
+    enter: (v, cx, { history } = {}) => {
+      if (history) v.history = history;
+      if (!v.history.commits.length) loadLog(v, cx);
+    },
     hints: "j/k · enter files · w branch/all · esc back",
     header: (v, t) => subHeader(t, {
       title: "History",
@@ -108,6 +129,7 @@ export const MODES = {
   },
   notes: {
     list: () => null,
+    enter: (v) => { v.noteSel = Math.min(v.noteSel, Math.max(0, v.notes().length - 1)); },
     hints: "j/k · enter go · d delete · p send · esc back",
     header: (v, t, notes) => subHeader(t, {
       title: "Notes",

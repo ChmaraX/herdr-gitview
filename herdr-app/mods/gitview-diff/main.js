@@ -1,6 +1,7 @@
 // gitview's diff pane: a full-height mod pane at the tab's right edge, left
 // of the file list (the Changes panel), or the left half of cmd-g's gitview
-// tab. Props: {tab} (or {space, own} in the gitview tab). It shows what the
+// tab. Props: {tab} (or {space, own} in the gitview tab; placement.js holds
+// what differs). It shows what the
 // list put in shared "gitview.views"[tab] (shared.js): the diff as gitview's
 // TUI draws it, with review notes under their lines.
 //
@@ -13,15 +14,15 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
-import { props, run, settings, spaces, theme, notify } from "herdr";
+import { run, settings, spaces, theme, notify } from "herdr";
 import { gv, message, onArgs } from "./engine.js";
-import { diffArgs, fileOrder, isDark, sameFile, scopeLabel, viewOf } from "./model.js";
-import { allowed, confirmDiscard, entryOf, sendNotes, takeDiscard } from "./actions.js";
+import { diffArgs, isDark, sameFile, viewOf } from "./model.js";
+import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  addNote, cursorIn, diffPane, liveView, notesKey, notesOf, onScreen, ownTab, panelDiffPanes, panelState, pump, removeNotes, setCursor, setDirty, setPanelReopens,
-  setView, takeKeyboard, treeMode, viewIn,
+  addNote, cursorIn, diffPane, liveView, notesKey, notesOf, onScreen, pump, removeNotes, setCursor, setDirty, setView, takeKeyboard, viewIn,
 } from "./shared.js";
 import { Flash, Loads, commandLoop, keyEvent, keyName, watch } from "./modkit.js";
+import { panePlacement } from "./placement.js";
 import { openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
 import { diffHeader, footer } from "./chrome.js";
@@ -30,14 +31,21 @@ import * as diffs from "./diffview.js";
 const EMPTY = { rows: [] };
 const HINTS = "j/k · v or drag select · a note · enter nvim · s/u/x · J/K file · p send · esc";
 
+// Notes are written on staged or unstaged changes, as the TUI's: the side
+// (cached or not) of a view that takes them, null for a commit's or the
+// branch's diff.
+const noteSide = (v) => (!v || v.commit || v.section === "branch" ? null : Boolean(v.cached));
+
 export default class GitDiff extends View {
   init(_props, cx) {
+    this.place = panePlacement();
     this.handle = cx.focus_handle();
     this.scroll = new Scroller("gitview-diff-rows");
     this.composer = TextareaState.new({ placeholder: "Note for the agent", rows: 3 });
     this.composer.on("submit", (_e, cx) => this.saveNote(this.composer.value(), cx));
     this.view = null; // what's shown (a view from the list), null: nothing
-    this.seq = 0;
+    this.seq = 0; // the stored view's seq and showing, as last seen
+    this.showing = 0;
     this.diff = EMPTY;
     this.cursor = 0;
     this.anchor = null;
@@ -55,8 +63,7 @@ export default class GitDiff extends View {
   }
 
   tab() {
-    const p = props() ?? {};
-    return p.tab ?? (p.space ? ownTab(p.space) : null);
+    return this.place.tab();
   }
 
   // The space of this pane's tab.
@@ -69,26 +76,21 @@ export default class GitDiff extends View {
 
   // A new view from the list (or J/K here), or a theme switch: same file
   // keeps the cursor, another starts at its first change (or at the note
-  // the list jumped to).
+  // the list jumped to). The view's `showing` says whether another file was
+  // shown since (the list moved on and back while this pane wasn't drawn):
+  // then this one starts afresh too.
   sync(cx) {
-    if (this.panelGone) {
-      this.panelGone = false;
-      this.panelHidden();
-      return;
-    }
     if (isDark(theme().background) !== this.dark) {
       this.dark = !this.dark;
       this.reload(cx);
     }
     const stored = viewIn(this.tab());
     if ((stored?.seq ?? 0) === this.seq) return;
-    // More than one write since the last look (the pane wasn't drawn while
-    // the list moved on and back): another file was shown in between, so
-    // this one starts afresh too.
-    const skipped = (stored?.seq ?? 0) > this.seq + 1;
+    const fresh = (stored?.showing ?? 0) !== this.showing;
     this.seq = stored?.seq ?? 0;
+    this.showing = stored?.showing ?? 0;
     const view = liveView(stored);
-    const same = !skipped && sameFile(view, this.view);
+    const same = !fresh && sameFile(view, this.view);
     this.view = view;
     if (!same) {
       this.diff = EMPTY;
@@ -100,15 +102,25 @@ export default class GitDiff extends View {
     if (!view) return;
     this.loadDiff(cx, { keep: same && !view.line, line: view.line });
     if (!view.on) watch(this.watcher, view.root, cx, (cx) => { if (onScreen(this.tab())) this.reload(cx); });
+    else this.watcher.root = null; // a local repo's watch ends
   }
 
   reload(cx) {
-    if (this.view && !this.loads.busy()) this.loadDiff(cx, { keep: true });
+    if (this.view) this.loadDiff(cx, { keep: true });
   }
 
-  loadDiff(cx, { keep, line }) {
-    const view = this.view;
-    this.loads.run(cx, async () => {
+  // The shown view's diff, one load at a time: asked again meanwhile (the
+  // repo changed again, another view), it loads once more afterwards, with
+  // the asks merged (`keep`: the cursor stays; else it goes to `line`, or
+  // the first change).
+  loadDiff(cx, { keep, line = null }) {
+    const asked = this.asked;
+    this.asked = asked ? { keep: asked.keep && keep, line: line ?? asked.line } : { keep, line };
+    this.loads.latest(cx, "diff", async () => {
+      const view = this.view;
+      const { keep, line } = this.asked ?? { keep: true, line: null };
+      this.asked = null;
+      if (!view) return;
       let diff;
       try {
         diff = await gv(diffArgs(view, { dark: this.dark, unfold: this.unfold }));
@@ -166,7 +178,7 @@ export default class GitDiff extends View {
     const at = files.findIndex((f) => f.path === v?.path && f.section === v?.section);
     const next = at >= 0 ? files[at + delta] : null;
     if (!next) return this.flash.set(delta > 0 ? "last file" : "first file");
-    setView(this.tab(), { ...v, ...next, scope: scopeLabel(next, v), base: next.section === "branch" ? v.base : null, by: "pane", line: null });
+    setView(this.tab(), { ...viewOf(next, v), files: v.files, by: "pane", line: null });
   }
 
   // ---- actions --------------------------------------------------------------
@@ -175,7 +187,7 @@ export default class GitDiff extends View {
     const v = this.view;
     if (!v) return;
     if (v.kind === "deleted") return this.flash.set(`${v.path} is deleted`);
-    openNvim({ root: v.root, on: v.on, path: v.path, line: this.lineAt(this.cursor), tab: this.tab(), space: this.space(), editor: v.editor, own: Boolean(props()?.own) });
+    openNvim({ root: v.root, on: v.on, path: v.path, line: this.lineAt(this.cursor), tab: this.tab(), space: this.space(), editor: v.editor, closeDiff: this.place.closesForHerdrNvim });
   }
 
   // s / u / x on the shown file (x asks first).
@@ -184,38 +196,20 @@ export default class GitDiff extends View {
     if (!v || v.commit) return;
     if (!allowed(op, v.section)) return this.flash.set(`can't ${op} it: it's ${v.scope}`);
     if (op === "discard") this.pendingDiscard = confirmDiscard("gitview-diff", v.path, { view: v });
-    else this.run(op, v, cx);
+    else this.applyOp(op, v, cx);
   }
 
-  // The op, then the file where it went (staged), or the next file when
-  // it's gone, in the list's order from the new status.
-  run(op, v, cx) {
-    const tab = this.tab();
-    this.loads.run(cx, async () => {
+  // The op, and the repo is marked changed: the list refreshes and shows
+  // here where the file went (staged), or the next file when it's gone.
+  applyOp(op, v, cx) {
+    this.loads.run(cx, op, async () => {
       try {
         await gv([op, "--repo", v.root, ...onArgs(v.on), "--section", v.section, "--", v.path]);
-        setDirty(v.root, v.on);
-        const status = await gv(["status", "--repo", v.root, ...onArgs(v.on)]);
-        const files = fileOrder(status, treeMode()).map(entryOf);
-        const want = op === "stage" ? "staged" : op === "unstage" ? "changes" : null;
-        const found = files.find((f) => f.path === v.path && f.section === want) ?? files.find((f) => f.path === v.path);
-        const at = (v.files ?? []).findIndex((f) => f.path === v.path && f.section === v.section);
-        const next = found ?? files.find((f) => (v.files ?? []).slice(at + 1).some((g) => g.path === f.path)) ?? files[files.length - 1];
-        setView(tab, next ? { ...viewOf(next, v), files, by: "pane", line: null } : null);
       } catch (e) {
         notify({ title: "gitview", body: message(e), level: "error" });
       }
+      setDirty(v.root, v.on);
     });
-  }
-
-  // The Changes panel that opened this pane was hidden (cmd-shift-g, the
-  // Changes button, or the Files button): the pane goes with it, and the
-  // panel opens one again when it shows (the TUI's toggle closed both).
-  panelHidden() {
-    if (props()?.own || this.closing) return;
-    this.closing = true;
-    for (const pane of panelDiffPanes()) run("pane.close", { pane: pane.pane }); // every tab's
-    if (!panelState()?.shown) setPanelReopens(true);
   }
 
   // (Not `close`: the app calls that one when the pane goes.)
@@ -243,7 +237,7 @@ export default class GitDiff extends View {
     const [a, b] = this.selection() ?? [this.cursor, this.cursor];
     const range = diffs.noteRange(this.diff, a, b);
     if (!range) return this.flash.set("select some code to note (v or drag)");
-    this.pendingNote = { file: v.path, ...range, after: b };
+    this.pendingNote = { file: v.path, section: v.section, cached: noteSide(v), ...range, after: b };
     this.composer.set_value("");
     this.composer.focus();
     this.pendingReveal = { row: b, margin: diffs.COMPOSER + 8, after: true };
@@ -252,7 +246,7 @@ export default class GitDiff extends View {
   saveNote(value, cx) {
     const text = String(value ?? "").trim();
     const p = this.pendingNote;
-    if (p && text) addNote(this.notesKey(), { file: p.file, start: p.start, end: p.end, snippet: p.snippet, text });
+    if (p && text) addNote(this.notesKey(), { file: p.file, section: p.section, cached: p.cached, start: p.start, end: p.end, snippet: p.snippet, text });
     this.pendingNote = null;
     this.anchor = null;
     this.handle.focus();
@@ -262,7 +256,7 @@ export default class GitDiff extends View {
   send(cx) {
     const key = this.notesKey();
     const space = this.space();
-    this.loads.run(cx, async () => {
+    this.loads.run(cx, "send", async () => {
       if (!(await sendNotes(key, space))) this.flash.set("no notes yet: select lines (v or drag), then a");
     });
   }
@@ -310,7 +304,7 @@ export default class GitDiff extends View {
       const p = takeDiscard(this.pendingDiscard, command);
       if (!p) return;
       this.pendingDiscard = null;
-      if (sameFile(p.view, this.view)) this.run("discard", p.view, cx);
+      if (sameFile(p.view, this.view)) this.applyOp("discard", p.view, cx);
     } else if (what === "key") this.key(keyEvent(rest.join(":")), cx);
     else if (what === "drag") {
       // A mouse drag over new-side lines <a> to <b>, for scripts.
@@ -362,17 +356,12 @@ export default class GitDiff extends View {
   render(cx) {
     const t = theme();
     if ((viewIn(this.tab())?.seq ?? 0) !== this.seq || isDark(t.background) !== this.dark) this.kick();
-    if (!props()?.own) {
-      const shown = Boolean(panelState()?.shown);
-      if (this.panelShown && !shown) {
-        this.panelGone = true;
-        this.kick();
-      }
-      this.panelShown = shown;
-    }
     const focused = this.handle.is_focused();
     const key = this.notesKey();
-    const notes = key ? notesOf(key).filter((n) => n.file === this.view.path) : [];
+    // A note's card shows on the side it was written on (notes from before
+    // `cached` are the unstaged side's).
+    const side = noteSide(this.view);
+    const notes = key && side !== null ? notesOf(key).filter((n) => n.file === this.view.path && Boolean(n.cached) === side) : [];
     this.display = diffs.displayRows(this.diff, notes, this.pendingNote ? this.pendingNote.after : -1);
     this.scroll.measure(this.display.map(diffs.rowSize));
     if (this.pendingReveal) {
@@ -427,7 +416,7 @@ export default class GitDiff extends View {
         cx.stop_propagation();
         cx.notify();
       })
-      .child(diffHeader(t, this.view, { loading: this.loads.busy(), onClose: props()?.own ? null : () => this.closePane() }))
+      .child(diffHeader(t, this.view, { loading: this.loads.busy(), onClose: this.place.closeButton ? () => this.closePane() : null }))
       .child(body)
       .child(footer(t, this.flash.text, this.pendingNote ? "enter saves the note · esc cancels" : HINTS));
   }
