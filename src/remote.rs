@@ -258,19 +258,9 @@ impl Machine {
             Machine::Local => paths.iter().map(|p| measure_local(&dir.join(p))).collect(),
             Machine::On(m) => {
                 let mut facts = Vec::with_capacity(paths.len());
-                for batch in paths.chunks(MEASURE_BATCH) {
-                    let names: Vec<String> = batch
-                        .iter()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .collect();
-                    // A newline in a name would split the answers' lines.
-                    let asked: Vec<&str> = names
-                        .iter()
-                        .map(String::as_str)
-                        .filter(|n| !n.contains('\n'))
-                        .collect();
+                for (names, asked) in batches(paths) {
                     let mut argv = vec!["sh", "-c", MEASURE, "sh"];
-                    argv.extend(&asked);
+                    argv.extend(asked.iter().map(String::as_str));
                     let out = if asked.is_empty() {
                         String::new()
                     } else {
@@ -304,18 +294,9 @@ impl Machine {
     /// value never given before, so it never looks unchanged.
     pub fn fingerprints(&self, dir: &Path, paths: &[&Path]) -> Vec<String> {
         let mut out = Vec::with_capacity(paths.len());
-        for batch in paths.chunks(MEASURE_BATCH) {
-            let names: Vec<String> = batch
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect();
-            let asked: Vec<&str> = names
-                .iter()
-                .map(String::as_str)
-                .filter(|n| !n.contains('\n'))
-                .collect();
+        for (names, asked) in batches(paths) {
             let mut argv = vec!["sh", "-c", FINGERPRINT, "sh"];
-            argv.extend(&asked);
+            argv.extend(asked.iter().map(String::as_str));
             let answer = if asked.is_empty() {
                 None
             } else {
@@ -338,6 +319,24 @@ impl Machine {
         }
         out
     }
+}
+
+/// `paths` as names, [`MEASURE_BATCH`] at a time, each batch with the names
+/// a script there may be given: not one with a newline (it would split the
+/// answers' lines).
+fn batches<'a>(paths: &'a [&Path]) -> impl Iterator<Item = (Vec<String>, Vec<String>)> + 'a {
+    paths.chunks(MEASURE_BATCH).map(|batch| {
+        let names: Vec<String> = batch
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let asked = names
+            .iter()
+            .filter(|n| !n.contains('\n'))
+            .cloned()
+            .collect();
+        (names, asked)
+    })
 }
 
 /// [`FINGERPRINT`]'s answer for `n` names: each one's id, or `-`. `None`
