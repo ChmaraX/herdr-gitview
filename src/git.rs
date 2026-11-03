@@ -69,6 +69,10 @@ pub struct AppStatus {
     /// detached); in worktree scope only (`None` in branch scope).
     pub head: Option<String>,
     pub branch: Option<String>,
+    /// git status ran with `--ignore-submodules=dirty`: asked to, or it
+    /// failed without it (a submodule path that's a symlink, as some
+    /// worktree setups have). Worktree scope only.
+    pub skipped_submodules: bool,
     pub entries: Vec<FileEntry>,
     /// Per path: changes when what the index or HEAD say about it changes,
     /// or the worktree file does.
@@ -485,7 +489,15 @@ impl Repo {
     /// (`--ignored=matching`: an ignored folder as one `folder/` record; it
     /// needs `show_untracked`) and the branch headers (`--branch`: HEAD's
     /// commit and branch, so the app asks no one else).
-    fn status_raw(&self, show_untracked: bool, app: bool) -> Result<Vec<u8>> {
+    ///
+    /// `skip_submodules`: start with `--ignore-submodules=dirty` (the caller
+    /// knows this repo needs it). Also says whether that flag was used.
+    fn status_raw_with(
+        &self,
+        show_untracked: bool,
+        app: bool,
+        skip_submodules: bool,
+    ) -> Result<(Vec<u8>, bool)> {
         let untracked = if show_untracked {
             "--untracked-files=all"
         } else {
@@ -498,19 +510,39 @@ impl Repo {
                 args.push("--ignored=matching");
             }
         }
+        let skip = [&args[..], &["--ignore-submodules=dirty"][..]].concat();
+        if skip_submodules {
+            let out = self.git_lenient(&skip)?;
+            if out.status.success() {
+                return Ok((out.stdout, true));
+            }
+            bail!(
+                "git status failed: {}",
+                first_line(&String::from_utf8_lossy(&out.stderr))
+            );
+        }
         let out = self.git_lenient(&args)?;
         if out.status.success() {
-            return Ok(out.stdout);
+            return Ok((out.stdout, false));
         }
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let retry = self.git_lenient(&[&args[..], &["--ignore-submodules=dirty"][..]].concat())?;
+        let retry = self.git_lenient(&skip)?;
         if retry.status.success() {
-            crate::logx::log(format!(
-                "git status failed ({stderr}); retried ignoring submodule contents"
-            ));
-            return Ok(retry.stdout);
+            // The app's status says so in its reply instead (one line per
+            // status would fill the log in such a repo).
+            if !crate::logx::is_app() {
+                crate::logx::log(format!(
+                    "git status failed ({stderr}); retried ignoring submodule contents"
+                ));
+            }
+            return Ok((retry.stdout, true));
         }
         bail!("git status failed: {}", first_line(&stderr));
+    }
+
+    /// [`Repo::status_raw_with`] the plain way: its bytes.
+    fn status_raw(&self, show_untracked: bool, app: bool) -> Result<Vec<u8>> {
+        Ok(self.status_raw_with(show_untracked, app, false)?.0)
     }
 
     pub fn worktree_status(&self, show_untracked: bool) -> Result<Vec<FileEntry>> {
@@ -552,11 +584,17 @@ impl Repo {
 
     /// [`Repo::worktree_status`] with what the app's list needs on top: a
     /// rev per file and the ignored folders (see [`AppStatus`]).
-    pub fn app_worktree_status(&self, show_untracked: bool) -> Result<AppStatus> {
+    /// `skip_submodules`: what the last reply's
+    /// [`AppStatus::skipped_submodules`] said for this repo.
+    pub fn app_worktree_status(
+        &self,
+        show_untracked: bool,
+        skip_submodules: bool,
+    ) -> Result<AppStatus> {
         let numstats = self.start_numstats();
-        let raw = self.status_raw(show_untracked, true);
+        let raw = self.status_raw_with(show_untracked, true, skip_submodules);
         let numstats = finish_numstats(numstats);
-        let (raw, numstats) = (raw?, numstats?);
+        let ((raw, skipped_submodules), numstats) = (raw?, numstats?);
         let entries = self.worktree_entries(&raw, &numstats)?;
         let records = porcelain_records(&raw);
         let (head, branch) = branch_headers(&raw);
@@ -593,6 +631,7 @@ impl Repo {
         Ok(AppStatus {
             head,
             branch,
+            skipped_submodules,
             entries,
             revs,
             ignored_dirs: cap(ignored_dirs),
@@ -623,6 +662,7 @@ impl Repo {
         Ok(AppStatus {
             head: None,
             branch: None,
+            skipped_submodules: false,
             entries,
             revs,
             ignored_dirs: cap(self.ignored_dirs()?),

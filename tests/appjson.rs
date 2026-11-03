@@ -387,7 +387,8 @@ fn status_carries_only_what_the_mods_read_and_takes_a_base_from_the_caller() {
             "scope",
             "sections",
             "editor",
-            "ignored_dirs"
+            "ignored_dirs",
+            "ignore_submodules"
         ]
     );
     let file = &status["sections"][0]["files"][0];

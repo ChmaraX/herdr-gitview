@@ -1,6 +1,11 @@
 fn main() -> anyhow::Result<()> {
     herdr_gitview::logx::init_panic_hook();
     let mode = std::env::args().nth(1);
+    let op = std::env::args().nth(2);
+    herdr_gitview::logx::init(&match (mode.as_deref(), op.as_deref()) {
+        (Some("json"), Some(op)) => format!("json {op}"),
+        (mode, _) => mode.unwrap_or("?").to_string(),
+    });
     match mode.as_deref() {
         Some("list") => herdr_gitview::list::run(),
         Some("preview") => herdr_gitview::preview::run(),

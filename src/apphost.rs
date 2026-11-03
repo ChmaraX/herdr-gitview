@@ -65,10 +65,10 @@ impl App {
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
         log(format!(
             "herdr-app {} -> {} | {}{}",
-            args.join(" "),
+            crate::logx::clip(&args.join(" ")),
             out.status,
-            stdout.trim(),
-            String::from_utf8_lossy(&out.stderr).trim()
+            crate::logx::clip(&stdout),
+            crate::logx::clip(&String::from_utf8_lossy(&out.stderr))
         ));
         let reply: Value = serde_json::from_str(stdout.trim()).unwrap_or(Value::Null);
         if let Some(err) = reply.get("error").and_then(Value::as_str) {
@@ -139,10 +139,11 @@ fn hc_json(args: &[&str]) -> Result<Value> {
     )?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     log(format!(
-        "hc {args:?} -> {} | {}{}",
+        "hc {} -> {} | {}{}",
+        crate::logx::clip(&format!("{args:?}")),
         out.status,
-        stdout.trim(),
-        String::from_utf8_lossy(&out.stderr).trim()
+        crate::logx::clip(&stdout),
+        crate::logx::clip(&String::from_utf8_lossy(&out.stderr))
     ));
     if !out.status.success() {
         bail!(

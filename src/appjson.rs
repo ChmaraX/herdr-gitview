@@ -42,8 +42,9 @@
 //! Ops (exact usage):
 //!
 //! - `status --repo DIR [--scope worktree|branch] [--base LABEL --merge-base
-//!   SHA --head SHA] [--on M]` → `{root, branch, head, scope, sections:
-//!   [{id, title, cached, files: [FILE]}], editor, ignored_dirs}`; `head` is
+//!   SHA --head SHA] [--ignore-submodules] [--on M]` → `{root, branch, head,
+//!   scope, sections: [{id, title, cached, files: [FILE]}], editor,
+//!   ignored_dirs, ignore_submodules}`; `head` is
 //!   HEAD's sha (`null` before the first commit); branch scope adds `base:
 //!   {label, merge_base}` and has one section (`id: "branch"`). Worktree
 //!   sections: `conflicts`, `staged`, `changes` (empty ones left out). In
@@ -67,6 +68,12 @@
 //!     most 200. They come from the status call itself
 //!     (`--ignored=matching`); with `show_untracked` off and in branch
 //!     scope, from one `git ls-files -o -i --exclude-standard --directory`.
+//!   - `ignore_submodules`: git status ran with `--ignore-submodules=dirty`
+//!     (a submodule's own uncommitted changes don't show; its commit does).
+//!     It does when plain status fails, as it does for a submodule path
+//!     that's a symlink (some worktree setups): one failed call first,
+//!     logged nowhere. Pass `--ignore-submodules` on the next status of
+//!     that repo to skip it. Always `false` in branch scope.
 //! - `diff --repo DIR --path P --kind K [--orig P] [--cached]
 //!   [--merge-base SHA --base LABEL] [--commit SHA] [--theme dark|light]
 //!   [--unfold] [--unless HASH] [--on M]` → `{rows: [{k, o, n, m, bg, s}],
@@ -279,7 +286,7 @@ struct Args {
 
 impl Args {
     fn parse(args: &[String]) -> Args {
-        const FLAGS: [&str; 4] = ["cached", "root", "submit", "unfold"];
+        const FLAGS: [&str; 5] = ["cached", "ignore-submodules", "root", "submit", "unfold"];
         let mut pairs = Vec::new();
         let mut positional = Vec::new();
         let mut it = args.iter();
@@ -435,6 +442,8 @@ struct StatusOut<'a> {
     sections: Vec<SectionOut<'a>>,
     editor: &'a [String],
     ignored_dirs: &'a [PathBuf],
+    /// Pass `--ignore-submodules` on the next status of this repo.
+    ignore_submodules: bool,
 }
 
 #[derive(Serialize)]
@@ -523,9 +532,10 @@ fn status(a: &Args) -> Result<Value> {
             sections: vec![SectionOut::of(Section::Flat, "", &st)],
             editor: &cfg.editor,
             ignored_dirs: &st.ignored_dirs,
+            ignore_submodules: false,
         });
     }
-    let st = repo.app_worktree_status(cfg.show_untracked)?;
+    let st = repo.app_worktree_status(cfg.show_untracked, a.flag("ignore-submodules"))?;
     let sections = [
         (Section::Conflicts, "merge conflicts"),
         (Section::Staged, "staged changes"),
@@ -544,6 +554,7 @@ fn status(a: &Args) -> Result<Value> {
         sections,
         editor: &cfg.editor,
         ignored_dirs: &st.ignored_dirs,
+        ignore_submodules: st.skipped_submodules,
     })
 }
 

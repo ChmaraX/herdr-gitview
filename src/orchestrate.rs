@@ -907,24 +907,6 @@ fn pane_ids() -> Result<Vec<String>> {
     Ok(ids)
 }
 
-/// Cap on logged command output. `pane list` replies alone run many KB and
-/// dwarf everything else `herdr_json` ever logs — keep the args + exit
-/// status in full, but cut the body down to something a human can skim.
-const LOG_BODY_LIMIT: usize = 300;
-
-/// Truncate `s` to at most `LOG_BODY_LIMIT` bytes for logging, cutting on a
-/// char boundary and noting how much was dropped.
-fn truncate_for_log(s: &str) -> String {
-    if s.len() <= LOG_BODY_LIMIT {
-        return s.to_string();
-    }
-    let mut end = LOG_BODY_LIMIT;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…(+{} bytes)", &s[..end], s.len() - end)
-}
-
 /// Run a herdr CLI command and parse its JSON-envelope reply
 /// (`{"id":"cli:…","result":{…}}`). Logs every invocation.
 fn herdr_json(args: &[&str]) -> Result<Value> {
@@ -938,8 +920,8 @@ fn herdr_json(args: &[&str]) -> Result<Value> {
     log(format!(
         "herdr {args:?} -> {} | out: {} | err: {}",
         out.status,
-        truncate_for_log(stdout.trim()),
-        truncate_for_log(stderr.trim())
+        crate::logx::clip(&stdout),
+        crate::logx::clip(&stderr)
     ));
     if !out.status.success() {
         bail!("herdr {args:?} failed: {}", stderr.trim());
@@ -1201,23 +1183,6 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         drop(listener);
         let _ = std::fs::remove_file(&sock);
-    }
-
-    #[test]
-    fn truncate_for_log_leaves_short_strings_untouched() {
-        assert_eq!(truncate_for_log("ok"), "ok");
-    }
-
-    #[test]
-    fn truncate_for_log_cuts_on_a_char_boundary() {
-        // Pad the multibyte character right up against the limit so a naive
-        // byte-index cut would land mid-character and panic.
-        let padding = "a".repeat(LOG_BODY_LIMIT - 1);
-        let s = format!("{padding}éééééééééé"); // multibyte chars straddling the cut
-        let out = truncate_for_log(&s);
-        assert!(out.starts_with(&padding));
-        assert!(out.contains("…(+"));
-        assert!(out.ends_with("bytes)"));
     }
 
     /// Backdate `path` past the sweep's grace period.

@@ -8,7 +8,11 @@
 //! - an override that breaks the op (the reply no longer what git says);
 //! - the repo's top level looked up again for an op on it (`.git` is
 //!   there), or taken as given for a folder inside it (no `.git`: the
-//!   paths would be read from the wrong folder).
+//!   paths would be read from the wrong folder);
+//! - in a repo whose submodule path is a symlink (git status fails unless
+//!   it ignores submodules): the reply not saying so, the failing call paid
+//!   again when the caller passes the hint back, or a log line per status;
+//!   a plain repo said to need it.
 
 mod common;
 
@@ -119,4 +123,59 @@ fn an_op_on_the_top_level_doesnt_look_it_up_again() {
     let (inside, calls) = diff(&d.join("sub"));
     assert!(calls.contains("rev-parse --show-toplevel"), "{calls}");
     assert_eq!(inside, at_root);
+}
+
+#[test]
+fn a_status_that_needs_submodules_ignored_says_so_and_takes_the_hint() {
+    let repo = fixture("git-submodule-hint");
+    let d = &repo.dir;
+    let state = d.join(".git/state");
+    let (wrapper, log) = logging_git(d);
+    let status = |extra: &[&str]| {
+        let _ = std::fs::remove_file(&log);
+        let out = common::gitview()
+            .args(["json", "status", "--repo"])
+            .arg(d)
+            .args(extra)
+            .env("GITVIEW_GIT", &wrapper)
+            .env("GITVIEW_CONFIG_DIR", d.join(".git/no-config"))
+            .env("HERDR_PLUGIN_STATE_DIR", &state)
+            .output()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(out.status.success(), "{v}");
+        let statuses = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .filter(|l| l.contains("status --porcelain"))
+            .count();
+        (v, statuses)
+    };
+    let (plain, n) = status(&[]);
+    assert_eq!((plain["ignore_submodules"].as_bool(), n), (Some(false), 1));
+
+    // `.source` recorded as a submodule, a symlink on disk.
+    let head = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(d)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let info = format!("160000,{},.source", head.trim());
+    common::git(d, &["update-index", "--add", "--cacheinfo", &info]);
+    std::os::unix::fs::symlink("/tmp/nowhere-in-particular", d.join(".source")).unwrap();
+    write(d, "base.txt", "one\nchanged\n");
+    let (first, n) = status(&[]);
+    assert_eq!(first["ignore_submodules"], true, "{first}");
+    assert_eq!(n, 2, "the failing call, then the one that works");
+    let (hinted, n) = status(&["--ignore-submodules"]);
+    assert_eq!(n, 1, "the hint: straight to the call that works");
+    assert_eq!(hinted["ignore_submodules"], true);
+    assert_eq!(hinted["sections"], first["sections"]);
+    let logged = std::fs::read_to_string(state.join("debug.log")).unwrap_or_default();
+    assert!(!logged.contains("retried"), "{logged}");
 }
