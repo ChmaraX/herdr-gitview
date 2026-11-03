@@ -356,6 +356,41 @@ expect 'nvim_buf $NVIM | grep -q "src/app/b.rs$"' "a double-click on a file open
 hc keys "$NVIM" esc shift+z shift+q >/dev/null
 expect '[ -z "$(terms | awk '"'"'$2=="nvim"'"'"')" ]' "ZQ closes nvim and its pane; the diff is back"
 
+step "the editor is part of gitview: hiding the panel quits a clean nvim; unsaved changes ask first"
+GVCONF="$XDG_CONFIG_HOME/herdr/plugins/config/chmarax.gitview"
+mkdir -p "$GVCONF" && printf 'editor = ["nvim"]\n' >"$GVCONF/config.toml"
+ed_sock() { shared "s.get('gitview.editors',{}).get('$TAB',{}).get('sock') or ''"; }
+ed_nv() { nvim --headless --server "$(ed_sock)" "$@" 2>/dev/null; }
+nvim_up() { [ -n "$(terms | awk '$2=="nvim"')" ]; }
+editor_open() { # Enter in the diff on src/main.rs: nvim, which gitview keeps with the tab
+  do_ gitview.click:src/main.rs
+  expect 'pane_on $TAB src/main.rs' "src/main.rs in the diff pane"
+  do_ gitview-diff.key:enter
+  expect 'nvim_up && [ -n "$(ed_sock)" ] && [ "$(ed_nv --remote-expr 1)" = 1 ]' "enter: nvim, and gitview can ask it (its socket answers)" 15
+}
+editor_open
+do_ mod.open --name gitview-sidebar # cmd-shift-g: hide
+expect '[ "$(panel_state)" = "hidden changes" ] && ! nvim_up' "hiding the panel quits the clean nvim with it" 15
+do_ mod.open --name gitview-sidebar
+expect 'pane_on $TAB src/main.rs' "shown again: the diff of src/main.rs" 15
+editor_open
+ed_nv --remote-send '<esc>ggOgitview-unsaved<esc>' >/dev/null
+expect '[ "$(ed_nv --remote-expr "&modified")" = 1 ]' "an unsaved change in nvim"
+do_ mod.open --name gitview-sidebar
+expect 'overlay_open gitview-ask' "hiding the panel asks first (Save, Discard, Cancel)"
+shot 13b-unsaved-ask 0.5
+do_ gitview-ask.choose:Cancel
+expect '[ "$(panel_state)" = "open changes" ] && nvim_up && [ "$(ed_nv --remote-expr "&modified")" = 1 ]' "Cancel: the panel is back and nvim stays, with its change" 15
+expect 'pane_on $TAB src/main.rs' "and the diff with it" 15
+do_ mod.open --name gitview-sidebar
+expect 'overlay_open gitview-ask' "hiding again asks again"
+do_ gitview-ask.choose:Discard
+expect '! nvim_up' "Discard: nvim quits without saving" 15
+git -C "$S" diff -- src/main.rs | grep -q gitview-unsaved && fail "the discarded change was saved" || ok "and the file has no trace of it"
+do_ mod.open --name gitview-sidebar
+expect 'pane_on $TAB src/main.rs' "shown again: the diff" 15
+rm -f "$GVCONF/config.toml"
+
 step "enter → herdr-nvim (its CLI, as a stand-in): it takes the diff pane's place"
 STAND="$HERDR_APP_HOME/mods/herdr-nvim"
 mkdir -p "$STAND/bin" && echo '{ "place": "none" }' >"$STAND/mod.json"

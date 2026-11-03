@@ -148,17 +148,41 @@ expect '[ "$(nv --remote-expr "&modified")" = 0 ]' "(the edit undone, for :q)"
 echo "then: panel $(panel_state)" | tee -a "$LOG"
 shot coexist-03-click-again 2
 
-step "quitting nvim (ZQ, as :q) brings the diff back on the same file, with the keyboard"
+# The list holds the keys with the app's focus (its trace: focused, and
+# the app's focus came with it).
+list_has_keys() {
+  grep -a 'GVTRACE.*"mod":"list"' "$BASE/app.log" | grep -F "\"tab\":\"$TAB\"" | tail -1 | sed 's/.*GVTRACE //' | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("focused") and d.get("viaApp") else 1)'
+}
+
+step "ZZ in nvim brings the diff back on the same file, the keys on the list (v1)"
 do_ gitview-diff.key:enter
 expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: the file in nvim again, in the diff's place" 30
 NV2=$(tab_nvim)
 sleep 1
-# Quit nvim in its pane, as :q does (hc keys can't type a colon: shift+; is ;),
-# with ZQ, which quits the same way when nothing is unsaved.
-hc keys "$NV2" esc shift+z shift+q >>"$LOG" 2>&1
+# Quit nvim in its pane with ZZ (save if changed, quit; hc keys can't type
+# a colon for :q, shift+; is ;).
+hc keys "$NV2" esc shift+z shift+z >>"$LOG" 2>&1
 expect '[ -z "$(tab_nvim)" ]' "quitting nvim closes its pane" 15
-expect 'diff_has_keys && [ "$(view_of $TAB path)" = src/main.rs ]' "the diff pane is back on src/main.rs within 2 s, with the keyboard" 2
+expect 'mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = src/main.rs ]' "the diff pane is back on src/main.rs within 2 s" 2
+expect list_has_keys "with the keys on the list"
+expect focus_check "and one focus shows"
 shot coexist-03b-q-back 1.5
+
+step "cmd-shift-g with the file in nvim closes the whole unit, nvim too (its daemon keeps the edit); again: the diff, the keys on the list"
+do_ gitview-diff.key:enter
+expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: nvim, in the diff's place" 30
+expect '[ "$(nv --remote-expr 1)" = 1 ]' "its daemon answers on the tab's socket" 15
+nv --remote-send '<esc>ggOgitview-unsaved-2<esc>'
+expect '[ "$(nv --remote-expr "&modified")" = 1 ]' "an unsaved edit in nvim"
+do_ mod.open --name gitview-sidebar
+expect '[ "$(panel_state)" = "hidden changes" ] && [ -z "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "cmd-shift-g: the panel, the diff pane and nvim's pane all go" 15
+[ "$(nv --remote-expr 'getline(1)')" = gitview-unsaved-2 ] && [ "$(nv --remote-expr '&modified')" = 1 ] \
+  && ok "nvim's daemon still holds the buffer and its unsaved edit" || fail "the daemon lost the edit: $(nv --remote-expr 'getline(1)')"
+nv --remote-send '<esc>u' # undone, for what follows
+do_ mod.open --name gitview-sidebar
+expect '[ "$(panel_state)" = "open changes" ] && mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = src/main.rs ]' "cmd-shift-g again: the diff of src/main.rs, not nvim" 15
+[ -z "$(tab_nvim)" ] && ok "(nvim's pane stays closed)" || fail "nvim's pane came back"
+expect list_has_keys "the keys on the list"
 
 step "leaving the tab before :q: the diff doesn't come back"
 do_ gitview-diff.key:enter

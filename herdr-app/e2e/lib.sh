@@ -113,7 +113,50 @@ trap 'exit 130' INT TERM
 
 # --- helpers ---------------------------------------------------------------------
 PASSES=0 SKIPS=0
-step() { printf '\n== %s\n' "$*" | tee -a "$LOG"; }
+step() {
+  # After every step: one focus on screen (focus_check).
+  if [ -n "${APP_PID:-}" ] && [ "${GITVIEW_DEBUG:-1}" = 1 ] && grep -aq GVTRACE "$BASE/app.log" 2>/dev/null; then
+    until_ focus_check 3 || fail "more than one focus shows: $(focus_check)"
+  fi
+  printf '\n== %s\n' "$*" | tee -a "$LOG"
+}
+# At most one thing shows focus in the shown tab: the app's focus ring (on
+# a terminal, nvim or the diff pane) or the gitview list's own frame. From
+# the mods' trace (their last lines for that tab) and `herdr-app status`:
+# - the list and the diff pane can't both hold the keys;
+# - the list draws itself focused only when the app's focus came with the
+#   keys (pane.go: the ring left the pane), so no pane's ring shows too;
+# - the diff pane holds the keys only with the app's ring on it.
+# Prints what's wrong; exits 1 then.
+focus_check() {
+  "$APP" status 2>/dev/null | python3 -c '
+import json, sys
+st = json.load(sys.stdin)
+tab = st.get("tab")
+last = {}
+for l in open(sys.argv[1], errors="ignore"):
+    i = l.find("GVTRACE ")
+    if i < 0:
+        continue
+    try:
+        d = json.loads(l[i + 8:])
+    except ValueError:
+        continue
+    last[(d["mod"], d.get("tab"))] = d
+lst = last.get(("list", tab))
+pane = last.get(("pane", tab))
+lf = bool(lst and lst.get("focused"))
+pf = bool(pane and pane.get("focused"))
+bad = []
+if lf and pf:
+    bad.append("the list and the diff pane both hold the keys")
+if lf and not lst.get("viaApp"):
+    bad.append("the list holds the keys but the app focus ring is on pane %s" % st.get("focused_pane"))
+if pf and not pane.get("ring"):
+    bad.append("the diff pane holds the keys but the app focus ring is on pane %s" % st.get("focused_pane"))
+print("; ".join(bad))
+sys.exit(1 if bad else 0)' "$BASE/app.log"
+}
 ok() { PASSES=$((PASSES + 1)); printf 'PASS %s\n' "$*" | tee -a "$LOG"; }
 skip() { SKIPS=$((SKIPS + 1)); printf 'SKIP %s\n' "$*" | tee -a "$LOG"; }
 fail() {
@@ -128,7 +171,7 @@ fail() {
   [ -z "${E2E_KEEP:-}" ] || { echo "kept: source $BASE/env.sh" | tee -a "$LOG"; trap - EXIT; }
   exit 1
 }
-passed() { if [ "$SKIPS" -gt 0 ]; then step "all passed: $PASSES checks, $SKIPS skipped"; else step "all passed: $PASSES checks"; fi; }
+passed() { step "focus"; if [ "$SKIPS" -gt 0 ]; then step "all passed: $PASSES checks, $SKIPS skipped"; else step "all passed: $PASSES checks"; fi; }
 do_() { "$APP" do "$@" >>"$LOG" 2>&1 || fail "herdr-app do $*"; }
 # Poll a condition (a shell snippet) for up to $2 seconds (default 10).
 until_() {
