@@ -41,7 +41,7 @@ export default class GitList extends View {
     this.mode = "files";
     this.scope = "worktree";
     this.work = null; // FileList: the changed files
-    this.commit = null; // FileList: a commit's files (history)
+    this.commitFiles = null; // FileList: a commit's files (history)
     this.history = new History(false);
     this.noteSel = 0;
     this.seen = { view: 0, dirty: dirty()?.at ?? 0 };
@@ -134,7 +134,7 @@ export default class GitList extends View {
           this.work = new FileList(status, where);
           this.work.rebuild(this.tree());
           if (this.mode !== "files") this.mode = "files";
-          this.commit = null;
+          this.commitFiles = null;
         }
         this.error = null;
         this.loadedKey = ctx.key;
@@ -242,7 +242,7 @@ export default class GitList extends View {
 
   toggleTree(cx) {
     setTreeMode(!this.tree());
-    for (const list of [this.work, this.commit].filter(Boolean)) {
+    for (const list of [this.work, this.commitFiles].filter(Boolean)) {
       list.collapsed = new Set();
       list.rebuild(this.tree());
       if (!list.row() && list.selected?.startsWith("d:")) {

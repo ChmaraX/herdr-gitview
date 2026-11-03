@@ -66,14 +66,14 @@ export const MODES = {
     },
   },
   commit: {
-    list: (v) => v.commit,
+    list: (v) => v.commitFiles,
     hints: "j/k · enter nvim · t tree · esc back",
     header: (v, t) => {
-      const c = v.commit;
+      const c = v.commitFiles;
       const n = c?.files() ?? 0;
       return subHeader(t, { title: c?.where.short ?? "", detail: c?.where.subject, pill: `${n} file${n === 1 ? "" : "s"}`, onBack: (cx) => { v.setMode("log", cx); cx.notify(); } });
     },
-    body: (v, t, focused) => filesBody(v, t, focused, v.commit),
+    body: (v, t, focused) => filesBody(v, t, focused, v.commitFiles),
     keys: {
       j: down, down, k: up, up,
       enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx),

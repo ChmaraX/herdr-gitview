@@ -80,7 +80,7 @@ export function openCommit(v, c, cx) {
       { ...where, base: null, commit: c.sha, short: c.short, subject: c.subject });
     list.rebuild(v.tree());
     list.selected = list.rows.find((x) => x.kind === "file")?.key ?? null;
-    v.commit = list;
+    v.commitFiles = list;
     v.mode = "commit";
     v.scroll.top = 0;
     const first = list.row();

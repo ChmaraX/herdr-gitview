@@ -49,8 +49,14 @@ export class FileList {
     return this.rows.find((r) => r.key === this.selected) ?? null;
   }
 
-  // The row a script names: a file path, "folder/", "section:<id>".
+  // The row a script names: a file path, "folder/", "section:<id>", or
+  // "in:<section>:<path or folder/>" for the one in that section.
   find(what) {
+    if (what.startsWith("in:")) {
+      const [, id, ...rest] = what.split(":");
+      const path = rest.join(":");
+      return this.rows.find((r) => r.section.id === id && (r.kind === "dir" ? r.path === path : r.kind === "file" && r.file.path === path)) ?? null;
+    }
     if (what.startsWith("section:")) return this.rows.find((r) => r.kind === "header" && r.section.id === what.slice(8)) ?? null;
     if (what.endsWith("/")) return this.rows.find((r) => r.kind === "dir" && r.path === what) ?? null;
     return this.rows.find((r) => r.kind === "file" && r.file.path === what) ?? null;

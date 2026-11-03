@@ -78,22 +78,36 @@ export function watch(watcher, root, cx, changed) {
   });
 }
 
-// The mod's commands (`<mod>.<command>`), one at a time, each after the
-// loads before it: `before(cx)` reads what changed meanwhile, `handle`
-// acts. An error is shown, never ends the loop.
+// The mod's commands (`<mod>.<command>`), one at a time: `before(cx)`
+// reads what changed meanwhile (and may start loading it), then, once no
+// load runs, `handle` acts. An error is shown, never ends the loop. One task only takes the
+// commands, so this copy is always waiting for the next one: with two
+// copies on screen (the panel and cmd-g's list), a copy that was busy when
+// a command came stopped getting any (herdr-app 0.1.12).
 export function commandLoop(cx, { loads, before, handle, flash, name }) {
+  const queue = [];
+  let wake = null;
+  cx.spawn(async () => {
+    for (;;) {
+      queue.push(await nextCommand());
+      if (wake) wake();
+    }
+  });
   cx.spawn(async (cx) => {
     for (;;) {
-      const command = await nextCommand();
+      if (!queue.length) await new Promise((resolve) => (wake = resolve));
+      wake = null;
+      const command = queue.shift();
       try {
-        await loads.idle(cx);
         before?.(cx);
+        await loads.idle(cx);
+        if (loads.busy()) console.warn(`${name}: ${command}: ran after waiting 10 s for ${loads.count} load(s)`);
         handle(command, cx);
+        cx.notify();
       } catch (e) {
         console.error(`${name}: ${command}: ${message(e)}\n${e?.stack ?? ""}`);
         flash?.set(message(e));
       }
-      cx.notify();
     }
   });
 }
