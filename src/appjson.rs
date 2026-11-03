@@ -8,12 +8,16 @@
 //! Every op prints one JSON object on stdout; on failure `{"error": "..."}`
 //! and exit 1.
 //!
-//! **Remote repos.** The ops marked *(on)* take `--on MACHINE` (a name from
+//! **Remote repos.** Every op with `--repo` takes `--on MACHINE` (a name from
 //! `hc machine ls`; `--on ""` = here): `--repo` is then a path on that
 //! machine, and every git command and file read runs there through
 //! `hc exec --on MACHINE --cwd DIR [-i] -- …` (`GITVIEW_HC`, else `hc`).
 //! Nothing of the repo is read on this machine, and the replies have the
 //! same shape as for a local repo.
+//!
+//! **Arguments.** `--key value` and `--flag`; after `--` everything is
+//! positional, so callers put `--` before paths, messages and text (one may
+//! start with `--`).
 //!
 //! **Paths.** `PATH` arguments are relative to the repo's top level. For
 //! stage/unstage/discard a PATH may be a folder: `src`, `src/` or `.` (the
@@ -22,12 +26,13 @@
 //!
 //! Ops (exact usage):
 //!
-//! - `status --repo DIR [--scope worktree|branch] [--on M]`
-//!   → `{root, branch, scope, sections: [{id, title, cached, files: [FILE]}],
-//!   editor, git_editor}`; branch scope adds `base: {label, merge_base}` and
-//!   `ahead`, and has one section (`id: "branch"`). Worktree sections:
-//!   `conflicts`, `staged`, `changes` (empty ones left out). FILE is
-//!   `{path, orig, kind, letter, stage, add, del}`.
+//! - `status --repo DIR [--scope worktree|branch] [--base LABEL --merge-base
+//!   SHA] [--on M]` → `{root, branch, scope, sections: [{id, title, cached,
+//!   files: [FILE]}], editor}`; branch scope adds `base: {label, merge_base}`
+//!   and has one section (`id: "branch"`). Worktree sections: `conflicts`,
+//!   `staged`, `changes` (empty ones left out). FILE is `{path, orig, kind,
+//!   letter, add, del}`. In branch scope, `--base`/`--merge-base` (what the
+//!   last reply said) skip the base detection, a dozen git calls.
 //! - `diff --repo DIR --path P --kind K [--orig P] [--cached]
 //!   [--merge-base SHA --base LABEL] [--commit SHA] [--theme dark|light]
 //!   [--unfold] [--on M]` → `{rows: [{k, o, n, m, bg, s}], truncated,
@@ -37,22 +42,24 @@
 //!   the app's theme. `--cached`: HEAD vs index; `--merge-base`: that commit
 //!   vs the worktree; `--commit`: that commit's own change to the file (vs
 //!   its first parent).
-//! - `stage --repo DIR [--on M] PATH...` / `unstage --repo DIR [--on M]
-//!   PATH...` → `{ok, count}`; a folder stages what "changes" holds under
-//!   it, unstages what "staged changes" holds.
-//! - `discard --repo DIR [--section changes|staged] [--on M] PATH...` →
-//!   `{ok, count}`: throws away each file's changes (index and worktree),
-//!   stopping at the first failure; a folder covers what `--section` holds
-//!   under it (default: both sections). A file without changes is an error.
-//! - `commit --repo DIR [--all] [--on M] MESSAGE` → `{ok, summary}` (`--all`:
-//!   `git add -A` first; `summary`: `<short sha> <subject>`).
+//! - `stage|unstage --repo DIR [--section changes|staged|conflicts] [--on M]
+//!   [--] PATH...` → `{ok, count}`: a folder covers what that section holds
+//!   under it (default: `changes` for stage, `staged` for unstage); a path
+//!   naming no changed file goes to git as given.
+//! - `discard --repo DIR [--section changes|staged|conflicts] [--on M] [--]
+//!   PATH...` → `{ok, count}`, stopping at the first failure; a file without
+//!   changes is an error. Without `--section`: each file's changes go
+//!   entirely (index and worktree), and a folder covers both sections. With
+//!   `--section changes`: a partly staged file only loses its worktree
+//!   changes (`git restore -- P`), keeping what's staged.
+//! - `commit --repo DIR [--all] [--on M] [--] MESSAGE` → `{ok, summary}`
+//!   (`--all`: `git add -A` first; `summary`: `<short sha> <subject>`).
 //! - `log --repo DIR [--merge-base SHA] [--limit N] [--on M]` →
-//!   `{commits: [{sha, short, subject, author, when, date, time, refs}]}`,
-//!   newest first, at most N (200). `--merge-base`: only `SHA..HEAD`.
-//!   `when`: relative (`3 days ago`); `date`: `YYYY-MM-DD`; `time`: Unix
-//!   seconds; `refs`: decorations (`HEAD -> main`, `origin/main`, `tag: v1`).
+//!   `{commits: [{sha, short, subject, author, when, refs}]}`, newest first,
+//!   at most N (200). `--merge-base`: only `SHA..HEAD`. `when`: relative
+//!   (`3 days ago`); `refs`: decorations (`HEAD -> main`, `tag: v1`).
 //! - `commit-files --repo DIR --sha SHA [--on M]` → `{files: [FILE]}` (the
-//!   commit vs its first parent; `stage` is `"na"`).
+//!   commit vs its first parent).
 //! - `nvim --repo DIR --path P --line N [--tab T] [--space S] [--shown
 //!   t1,t2] [--on M]` → `{terminal}`: opens the file at that line in
 //!   herdr-nvim (`<app home>/mods/herdr-nvim/bin/herdr-nvim open --tab T
@@ -60,9 +67,9 @@
 //!   already running in tab T or in one of the `shown` terminals (`terminal`
 //!   is that terminal); `null` when there is none. With `--on`: herdr-nvim
 //!   only (it needs `--tab` and `--space`), never an nvim of this machine.
-//! - `notes NOTES_JSON` (`[{file, start, end, text, snippet}]`) →
+//! - `notes [--] NOTES_JSON` (`[{file, start, end, text, snippet}]`) →
 //!   `{message}`: the text an agent gets.
-//! - `send --terminal T [--submit] TEXT` → `{ok}`: place TEXT in the
+//! - `send --terminal T [--submit] [--] TEXT` → `{ok}`: place TEXT in the
 //!   terminal's input without pressing Enter (a paste through a framed
 //!   `terminal.attach` over `hc connect`, bracketed when the program asks;
 //!   no clipboard) or, with `--submit`, send it (`hc send`, which presses
@@ -78,10 +85,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::git::{ChangeKind, FileEntry, Repo, Scope, StageState};
+use crate::git::{ChangeKind, CommitInfo, FileEntry, Repo, Scope, StageState};
 use crate::ipc::{BranchBase, ShowReq};
 use crate::list::rows::Section;
 
@@ -92,8 +99,7 @@ const MAX_ROWS: usize = 5000;
 const LOG_LIMIT: usize = 200;
 
 pub fn run(args: &[String]) -> Result<()> {
-    let result = dispatch(args);
-    match result {
+    match dispatch(args) {
         Ok(value) => {
             println!("{value}");
             Ok(())
@@ -105,66 +111,28 @@ pub fn run(args: &[String]) -> Result<()> {
     }
 }
 
+fn reply(value: impl Serialize) -> Result<Value> {
+    Ok(serde_json::to_value(value)?)
+}
+
 fn dispatch(args: &[String]) -> Result<Value> {
     let (op, rest) = args.split_first().context("json: which op?")?;
     let a = Args::parse(rest);
     match op.as_str() {
         "status" => status(&a),
         "diff" => diff(&a),
-        "stage" | "unstage" => stage(&a, op == "stage"),
+        "stage" => change_index(&a, IndexOp::Stage),
+        "unstage" => change_index(&a, IndexOp::Unstage),
         "discard" => discard(&a),
         "log" => log(&a),
         "commit-files" => commit_files(&a),
-        "notes" => {
-            Ok(json!({ "message": notes(a.positional.first().context("notes: no JSON")?)? }))
-        }
-        "nvim" => {
-            let repo = a.repo()?;
-            let file = repo.root.join(a.value("path").context("--path")?);
-            let line = a.value("line").and_then(|l| l.parse().ok()).unwrap_or(1);
-            let (tab, space) = (a.value("tab"), a.value("space"));
-            if repo.on.is_some() {
-                // A remote repo's file only exists there: herdr-nvim with the
-                // space (whose machine it is), never an nvim of this machine.
-                let terminal = match (tab, space) {
-                    (Some(tab), Some(space)) => {
-                        crate::apphost::open_in_herdr_nvim(tab, Some(space), &file, line)
-                            .then_some("herdr-nvim")
-                    }
-                    _ => None,
-                };
-                return Ok(json!({ "terminal": terminal }));
-            }
-            let shown: Vec<String> = a
-                .value("shown")
-                .map(|s| {
-                    s.split(',')
-                        .filter(|t| !t.is_empty())
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default();
-            let terminal = crate::apphost::open_in_running_nvim(tab, space, &shown, &file, line);
-            Ok(json!({ "terminal": terminal }))
-        }
         "commit" => commit(&a),
-        "sidebar" => {
-            let cfg = crate::config::Config::load();
-            let props: Value = match a.value("props") {
-                Some(raw) => serde_json::from_str(raw).context("--props")?,
-                None => Value::Null,
-            };
-            let pane = crate::apphost::open_mod_sidebar(
-                a.value("tab").context("--tab")?,
-                a.value("mod").context("--mod")?,
-                props,
-                match a.value("percent") {
-                    Some(n) => n.parse::<u8>().context("--percent")?.clamp(5, 95),
-                    None => cfg.view_width_percent,
-                },
-            )?;
-            Ok(json!({ "pane": pane }))
+        "notes" => {
+            let message = notes(a.positional.first().context("notes: no JSON")?)?;
+            Ok(json!({ "message": message }))
         }
+        "nvim" => nvim(&a),
+        "sidebar" => sidebar(&a),
         "send" => {
             let terminal = a.value("terminal").context("send: --terminal")?;
             let text = a.positional.first().context("send: no text")?;
@@ -175,7 +143,8 @@ fn dispatch(args: &[String]) -> Result<Value> {
     }
 }
 
-/// `--key value`, `--flag` and positional arguments.
+/// `--key value`, `--flag` and positional arguments; after `--`, everything
+/// is positional (a message or path may start with `--`).
 struct Args {
     pairs: Vec<(String, Option<String>)>,
     positional: Vec<String>,
@@ -189,6 +158,10 @@ impl Args {
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             match arg.strip_prefix("--") {
+                Some("") => {
+                    positional.extend(it.by_ref().cloned());
+                    break;
+                }
                 Some(key) if FLAGS.contains(&key) => pairs.push((key.to_string(), None)),
                 Some(key) => pairs.push((key.to_string(), it.next().cloned())),
                 None => positional.push(arg.clone()),
@@ -215,6 +188,139 @@ impl Args {
             self.value("on"),
         )
     }
+
+    /// `--section changes|staged|conflicts`.
+    fn section(&self) -> Result<Option<Section>> {
+        Ok(match self.value("section") {
+            None => None,
+            Some("changes") => Some(Section::Changes),
+            Some("staged") => Some(Section::Staged),
+            Some("conflicts") => Some(Section::Conflicts),
+            Some(other) => bail!("--section {other}: changes, staged or conflicts"),
+        })
+    }
+
+    fn paths(&self) -> Result<&[String]> {
+        if self.positional.is_empty() {
+            bail!("no paths");
+        }
+        Ok(&self.positional)
+    }
+}
+
+// ---- replies ------------------------------------------------------------------
+
+/// One file of a list, as `status` and `commit-files` give it.
+#[derive(Serialize)]
+struct FileOut<'a> {
+    path: &'a Path,
+    orig: Option<&'a Path>,
+    kind: ChangeKind,
+    letter: &'static str,
+    add: Option<u32>,
+    del: Option<u32>,
+}
+
+impl<'a> From<&'a FileEntry> for FileOut<'a> {
+    fn from(f: &'a FileEntry) -> Self {
+        FileOut {
+            path: &f.path,
+            orig: f.orig_path.as_deref(),
+            kind: f.kind,
+            letter: letter(f.kind),
+            add: f.adds,
+            del: f.dels,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SectionOut<'a> {
+    id: &'static str,
+    title: &'static str,
+    cached: bool,
+    files: Vec<FileOut<'a>>,
+}
+
+impl<'a> SectionOut<'a> {
+    fn of(section: Section, title: &'static str, files: &'a [FileEntry]) -> Self {
+        let id = match section {
+            Section::Conflicts => "conflicts",
+            Section::Staged => "staged",
+            Section::Changes => "changes",
+            Section::Flat => "branch",
+        };
+        SectionOut {
+            id,
+            title,
+            cached: section.cached(),
+            files: files
+                .iter()
+                .filter(|f| section.holds(f))
+                .map(FileOut::from)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct StatusOut<'a> {
+    root: &'a Path,
+    branch: Option<String>,
+    scope: Scope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base: Option<BranchBase>,
+    sections: Vec<SectionOut<'a>>,
+    editor: &'a [String],
+}
+
+#[derive(Serialize)]
+struct Done {
+    ok: bool,
+    count: usize,
+}
+
+#[derive(Serialize)]
+struct CommitOut<'a> {
+    sha: &'a str,
+    short: &'a str,
+    subject: &'a str,
+    author: &'a str,
+    when: &'a str,
+    refs: &'a [String],
+}
+
+impl<'a> From<&'a CommitInfo> for CommitOut<'a> {
+    fn from(c: &'a CommitInfo) -> Self {
+        CommitOut {
+            sha: &c.sha,
+            short: &c.short,
+            subject: &c.subject,
+            author: &c.author,
+            when: &c.relative,
+            refs: &c.refs,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct RowOut {
+    k: &'static str,
+    o: Option<u32>,
+    n: Option<u32>,
+    m: String,
+    bg: Option<String>,
+    /// `[text, fg, bg]` per span.
+    s: Vec<(String, Option<String>, Option<String>)>,
+}
+
+#[derive(Serialize)]
+struct DiffOut {
+    rows: Vec<RowOut>,
+    truncated: bool,
+    first_change: Option<u32>,
+    empty: bool,
+    binary: bool,
 }
 
 // ---- status -------------------------------------------------------------------
@@ -224,75 +330,45 @@ fn status(a: &Args) -> Result<Value> {
     let cfg = crate::config::Config::load();
     let branch = repo.head_branch();
     if a.value("scope") == Some("branch") {
-        let (label, merge_base) = repo.resolve_base(&cfg.base)?;
-        let files = repo.branch_changes(&merge_base, cfg.show_untracked)?;
-        return Ok(json!({
-            "root": repo.root,
-            "branch": branch,
-            "scope": "branch",
-            "base": { "label": label, "merge_base": merge_base },
-            "ahead": repo.commits_ahead(&merge_base),
-            "sections": [section_json(Section::Flat, "", &files)],
-            "editor": cfg.editor,
-            "git_editor": git_editor(&repo, &cfg),
-        }));
+        // The caller may pass back the base it got last time: base detection
+        // costs a dozen git calls, too many for every poll.
+        let base = match (a.value("base"), a.value("merge-base")) {
+            (Some(label), Some(merge_base)) => BranchBase {
+                label: label.to_string(),
+                merge_base: merge_base.to_string(),
+            },
+            _ => {
+                let (label, merge_base) = repo.resolve_base(&cfg.base)?;
+                BranchBase { label, merge_base }
+            }
+        };
+        let files = repo.branch_changes(&base.merge_base, cfg.show_untracked)?;
+        return reply(StatusOut {
+            root: &repo.root,
+            branch,
+            scope: Scope::Branch,
+            base: Some(base.clone()),
+            sections: vec![SectionOut::of(Section::Flat, "", &files)],
+            editor: &cfg.editor,
+        });
     }
     let files = repo.worktree_status(cfg.show_untracked)?;
-    let sections: Vec<Value> = [
+    let sections = [
         (Section::Conflicts, "merge conflicts"),
         (Section::Staged, "staged changes"),
         (Section::Changes, "changes"),
     ]
     .into_iter()
-    .map(|(s, title)| section_json(s, title, &files))
-    .filter(|s| s["files"].as_array().is_some_and(|f| !f.is_empty()))
+    .map(|(s, title)| SectionOut::of(s, title, &files))
+    .filter(|s| !s.files.is_empty())
     .collect();
-    Ok(json!({
-        "root": repo.root,
-        "branch": branch,
-        "scope": "worktree",
-        "sections": sections,
-        "editor": cfg.editor,
-        "git_editor": git_editor(&repo, &cfg),
-    }))
-}
-
-/// `GIT_EDITOR` for `git commit -e`: the configured editor, unless the
-/// person set one for git itself (as the TUI's commit does).
-fn git_editor(repo: &Repo, cfg: &crate::config::Config) -> Option<String> {
-    if std::env::var_os("GIT_EDITOR").is_some() {
-        return None;
-    }
-    repo.config_get("core.editor")
-        .is_none()
-        .then(|| cfg.editor.join(" "))
-}
-
-fn section_json(section: Section, title: &str, files: &[FileEntry]) -> Value {
-    let id = match section {
-        Section::Conflicts => "conflicts",
-        Section::Staged => "staged",
-        Section::Changes => "changes",
-        Section::Flat => "branch",
-    };
-    let files: Vec<Value> = files
-        .iter()
-        .filter(|f| section.holds(f))
-        .map(file_json)
-        .collect();
-    json!({ "id": id, "title": title, "cached": section.cached(), "files": files })
-}
-
-/// One file of a list, as `status` and `commit-files` give it.
-fn file_json(f: &FileEntry) -> Value {
-    json!({
-        "path": f.path,
-        "orig": f.orig_path,
-        "kind": f.kind,
-        "letter": letter(f.kind),
-        "stage": stage_name(f.stage),
-        "add": f.adds,
-        "del": f.dels,
+    reply(StatusOut {
+        root: &repo.root,
+        branch,
+        scope: Scope::Worktree,
+        base: None,
+        sections,
+        editor: &cfg.editor,
     })
 }
 
@@ -304,16 +380,6 @@ fn letter(kind: ChangeKind) -> &'static str {
         ChangeKind::Renamed => "R",
         ChangeKind::Untracked => "U",
         ChangeKind::Conflicted => "!",
-    }
-}
-
-fn stage_name(s: StageState) -> &'static str {
-    match s {
-        StageState::Unstaged => "unstaged",
-        StageState::Staged => "staged",
-        StageState::Partial => "partial",
-        StageState::Untracked => "untracked",
-        StageState::NA => "na",
     }
 }
 
@@ -349,45 +415,54 @@ fn diff(a: &Args) -> Result<Value> {
     let doc = crate::preview::worker::load_doc(&repo, &cfg, &req).map_err(anyhow::Error::msg)?;
     let roles = crate::preview::render::tint_roles(cfg.theme);
     let hex = |c| hex(c, &roles);
-    let mut rows = Vec::new();
-    for (i, line) in doc.text.lines.iter().enumerate().take(MAX_ROWS) {
-        let marker = doc.marker_text_of_line(i).unwrap_or_default();
-        let (old, new) = doc.numbers_of_line(i).unwrap_or((None, None));
-        let kind = match marker.chars().next() {
-            Some('-') => "del",
-            Some('+') => "add",
-            Some(_) => "ctx",
-            None => "fold",
-        };
-        let spans: Vec<Value> = line
-            .spans
-            .iter()
-            .map(|s| json!([s.content, hex(s.style.fg), hex(s.style.bg)]))
-            .collect();
-        rows.push(json!({
-            "k": kind, "o": old, "n": new, "m": marker,
-            "bg": hex(line.style.bg), "s": spans,
-        }));
-    }
-    Ok(json!({
-        "rows": rows,
-        "truncated": doc.text.lines.len() > MAX_ROWS,
-        "first_change": doc.first_change,
-        "empty": doc.is_empty,
-        "binary": doc.binary,
-    }))
+    let rows = doc
+        .text
+        .lines
+        .iter()
+        .enumerate()
+        .take(MAX_ROWS)
+        .map(|(i, line)| {
+            let marker = doc.marker_text_of_line(i).unwrap_or_default();
+            let (o, n) = doc.numbers_of_line(i).unwrap_or((None, None));
+            let k = match marker.chars().next() {
+                Some('-') => "del",
+                Some('+') => "add",
+                Some(_) => "ctx",
+                None => "fold",
+            };
+            RowOut {
+                k,
+                o,
+                n,
+                bg: hex(line.style.bg),
+                s: line
+                    .spans
+                    .iter()
+                    .map(|s| (s.content.to_string(), hex(s.style.fg), hex(s.style.bg)))
+                    .collect(),
+                m: marker.to_string(),
+            }
+        })
+        .collect();
+    reply(DiffOut {
+        rows,
+        truncated: doc.text.lines.len() > MAX_ROWS,
+        first_change: doc.first_change,
+        empty: doc.is_empty,
+        binary: doc.binary,
+    })
 }
 
-fn hex(color: Option<ratatui::style::Color>, roles: &[((u8, u8, u8), &str)]) -> Value {
+fn hex(color: Option<ratatui::style::Color>, roles: &[((u8, u8, u8), &str)]) -> Option<String> {
     use ratatui::style::Color;
-    match color {
-        Some(Color::Rgb(r, g, b)) => match roles.iter().find(|(rgb, _)| *rgb == (r, g, b)) {
-            Some((_, role)) => json!(format!("@{role}")),
-            None => json!(format!("#{r:02x}{g:02x}{b:02x}")),
-        },
-        Some(Color::Red) => json!("red"),
-        Some(Color::Green) => json!("green"),
-        _ => Value::Null,
+    match color? {
+        Color::Rgb(r, g, b) => Some(match roles.iter().find(|(rgb, _)| *rgb == (r, g, b)) {
+            Some((_, role)) => format!("@{role}"),
+            None => format!("#{r:02x}{g:02x}{b:02x}"),
+        }),
+        Color::Red => Some("red".to_string()),
+        Color::Green => Some("green".to_string()),
+        _ => None,
     }
 }
 
@@ -432,75 +507,107 @@ fn name<'a>(entries: &'a [FileEntry], raw: &str, holds: impl Fn(&FileEntry) -> b
     }
 }
 
-fn stage(a: &Args, on: bool) -> Result<Value> {
-    let repo = a.repo()?;
-    if a.positional.is_empty() {
-        bail!("no paths");
-    }
-    let cfg = crate::config::Config::load();
-    let entries = repo.worktree_status(cfg.show_untracked)?;
-    // A folder stages what "changes" holds under it, unstages what "staged
-    // changes" holds: as `s`/`u` on a folder row in the TUI.
-    let section = if on {
-        Section::Changes
-    } else {
-        Section::Staged
-    };
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for raw in &a.positional {
-        match name(&entries, raw, |e| section.holds(e)) {
-            Named::Folder(under) => paths.extend(under.iter().map(|e| e.path.clone())),
-            Named::File(e) => paths.push(e.path.clone()),
-            Named::Other => paths.push(PathBuf::from(raw)),
+/// The entries `raws` name (folders resolved against `holds`), each once;
+/// `other` decides what a path naming no changed file becomes.
+fn resolve<'a>(
+    entries: &'a [FileEntry],
+    raws: &[String],
+    holds: impl Fn(&FileEntry) -> bool,
+    mut other: impl FnMut(&str) -> Result<()>,
+) -> Result<Vec<&'a FileEntry>> {
+    let mut found: Vec<&FileEntry> = Vec::new();
+    for raw in raws {
+        match name(entries, raw, &holds) {
+            Named::Folder(under) => found.extend(under),
+            Named::File(e) => found.push(e),
+            Named::Other => other(raw)?,
         }
     }
     let mut seen = std::collections::HashSet::new();
-    paths.retain(|p| seen.insert(p.clone()));
-    if !paths.is_empty() {
-        if on {
-            repo.stage_many(&paths)?;
-        } else {
-            repo.unstage_many(&paths)?;
-        }
-    }
-    Ok(json!({ "ok": true, "count": paths.len() }))
+    found.retain(|e| seen.insert(e.path.clone()));
+    Ok(found)
 }
 
-/// Throw away every named file's changes (index and worktree), stopping at
-/// the first that fails. `--section changes|staged` limits folders to what
-/// that section holds (default: both).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IndexOp {
+    Stage,
+    Unstage,
+}
+
+/// `stage` / `unstage`: a folder covers what `--section` holds under it
+/// (default: "changes" for stage, "staged changes" for unstage), as `s`/`u`
+/// on a folder row of that section in the TUI.
+fn change_index(a: &Args, op: IndexOp) -> Result<Value> {
+    let repo = a.repo()?;
+    let raws = a.paths()?;
+    let section = a.section()?.unwrap_or(match op {
+        IndexOp::Stage => Section::Changes,
+        IndexOp::Unstage => Section::Staged,
+    });
+    let cfg = crate::config::Config::load();
+    let entries = repo.worktree_status(cfg.show_untracked)?;
+    let mut others: Vec<PathBuf> = Vec::new();
+    let found = resolve(
+        &entries,
+        raws,
+        |e| section.holds(e),
+        |raw| {
+            others.push(PathBuf::from(raw));
+            Ok(())
+        },
+    )?;
+    let mut paths: Vec<PathBuf> = found.iter().map(|e| e.path.clone()).collect();
+    for other in others {
+        if !paths.contains(&other) {
+            paths.push(other);
+        }
+    }
+    if !paths.is_empty() {
+        match op {
+            IndexOp::Stage => repo.stage_many(&paths)?,
+            IndexOp::Unstage => repo.unstage_many(&paths)?,
+        }
+    }
+    reply(Done {
+        ok: true,
+        count: paths.len(),
+    })
+}
+
+/// Throw away the named files' changes, stopping at the first that fails.
+/// Without `--section`: all of each file's changes (index and worktree), and
+/// a folder covers both sections. `--section changes`: only what that row
+/// shows, so a partly staged file keeps its staged part.
 fn discard(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
-    if a.positional.is_empty() {
-        bail!("discard: no path");
-    }
-    let section = match a.value("section") {
-        None => None,
-        Some("changes") => Some(Section::Changes),
-        Some("staged") => Some(Section::Staged),
-        Some(other) => bail!("--section {other}: changes or staged"),
-    };
+    let raws = a.paths()?;
+    let section = a.section()?;
     let cfg = crate::config::Config::load();
     let entries = repo.worktree_status(cfg.show_untracked)?;
     let holds = |e: &FileEntry| match section {
         Some(s) => s.holds(e),
         None => Section::Changes.holds(e) || Section::Staged.holds(e),
     };
-    let mut targets: Vec<&FileEntry> = Vec::new();
-    for raw in &a.positional {
-        match name(&entries, raw, holds) {
-            Named::Folder(under) => targets.extend(under),
-            Named::File(e) => targets.push(e),
-            Named::Other => bail!("{raw} has no changes"),
-        }
-    }
-    let mut seen = std::collections::HashSet::new();
-    targets.retain(|e| seen.insert(e.path.clone()));
+    let targets = resolve(&entries, raws, holds, |raw| bail!("{raw} has no changes"))?;
     for entry in &targets {
-        repo.discard(entry)
-            .with_context(|| format!("discarding {}", entry.path.display()))?;
+        let done = if section == Some(Section::Changes) && entry.stage == StageState::Partial {
+            repo.restore_worktree(&entry.path)
+        } else {
+            repo.discard(entry)
+        };
+        done.with_context(|| format!("discarding {}", entry.path.display()))?;
     }
-    Ok(json!({ "ok": true, "count": targets.len() }))
+    reply(Done {
+        ok: true,
+        count: targets.len(),
+    })
+}
+
+fn commit(a: &Args) -> Result<Value> {
+    let repo = a.repo()?;
+    let message = a.positional.first().context("commit: no message")?;
+    repo.commit(message, a.flag("all"))?;
+    Ok(json!({ "ok": true, "summary": repo.last_commit_summary() }))
 }
 
 // ---- history ------------------------------------------------------------------
@@ -516,36 +623,67 @@ fn log(a: &Args) -> Result<Value> {
         Some(mb) => repo.log_branch_commits(mb, limit)?,
         None => repo.log_commits(limit)?,
     };
-    let commits: Vec<Value> = commits
-        .iter()
-        .map(|c| {
-            json!({
-                "sha": c.sha,
-                "short": c.short,
-                "subject": c.subject,
-                "author": c.author,
-                "when": c.relative,
-                "date": c.date,
-                "time": c.time,
-                "refs": c.refs,
-            })
-        })
-        .collect();
+    let commits: Vec<CommitOut> = commits.iter().map(CommitOut::from).collect();
     Ok(json!({ "commits": commits }))
 }
 
 fn commit_files(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
     let sha = a.value("sha").context("commit-files: --sha")?;
-    let files: Vec<Value> = repo.commit_files(sha)?.iter().map(file_json).collect();
+    let files = repo.commit_files(sha)?;
+    let files: Vec<FileOut> = files.iter().map(FileOut::from).collect();
     Ok(json!({ "files": files }))
 }
 
-fn commit(a: &Args) -> Result<Value> {
+// ---- the app ------------------------------------------------------------------
+
+fn nvim(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
-    let message = a.positional.first().context("commit: no message")?;
-    repo.commit(message, a.flag("all"))?;
-    Ok(json!({ "ok": true, "summary": repo.last_commit_summary() }))
+    let file = repo.root.join(a.value("path").context("--path")?);
+    let line = a.value("line").and_then(|l| l.parse().ok()).unwrap_or(1);
+    let (tab, space) = (a.value("tab"), a.value("space"));
+    if repo.on.is_some() {
+        // A remote repo's file only exists there: herdr-nvim with the space
+        // (whose machine it is), never an nvim of this machine.
+        let terminal = match (tab, space) {
+            (Some(tab), Some(space)) => {
+                crate::apphost::open_in_herdr_nvim(tab, Some(space), &file, line)
+                    .then_some("herdr-nvim")
+            }
+            _ => None,
+        };
+        return Ok(json!({ "terminal": terminal }));
+    }
+    let shown: Vec<String> = a
+        .value("shown")
+        .map(|s| {
+            s.split(',')
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let terminal = crate::apphost::open_in_running_nvim(tab, space, &shown, &file, line);
+    Ok(json!({ "terminal": terminal }))
+}
+
+fn sidebar(a: &Args) -> Result<Value> {
+    let cfg = crate::config::Config::load();
+    let props: Value = match a.value("props") {
+        Some(raw) => serde_json::from_str(raw).context("--props")?,
+        None => Value::Null,
+    };
+    let percent = match a.value("percent") {
+        Some(n) => n.parse::<u8>().context("--percent")?.clamp(5, 95),
+        None => cfg.view_width_percent,
+    };
+    let pane = crate::apphost::open_mod_sidebar(
+        a.value("tab").context("--tab")?,
+        a.value("mod").context("--mod")?,
+        props,
+        percent,
+    )?;
+    Ok(json!({ "pane": pane }))
 }
 
 #[derive(Deserialize)]

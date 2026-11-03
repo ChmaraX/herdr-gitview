@@ -22,8 +22,6 @@ pub struct CommitInfo {
     pub subject: String,
     /// The author date relative to now (`3 days ago`).
     pub relative: String,
-    /// The author date, Unix seconds.
-    pub time: i64,
     /// Branch and tag names pointing at it (`HEAD -> main`, `tag: v1`).
     pub refs: Vec<String>,
 }
@@ -283,13 +281,6 @@ impl Repo {
         remote_command(machine, &self.root, false, None, argv)
             .output()
             .ok()
-    }
-
-    /// `git config --get <key>` in this repo; `None` when unset.
-    pub fn config_get(&self, key: &str) -> Option<String> {
-        let out = self.git_lenient(&["config", "--get", key]).ok()?;
-        let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (out.status.success() && !value.is_empty()).then_some(value)
     }
 
     /// `git commit -m <message>` (`all`: `git add -A` first). Hooks may take
@@ -782,7 +773,7 @@ impl Repo {
         let n = limit.to_string();
         let mut args = vec![
             "log",
-            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00%ar%x00%at%x00%D%x00",
+            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00%ar%x00%D%x00",
             "--date=short",
             "-n",
             &n,
@@ -794,7 +785,7 @@ impl Repo {
         let text = String::from_utf8_lossy(&raw);
         let fields: Vec<&str> = text.split('\0').collect();
         let mut commits = Vec::new();
-        for record in fields.chunks_exact(8) {
+        for record in fields.chunks_exact(7) {
             let sha = record[0].trim_start(); // leading \n from the previous record
             if sha.is_empty() {
                 break;
@@ -806,8 +797,7 @@ impl Repo {
                 date: record[3].to_string(),
                 subject: record[4].to_string(),
                 relative: record[5].to_string(),
-                time: record[6].parse().unwrap_or(0),
-                refs: record[7]
+                refs: record[6]
                     .split(", ")
                     .filter(|r| !r.is_empty())
                     .map(str::to_string)
@@ -859,6 +849,13 @@ impl Repo {
         let mut args = vec!["add", "--"];
         args.extend(owned.iter().map(String::as_str));
         self.git(&args)?;
+        Ok(())
+    }
+
+    /// Throw away a path's worktree changes, keeping what's staged
+    /// (`git restore -- <path>`).
+    pub fn restore_worktree(&self, p: &Path) -> Result<()> {
+        self.git(&["restore", "--", &p.to_string_lossy()])?;
         Ok(())
     }
 

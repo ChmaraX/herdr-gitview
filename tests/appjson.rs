@@ -13,8 +13,9 @@ use serde_json::Value;
 fn gv(repo: &Path, args: &[&str]) -> Value {
     let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
         .arg("json")
-        .args(args)
+        .arg(args[0])
         .args(["--repo", &repo.display().to_string()])
+        .args(&args[1..])
         .env("GITVIEW_HOST", "app")
         // No personal config: defaults only.
         .env("GITVIEW_CONFIG_DIR", repo.join(".no-config"))
@@ -103,8 +104,9 @@ fn discard_restores_the_file_and_notes_render_the_agent_message() {
 fn gv_err(repo: &Path, args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"))
         .arg("json")
-        .args(args)
+        .arg(args[0])
         .args(["--repo", &repo.display().to_string()])
+        .args(&args[1..])
         .env("GITVIEW_CONFIG_DIR", repo.join(".no-config"))
         .output()
         .expect("spawn herdr-gitview");
@@ -215,7 +217,7 @@ fn log_commit_files_and_a_commits_diff() {
         })
         .collect();
     assert_eq!(got, [("added.txt", "A", 1), ("base.txt", "M", 1)]);
-    assert_eq!(files[0]["stage"], "na");
+    assert!(files[0].get("stage").is_none(), "no stage field any more");
 
     // The commit's change, even after the worktree moved on.
     write(&repo.dir, "base.txt", "something else\n");
@@ -240,4 +242,129 @@ fn log_commit_files_and_a_commits_diff() {
         ],
     );
     assert_eq!(root["rows"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_folder_in_merge_conflicts_stages_the_conflicts_not_the_changes_under_it() {
+    let repo = fixture("json-conflicts");
+    let git = |args: &[&str]| common::git(&repo.dir, args);
+    write(&repo.dir, "dir/c.txt", "base\n");
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "c"]);
+    git(&["checkout", "-q", "-b", "other"]);
+    write(&repo.dir, "dir/c.txt", "theirs\n");
+    git(&["commit", "-q", "-am", "theirs"]);
+    git(&["checkout", "-q", "main"]);
+    write(&repo.dir, "dir/c.txt", "ours\n");
+    git(&["commit", "-q", "-am", "ours"]);
+    common::git_lenient(&repo.dir, &["merge", "-q", "other"]);
+    write(&repo.dir, "dir/plain.txt", "unrelated change\n");
+    let status = gv(&repo.dir, &["status"]);
+    assert_eq!(section(&status, "conflicts"), ["dir/c.txt"]);
+    assert_eq!(section(&status, "changes"), ["dir/plain.txt"]);
+
+    let staged = gv(
+        &repo.dir,
+        &["stage", "--section", "conflicts", "--", "dir/"],
+    );
+    assert_eq!(staged["count"], 1);
+    let status = gv(&repo.dir, &["status"]);
+    assert!(section(&status, "conflicts").is_empty());
+    assert_eq!(section(&status, "staged"), ["dir/c.txt"]);
+    assert_eq!(section(&status, "changes"), ["dir/plain.txt"], "left alone");
+}
+
+#[test]
+fn discard_from_changes_keeps_the_staged_part_of_a_partly_staged_file() {
+    let repo = fixture("json-partial");
+    write(&repo.dir, "base.txt", "one\nTWO\n");
+    gv(&repo.dir, &["stage", "--", "base.txt"]);
+    write(&repo.dir, "base.txt", "one\nTWO\nthree\n");
+    gv(
+        &repo.dir,
+        &["discard", "--section", "changes", "--", "base.txt"],
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.dir.join("base.txt")).unwrap(),
+        "one\nTWO\n",
+        "the worktree is back to the staged version"
+    );
+    let status = gv(&repo.dir, &["status"]);
+    assert_eq!(section(&status, "staged"), ["base.txt"]);
+    assert!(section(&status, "changes").is_empty());
+
+    // Without a section: everything goes, as before.
+    write(&repo.dir, "base.txt", "one\nTWO\nthree\n");
+    gv(&repo.dir, &["discard", "--", "base.txt"]);
+    assert_eq!(
+        std::fs::read_to_string(repo.dir.join("base.txt")).unwrap(),
+        "one\ntwo\n"
+    );
+}
+
+#[test]
+fn after_a_double_dash_everything_is_positional() {
+    let repo = fixture("json-dashes");
+    write(&repo.dir, "--odd.txt", "x\n");
+    gv(&repo.dir, &["stage", "--", "--odd.txt"]);
+    let done = gv(&repo.dir, &["commit", "--", "--wip: a message"]);
+    assert!(
+        done["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with(" --wip: a message"),
+        "{done}"
+    );
+}
+
+#[test]
+fn status_carries_only_what_the_mods_read_and_takes_a_base_from_the_caller() {
+    let repo = fixture("json-trim");
+    common::git(&repo.dir, &["checkout", "-q", "-b", "feature"]);
+    write(&repo.dir, "base.txt", "one\n2\n");
+    let status = gv(&repo.dir, &["status"]);
+    let keys: Vec<&str> = status
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, ["root", "branch", "scope", "sections", "editor"]);
+    let file = &status["sections"][0]["files"][0];
+    let keys: Vec<&str> = file
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, ["path", "orig", "kind", "letter", "add", "del"]);
+
+    let branch = gv(&repo.dir, &["status", "--scope", "branch"]);
+    assert_eq!(branch["base"]["label"], "main");
+    assert!(branch.get("ahead").is_none());
+    // A base passed in is used as given, not detected again.
+    let sha = branch["base"]["merge_base"].as_str().unwrap().to_string();
+    let given = gv(
+        &repo.dir,
+        &[
+            "status",
+            "--scope",
+            "branch",
+            "--base",
+            "elsewhere",
+            "--merge-base",
+            &sha,
+        ],
+    );
+    assert_eq!(given["base"]["label"], "elsewhere");
+    assert_eq!(given["sections"], branch["sections"]);
+
+    let log = gv(&repo.dir, &["log"]);
+    let keys: Vec<&str> = log["commits"][0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, ["sha", "short", "subject", "author", "when", "refs"]);
 }
