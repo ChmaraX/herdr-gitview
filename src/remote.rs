@@ -439,20 +439,24 @@ fn parse_measure(out: &str, names: &[String]) -> Vec<Option<FileFacts>> {
 /// What went wrong in a remote call, in one line: hc's own errors come as
 /// JSON (`{"error": {"message", "hint"}}`), the program's as plain text.
 pub fn remote_error(stderr: &str) -> String {
-    let parsed: Option<serde_json::Value> = serde_json::from_str(stderr.trim()).ok();
-    let message = parsed.as_ref().and_then(|v| {
-        let err = v.get("error")?;
-        let message = err.get("message")?.as_str()?;
-        Some(match err.get("hint").and_then(|h| h.as_str()) {
-            Some(hint) => format!("{message} ({hint})"),
-            None => message.to_string(),
-        })
-    });
-    match message {
+    match hc_failure(stderr) {
         Some(m) => m,
         None if stderr.trim().is_empty() => "no answer".to_string(),
         None => crate::git::first_line(stderr),
     }
+}
+
+/// hc's own error (`{"error": {message, hint?}}` on stderr: an unknown or
+/// unreachable machine), as `message (hint)`; `None` when `stderr` is the
+/// program's.
+pub fn hc_failure(stderr: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(stderr.trim()).ok()?;
+    let err = parsed.get("error")?;
+    let message = err.get("message")?.as_str()?;
+    Some(match err.get("hint").and_then(|h| h.as_str()) {
+        Some(hint) => format!("{message} ({hint})"),
+        None => message.to_string(),
+    })
 }
 
 #[cfg(test)]

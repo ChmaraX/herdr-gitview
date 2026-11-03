@@ -28,6 +28,8 @@
 //! - `json file` there: an image that doesn't arrive byte for byte (from
 //!   the worktree or from git), or text, binary, too big and missing told
 //!   apart differently from here, or a failed read there taken as missing;
+//! - a diff whose git reads fail there (the machine dropped) shown as a
+//!   whole file added or as no change, instead of the error;
 //! - the reload hints (`rev`, `ignored_dirs`, a diff's `hash` and its
 //!   `--unless`) told from this machine's files, or other there than here,
 //!   or the revs costing more than one call per status;
@@ -65,6 +67,9 @@ esac
 PATH="${SHIM_GIT%/*}:$PATH"
 cd "$cwd" || exit 94
 [ -n "$stdin" ] || exec </dev/null
+if [ -n "$SHIM_FAIL_GIT_READS" ] && [[ " $* " == *" cat-file "* || " $* " == *" show "* ]]; then
+  echo '{"error":{"kind":"machine_unreachable","message":"machine \"box\" is unreachable","hint":"check ssh"}}' >&2; exit 3
+fi
 if [ -n "$SHIM_FAIL_READS" ] && [ "$1" = sh ] && [[ "$3" == *"exit 44"* ]]; then
   echo "shim: the connection dropped" >&2; exit 255
 fi
@@ -826,4 +831,31 @@ fn the_reload_hints_come_from_the_machine_alike() {
     assert_ne!(rev(&w.run(&["status"], true)), rev(&status));
     assert_eq!(rev(&w.run(&["status"], false)), rev(&status));
     assert_ne!(w.run(&unless, true).get("same"), Some(&Value::Bool(true)));
+}
+
+#[test]
+fn a_diff_whose_reads_fail_there_is_an_error_not_a_wrong_diff() {
+    let w = world("readfail");
+    let fail = [("SHIM_FAIL_GIT_READS", "1")];
+    for args in [
+        &["diff", "--path", "base.txt", "--kind", "modified"][..],
+        &[
+            "diff",
+            "--path",
+            "staged.txt",
+            "--kind",
+            "added",
+            "--cached",
+        ],
+        &[
+            "diff", "--path", "base.txt", "--kind", "modified", "--commit", "HEAD",
+        ],
+    ] {
+        let mut cmd = common::gitview();
+        cmd.arg("json").args(args);
+        let (ok, reply) = w.run_with(cmd, &fail);
+        assert!(!ok, "{args:?}: {reply}");
+        let err = reply["error"].as_str().unwrap_or_default();
+        assert!(err.contains("unreachable"), "{args:?}: {reply}");
+    }
 }

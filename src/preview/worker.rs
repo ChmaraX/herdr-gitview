@@ -417,7 +417,15 @@ fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
     } else {
         match repo.read_blobs(&specs) {
             Ok(blobs) => blobs,
-            // Unsendable path: read each side the slow way, uncached.
+            // Unsendable path: read each side the slow way, uncached. On
+            // another machine only for that: a failed read there (it
+            // dropped) is the diff's error, never a side read as absent.
+            Err(err)
+                if repo.machine != crate::remote::Machine::Local
+                    && !specs.iter().any(|s| s.contains('\n')) =>
+            {
+                return Err(first_line(&format!("{err:#}")));
+            }
             Err(_) => return fetch_uncached(repo, &old_src, &new_src),
         }
     };

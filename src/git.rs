@@ -703,6 +703,11 @@ impl Repo {
         let spec = format!("{rev}:{}", path.to_string_lossy());
         let out = self.git_lenient(&["show", &spec])?;
         if !out.status.success() {
+            // hc's own failure (the machine dropped) answers in JSON.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if self.machine != Machine::Local && crate::remote::hc_failure(&stderr).is_some() {
+                bail!("git show: {}", crate::remote::remote_error(&stderr));
+            }
             return Ok(None); // path absent at that rev (add/delete/rename)
         }
         Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
@@ -712,7 +717,7 @@ impl Repo {
     /// call, each with its object id. `None` = absent at that rev (or not a
     /// file). Paths containing a newline can't be sent this way: error.
     pub fn read_blobs(&self, specs: &[String]) -> Result<Vec<Option<Blob>>> {
-        use std::io::{Read, Write};
+        use std::io::Write;
         use std::process::Stdio;
         if specs.iter().any(|s| s.contains('\n')) {
             bail!("path contains a newline");
@@ -727,7 +732,7 @@ impl Repo {
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .context("spawning git cat-file")?;
         // A few short lines fit the pipe buffer, so writing them all before
@@ -739,14 +744,14 @@ impl Repo {
             .take()
             .context("git cat-file stdin")?
             .write_all(input.as_bytes())?;
-        let mut out = Vec::new();
-        child
-            .stdout
-            .take()
-            .context("git cat-file stdout")?
-            .read_to_end(&mut out)?;
-        child.wait()?;
-        parse_batch(&out, specs.len())
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            bail!(
+                "git cat-file: {}",
+                crate::remote::remote_error(&String::from_utf8_lossy(&out.stderr))
+            );
+        }
+        parse_batch(&out.stdout, specs.len())
     }
 
     /// The bytes of the blob `spec` (`rev:path`, `:path` = the index),
