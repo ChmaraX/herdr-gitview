@@ -1,1 +1,0 @@
-../gitview-tui-sidebar/launch.js
