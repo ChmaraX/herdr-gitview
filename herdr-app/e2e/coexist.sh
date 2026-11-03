@@ -55,7 +55,11 @@ print("panel", panel.get("size"), "sync", json.dumps(sync, sort_keys=True))
 PY
 }
 nvim_keys() { python3 -c 'import json,sys; g=json.load(open(sys.argv[1]))["global"]; print({k: g.get(k) for k in ("cmd-e","cmd-o","cmd-shift-e")})' "$HERDR_APP_HOME/keys.json"; }
-snap() { cp "$(LAYOUT)" "$BASE/$1.layout.json"; cp "$HERDR_APP_HOME/keys.json" "$BASE/$1.keys.json"; }
+# Snapshots, kept in the artifacts too (the run's folder goes at the end).
+snap() {
+  cp "$(LAYOUT)" "$BASE/$1.layout.json"; cp "$HERDR_APP_HOME/keys.json" "$BASE/$1.keys.json"
+  mkdir -p "$ART/snapshots" && cp "$BASE/$1.layout.json" "$BASE/$1.keys.json" "$ART/snapshots/"
+}
 same_as() { # byte-identical layout and keys.json to snapshot $1
   cmp -s "$(LAYOUT)" "$BASE/$1.layout.json" && cmp -s "$HERDR_APP_HOME/keys.json" "$BASE/$1.keys.json"
 }
@@ -83,7 +87,7 @@ want "main-copy files=herdr-nvim changes=changes" "herdr-nvim's files slot in th
 snap nvim
 NBITS=$(nvim_bits); NKEYS=$(nvim_keys)
 echo "herdr-nvim: $NBITS $NKEYS" >>"$LOG"
-echo "$NBITS" | grep -q "'px': 300\|\"px\": 300" && ok "herdr-nvim's panel is 300 px" || ok "panel as herdr-nvim left it: $NBITS"
+echo "$NBITS" | grep -Eq "^panel \{'px': 300(\.0)?\}" && ok "herdr-nvim's panel is 300 px" || fail "herdr-nvim's panel isn't 300 px: $NBITS"
 gv_up || fail "gitview install"
 want "main-copy files=herdr-nvim changes=gitview" "gitview edits the same personal layout, its changes slot only"
 [ "$(nvim_bits)" = "$NBITS" ] && ok "herdr-nvim's panel width and sync controller untouched" || fail "herdr-nvim's bits changed: $(nvim_bits)"
@@ -99,14 +103,13 @@ PY
 
 step "Enter in gitview opens the file in herdr-nvim's nvim; its pane takes the diff pane's place"
 do_ pane.focus --terminal "$(echo "$MADE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["terminal"])')"
-changes_button
-expect '"$APP" do gitview.key:r' "the gitview panel is up"
+expect panel_up "the gitview panel is up" 20
 expect '[ "$(panel_state)" = "open changes" ]' "the panel shows Changes (gitview), herdr-nvim's sync controller leaves it"
 do_ gitview.click:src/main.rs
 expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "a click opens gitview's diff pane"
 shot coexist-01-diff-pane 1.5
 do_ gitview-diff.key:enter
-DEBUG="$XDG_STATE_HOME/herdr-gitview/app/debug.log"
+DEBUG="$GV_LOG"
 expect 'grep -q "herdr-nvim open .*/src/main.rs:2 -> exit status: 0" "$DEBUG"' "gitview ran herdr-nvim open --tab <tab> --space <space> <file>:2, and it succeeded" 40
 NV=$(grep "herdr-nvim open .*/src/main.rs:2 -> exit status: 0" "$DEBUG" | tail -1 | sed 's/.*"terminal":"\([^"]*\)".*/\1/')
 expect 'nvim_buf $NV | grep -q "src/main.rs$"' "herdr-nvim's nvim ($NV) shows the file" 30

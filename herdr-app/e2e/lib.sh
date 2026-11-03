@@ -34,6 +34,9 @@ export HERDR_RELEASES_URL=http://127.0.0.1:9 # never update the installed app or
 # herdr-nvim (coexist.sh): its daemons, state and agents' session logs here too.
 export HERDR_NVIM_RUNTIME_DIR="$BASE/nvrun" HERDR_NVIM_STATE_DIR="$BASE/nvstate"
 export PI_CODING_AGENT_DIR="$BASE/pi" CLAUDE_CONFIG_DIR="$BASE/claude"
+# herdr-gitview's own debug log (json and app-setup write it): this run's.
+export HERDR_PLUGIN_STATE_DIR="$BASE/gvstate"
+GV_LOG="$HERDR_PLUGIN_STATE_DIR/debug.log"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 mkdir -p "$HERDR_APP_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 echo '{"frame.welcomed": true, "layout": "main"}' >"$HERDR_APP_HOME/shared.json"
@@ -74,10 +77,15 @@ cleanup() {
   for p in $(pgrep -f '(hc|herdr-core) (serve|hold)'); do
     ps eww -o command= -p "$p" 2>/dev/null | grep -q "XDG_STATE_HOME=$BASE/state " && kill "$p"
   done
+  # What the run left, for checking afterwards: the layouts (and their
+  # clicks) and keys.json as they ended.
+  rm -rf "$ART/final" && mkdir -p "$ART/final"
+  cp -R "$HERDR_APP_HOME/layouts" "$HERDR_APP_HOME/keys.json" "$ART/final/" 2>/dev/null
   # herdr-nvim's nvims of this run (their sockets are in this run's folder).
   for s in "$BASE"/nvrun/app/*.sock; do
     [ -S "$s" ] && nvim --headless --server "$s" --remote-send '<cmd>qa!<cr>' >/dev/null 2>&1
   done
+  cp "$GV_LOG" "$ART/gitview-debug.log" 2>/dev/null
   rm -rf "$BASE"
   echo "artifacts: $ART"
 }
@@ -94,7 +102,7 @@ fail() {
   { echo "--- terminals"; terms; echo "--- status"; "$APP" status; echo "--- mod panes"; mod_panes
     echo "--- shared"; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({k:v for k,v in d.items() if k.startswith("gitview")}, indent=1)[:4000])' "$HERDR_APP_HOME/shared.json"
     for t in $(terms | awk '{print $1}'); do echo "--- screen $t"; screen "$t" | head -40; done
-    echo "--- gitview log"; tail -40 "$XDG_STATE_HOME/herdr-gitview/app/debug.log"; echo "--- app log"; tail -20 "$BASE/app.log"
+    echo "--- gitview log"; tail -40 "$GV_LOG"; echo "--- app log"; tail -20 "$BASE/app.log"
   } >>"$LOG" 2>&1 || true
   shot FAIL || true
   [ -z "${E2E_KEEP:-}" ] || { echo "kept: source $BASE/env.sh" | tee -a "$LOG"; trap - EXIT; }
@@ -215,6 +223,14 @@ active = n.get("panel-body", {}).get("active", find(doc, "panel-body").get("acti
 print("hidden" if hidden else "open", active)
 EOF
 }
+# The panel up on gitview, and gitview answering. Again until it holds: the
+# stock tab bar restores a space's own panel choice (none, for a new one)
+# when it first draws, which in a covered window can be any time.
+panel_up() {
+  "$APP" do layout.select '{"stack":"panel-body","child":"changes"}' >>"$LOG" 2>&1 &&
+    "$APP" do layout.show --id panel >>"$LOG" 2>&1 && sleep 0.3 && [ "$(panel_state)" = "open changes" ] &&
+    "$APP" do gitview.key:r >>"$LOG" 2>&1
+}
 changes_button() { # exactly what the tab bar's Changes button runs
   do_ layout.select '{"stack":"panel-body","child":"changes"}'
   do_ layout.show --id panel
@@ -234,8 +250,22 @@ if [ -z "${GITVIEW_BIN:-}" ]; then
   export GITVIEW_BIN="$build/bin-$sha"
 fi
 
+# The discard confirm runs `<mod>.discard:<one-time token>`, and the mod
+# logs the token when it asks: run what the dialog's Confirm runs ($1: the
+# mod), then close the dialog.
+LAST_CONFIRM=
+last_confirm() { grep -a -o "$1\.discard:[a-z0-9]*" "$BASE/app.log" | tail -1; }
+confirm_discard() {
+  until_ '[ -n "$(last_confirm $1)" ] && [ "$(last_confirm $1)" != "$LAST_CONFIRM" ]' 5 || fail "no discard confirm from $1"
+  LAST_CONFIRM=$(last_confirm "$1")
+  do_ "$LAST_CONFIRM"
+  do_ overlay.close
+}
+
 # --- start -------------------------------------------------------------------------
 step "private app + core (HERDR_APP_HOME=$HERDR_APP_HOME, HC_SESSION=$HC_SESSION, binary $GITVIEW_BIN)"
+{ echo "herdr-app: $("$APP" --version 2>&1 | head -1) ($APP)"; echo "hc: $(hc --version 2>&1 | head -1) ($(command -v hc))"
+  echo "gitview: $(git -C "$REPO" rev-parse --short HEAD) ($GITVIEW_BIN)"; echo "macOS: $(sw_vers -productVersion 2>/dev/null)"; } | tee -a "$LOG"
 hc server start >>"$LOG" 2>&1
 "$APP" >"$BASE/app.log" 2>&1 &
 APP_PID=$!

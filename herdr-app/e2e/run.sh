@@ -54,11 +54,11 @@ step "install (herdr-app/install.sh → herdr-gitview app-setup)"
 ok "install.sh, including herdr-app check of every mod"
 expect '[ "$(app_status layout)" = main-copy ]' "the shipped main layout was cloned once as main-copy (personal) and shown"
 expect panel_shows "main-copy's Changes slot shows the gitview mod (props.replaces keeps the stock one)"
-python3 - "$HERDR_APP_HOME/keys.json" <<'EOF' && ok "keys bound: cmd-g, cmd-shift-g, cmd-alt-g, cmd-alt-shift-g" || fail "keys"
+python3 - "$HERDR_APP_HOME/keys.json" <<'EOF' && ok "keys bound: cmd-g, cmd-shift-g (and no cmd-alt-g / cmd-alt-shift-g)" || fail "keys"
 import json, sys
 g = json.load(open(sys.argv[1]))["global"]
 assert g["cmd-g"] == "mod.open:gitview-tab" and g["cmd-shift-g"] == "mod.open:gitview-sidebar"
-assert g["cmd-alt-g"] == "mod.open:gitview-tui-tab" and g["cmd-alt-shift-g"] == "mod.open:gitview-tui-sidebar"
+assert "cmd-alt-g" not in g and "cmd-alt-shift-g" not in g
 EOF
 [ ! -s "$HERDR_APP_HOME/keys.error" ] && [ ! -s "$HERDR_APP_HOME/layout.error" ] && ok "no keys.error / layout.error" || fail "app file errors"
 for m in gitview gitview-diff gitview-agents gitview-tab gitview-sidebar; do
@@ -68,8 +68,7 @@ done
 # --- the panel and its diff pane ---------------------------------------------------------
 step "Changes button → gitview's file list; a click opens the diff pane left of it"
 do_ pane.focus --terminal "$SHELL_T"
-changes_button
-expect '"$APP" do gitview.key:r' "the panel is up (it takes gitview.* commands)"
+expect panel_up "the panel is up (it takes gitview.* commands)" 20
 expect '[ "$(panel_state)" = "open changes" ]' "the panel shows Changes"
 mod_panes | grep -q "gitview-diff" && fail "a diff pane before any click" || ok "no diff pane until a file is clicked"
 shot 01-panel-list
@@ -119,8 +118,7 @@ shot 03-staged
 do_ gitview.button:discard:notes.md
 expect 'overlay_open confirm' "↺ asks first (the app's confirm dialog)"
 shot 04-confirm
-do_ gitview.discard # what the dialog's Confirm button runs
-do_ overlay.close
+confirm_discard gitview # what the dialog's Confirm button runs
 expect '[ ! -e "$S/notes.md" ]' "confirmed discard removes the untracked file"
 printf 'scratch\n' >"$S/tmp.txt"
 do_ gitview.key:r
@@ -128,8 +126,7 @@ do_ gitview.click:tmp.txt
 expect '[ "$(view_of $TAB path)" = tmp.txt ]' "tmp.txt in the pane"
 do_ gitview-diff.key:x
 expect 'overlay_open confirm' "pane x asks first"
-do_ gitview-diff.discard
-do_ overlay.close
+confirm_discard gitview-diff
 expect '[ ! -e "$S/tmp.txt" ]' "pane x then confirm discards it"
 expect '[ "$(view_of $TAB path)" != tmp.txt ]' "and the pane moves on to another file"
 do_ gitview.button:unstage:section:staged
@@ -137,6 +134,54 @@ expect '[ -z "$(staged)" ]' "the staged section's − unstages all"
 do_ gitview.button:stage:section:changes
 expect '[ -n "$(staged)" ] && [ -z "$(git -C "$S" diff --name-only)" ]' "the changes section's + stages all"
 do_ gitview.button:unstage:section:staged
+
+step "s then J in the pane: on to the next file"
+do_ gitview.click:src/app/a.rs
+expect '[ "$(view_of $TAB path)" = src/app/a.rs ]' "src/app/a.rs in the pane"
+do_ gitview-diff.key:s
+expect '[ "$(view_of $TAB section)" = staged ]' "pane s: it shows where the file went (staged)"
+do_ gitview-diff.key:J
+expect '[ "$(view_of $TAB path)" != src/app/a.rs ] && [ -n "$(view_of $TAB path)" ]' "J goes on to the next file ($(view_of $TAB path)), not \"last file\""
+git -C "$S" reset -q -- src/app/a.rs
+
+step "discard from changes keeps a partly staged file's staged part"
+printf 'pub fn b() { 2 }\n// staged\n' >"$S/src/app/b.rs" && git -C "$S" add src/app/b.rs
+printf 'pub fn b() { 2 }\n// staged\n// not staged\n' >"$S/src/app/b.rs"
+do_ gitview.key:r
+do_ gitview.button:discard:in:changes:src/app/b.rs
+expect 'overlay_open confirm' "↺ on its changes row asks first"
+confirm_discard gitview
+expect '[ -z "$(git -C "$S" diff -- src/app/b.rs)" ] && git -C "$S" diff --cached -- src/app/b.rs | grep -q "^+// staged"' "the unstaged part is gone, the staged part stays"
+git -C "$S" reset -q -- src/app/b.rs
+
+step "a cancelled discard in one copy never runs from another copy's confirm"
+printf 'keep me\n' >"$S/keep.txt"
+printf 'drop me\n' >"$S/drop.txt"
+do_ gitview.key:r
+do_ gitview.button:discard:keep.txt
+expect 'overlay_open confirm' "the panel asks about keep.txt"
+CANCELLED=$(last_confirm gitview)
+do_ overlay.close # Esc: cancelled
+LAST_CONFIRM=$CANCELLED
+do_ gitview.discard # an old, token-less confirm
+do_ "gitview.discard:nottheone"
+sleep 1
+[ -e "$S/keep.txt" ] && ok "a confirm without the right token discards nothing" || fail "keep.txt discarded"
+do_ layout.hide --id panel
+do_ mod.open --name gitview-tab
+expect '[ "$(tab_active)" = gitview ]' "cmd-g's tab: a second gitview list"
+expect '"$APP" do gitview.key:r' "its list is up"
+do_ gitview.button:discard:drop.txt
+expect 'overlay_open confirm' "the tab's list asks about drop.txt"
+expect panel_up "both lists on screen: the panel's is up too" 20
+confirm_discard gitview # its Confirm reaches both lists
+expect '[ ! -e "$S/drop.txt" ]' "the confirmed one (drop.txt) is discarded"
+sleep 1
+[ -e "$S/keep.txt" ] && ok "the cancelled one (keep.txt) is not" || fail "keep.txt discarded by another copy's confirm"
+do_ mod.open --name gitview-tab # closes it, back to tab 1
+expect '[ "$(tab_active)" = 1 ]' "back in tab 1"
+rm -f "$S/keep.txt"
+do_ gitview.key:r
 
 step "tree mode (t): folders, folder staging"
 do_ gitview.key:t
@@ -169,6 +214,11 @@ do_ gitview.key:escape
 do_ gitview.key:j
 do_ gitview.key:enter
 expect '[ "$(view_of $TAB path)" = history.txt ]' "the commit before it: history.txt"
+KEY0=":$(cd "$S" && pwd -P)"
+N0=$(shared "len(s.get('gitview.notes',{}).get('$KEY0',[]))")
+do_ "gitview-diff.note:a note on a commit"
+sleep 0.5
+[ "$(shared "len(s.get('gitview.notes',{}).get('$KEY0',[]))")" = "$N0" ] && ok "no notes on a commit's diff (as the TUI)" || fail "a note on a commit"
 do_ gitview.key:escape
 do_ gitview.key:escape
 
@@ -220,6 +270,31 @@ expect 'agent_submitted | grep -q "and send this one now"' "shift+enter submits 
 expect '! overlay_open gitview-agents' "the dialog closes"
 shot 12-sent 1
 
+step "placing multi-line notes into a program without bracketed paste: an error, nothing typed"
+PL="$BASE/plain"
+mkdir -p "$PL" && git -C "$PL" init -q -b main && printf 'one\n' >"$PL/p.txt"
+git -C "$PL" -c user.email=e2e@test -c user.name=e2e add -A && git -C "$PL" -c user.email=e2e@test -c user.name=e2e commit -qm init
+printf 'one\ntwo\n' >"$PL/p.txt"
+# Its own space, so its agent is the dialog's first (this space's agents first).
+"$APP" do space.new --name plain --folder "$PL" --argv "[\"/usr/bin/env\",\"DUMMY_PLAIN=1\",\"DUMMY_LOG=$BASE/plain.log\",\"python3\",\"-u\",\"$E2E/dummy-agent.py\"]" >>"$LOG"
+expect '[ -e "$BASE/plain.log.json" ]' "a dummy agent without bracketed paste, in a space of its own"
+expect panel_up "the panel is up in the plain space" 20
+expect '"$APP" do gitview.file:p.txt >/dev/null && [ "$(view_of "$(tab_id)" path)" = p.txt ]' "the panel shows its repo; p.txt in the pane"
+PKEY=":$(cd "$PL" && pwd -P)"
+pnotes() { shared "len(s.get('gitview.notes',{}).get('$PKEY',[]))"; }
+do_ "gitview-diff.note:the message has several lines"
+expect '[ "$(pnotes)" = 1 ]' "a note to send"
+do_ gitview.key:p
+expect 'overlay_open gitview-agents' "the send dialog opens"
+do_ gitview-agents.key:enter
+sleep 2
+overlay_open gitview-agents && ok "enter: the dialog stays open with the error" || fail "the dialog closed"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if not d["submitted"] and not d["input"] else 1)' "$BASE/plain.log.json" && ok "nothing typed, nothing submitted in the program" || fail "the plain program got: $(cat "$BASE/plain.log.json")"
+[ "$(pnotes)" = 1 ] && ok "the note is kept" || fail "the note went"
+shot 12b-send-refused 1
+do_ overlay.close
+do_ space.select --index 1
+
 step "enter → nvim (no herdr-nvim): a new nvim right of the diff pane"
 do_ gitview.click:src/main.rs
 do_ gitview-diff.key:G
@@ -228,7 +303,7 @@ do_ gitview-diff.key:enter
 expect '[ -n "$(terms | awk '"'"'$2=="nvim"'"'"')" ]' "nvim runs in a new pane"
 NVIM=$(terms | awk '$2=="nvim"{print $1}')
 hc get "$NVIM" --json | grep -q '"+5"' && ok "at the cursor's line (+5)" || fail "nvim line: $(hc get "$NVIM" --json | head -c 300)"
-mod_panes | grep -q gitview-diff && ok "the diff pane stays beside it" || fail "the diff pane went"
+mod_panes | grep -q "^$TAB .* gitview-diff$" && ok "the diff pane stays beside it" || fail "the diff pane went"
 shot 13-nvim 2
 do_ gitview.click:src/app/a.rs
 do_ gitview.key:enter
@@ -248,18 +323,27 @@ do_ gitview.click:src/main.rs
 do_ gitview-diff.key:enter
 expect 'grep -q "^open --tab $TAB --space $SPACE .*/src/main.rs:2$" "$BASE/herdr-nvim.log"' "enter asks herdr-nvim: open --tab <tab> --space <space> <file>:<line>"
 [ -z "$(terms | awk '$2=="nvim"')" ] && ok "and starts no nvim of its own" || fail "started nvim anyway"
-expect '! mod_panes | grep -q gitview-diff' "the diff pane closes (herdr-nvim's nvim sits there)"
+expect '! mod_panes | grep -q "^$TAB .* gitview-diff$"' "the diff pane closes (herdr-nvim's nvim sits there)"
 do_ gitview.click:src/app/a.rs
-expect 'mod_panes | grep -q gitview-diff' "the next file click opens the diff pane again"
+expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "the next file click opens the diff pane again"
 rm -rf "$STAND"
 
 # Keys need the window drawn: macOS doesn't draw a covered window, and a mod
 # takes the keyboard only when drawn. Covered (your windows in front; it's
-# never raised), the keys run their commands instead and say so.
+# never raised), the keys' checks are skipped and their commands run
+# instead, checked as that.
 KEYS=0
-if until_ drawn 20; then KEYS=1; else echo "note: the private window is covered by another window: key presses replaced by their commands" | tee -a "$LOG"; fi
-press() { # press <keys.py spec> <the command the key runs>
-  if [ "$KEYS" = 1 ]; then keys "$1"; else do_ mod.open --name "$2"; fi
+if until_ drawn 20; then KEYS=1; else echo "note: the private window is covered by another window: key presses skipped, their commands run instead" | tee -a "$LOG"; fi
+# press <keys.py spec> <key name> <the mod the key opens> <check> <what it does>
+press() {
+  if [ "$KEYS" = 1 ]; then
+    keys "$1"
+    expect "$4" "$2 $5"
+  else
+    skip "$2 (the window is covered)"
+    do_ mod.open --name "$3"
+    expect "$4" "mod.open:$3 (what $2 runs) $5"
+  fi
 }
 
 step "focus: pane.go reaches the diff pane, which takes the keyboard (keys.py, private window only)"
@@ -275,10 +359,8 @@ else
 fi
 
 step "cmd-shift-g toggles the Changes panel; cmd-g opens gitview's own tab"
-press 5:cmd,shift gitview-sidebar
-expect '[ "$(panel_state)" = "hidden changes" ]' "cmd-shift-g hides the panel"
-press 5:cmd,shift gitview-sidebar
-expect '[ "$(panel_state)" = "open changes" ]' "cmd-shift-g shows it, on gitview"
+press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ]' "hides the panel"
+press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "open changes" ]' "shows it, on gitview"
 if [ "$KEYS" = 1 ]; then
   sleep 0.5
   P0=$(view_of $TAB path)
@@ -288,21 +370,53 @@ else
   skip "the list has the keyboard after cmd-shift-g (the window is covered)"
 fi
 shot 14-cmd-shift-g 1
-press 5:cmd,shift gitview-sidebar
-expect '[ "$(panel_state)" = "hidden changes" ]' "hidden again"
-press 5:cmd gitview-tab
-expect '[ "$(tab_active)" = gitview ]' "cmd-g opens the gitview tab"
+press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ]' "hides it again"
+press 5:cmd cmd-g gitview-tab '[ "$(tab_active)" = gitview ]' "opens the gitview tab"
 OWN=$(tab_id)
 expect 'mod_panes | grep -q "^$OWN .* gitview-diff$" && mod_panes | grep -q "^$OWN .* gitview$"' "diff pane and list pane"
 do_ gitview.click:src/main.rs
 expect '[ "$(view_of $OWN path)" = src/main.rs ]' "a click in its list shows the diff on the left"
 shot 15-own-tab 1.5
 do_ tab.select --index 1
-press 5:cmd gitview-tab
-expect '[ "$(tab_active)" = gitview ]' "from another tab cmd-g jumps to it"
-press 5:cmd gitview-tab
-expect '[ "$(tab_active)" = 1 ]' "from inside it closes, back to where you were"
+press 5:cmd cmd-g gitview-tab '[ "$(tab_active)" = gitview ]' "from another tab jumps to it"
+press 5:cmd cmd-g gitview-tab '[ "$(tab_active)" = 1 ]' "from inside closes it, back to where you were"
 [ -n "$(terms | awk '$1=="'"$SHELL_T"'"')" ] && ok "the shell's tab is untouched" || fail "closed the wrong tab"
+
+# --- conflicts, and the last file ------------------------------------------------------------
+step "merge conflicts: + on a conflicts folder stages only the conflict"
+C="$BASE/conflict"
+mkdir -p "$C/dir" && git -C "$C" init -q -b main
+gc() { git -C "$C" -c user.email=e2e@test -c user.name=e2e "$@"; }
+printf 'base\n' >"$C/dir/c.txt" && printf 'm\n' >"$C/dir/m.txt" && gc add -A && gc commit -qm base
+gc checkout -qb other && printf 'theirs\n' >"$C/dir/c.txt" && gc commit -qam theirs
+gc checkout -q main && printf 'ours\n' >"$C/dir/c.txt" && gc commit -qam ours
+gc merge -q other >/dev/null 2>&1 || true
+printf 'm changed\n' >"$C/dir/m.txt"
+git -C "$C" diff --name-only --diff-filter=U | grep -q dir/c.txt || fail "no conflict set up"
+"$APP" do space.new --name conflict --folder "$C" >>"$LOG"
+expect panel_up "the panel shows the conflicted repo" 20
+[ "$(shared "s.get('gitview.tree')")" = true ] || do_ gitview.key:t
+do_ gitview.button:stage:in:conflicts:dir/
+expect '[ -z "$(git -C "$C" diff --name-only --diff-filter=U)" ]' "the conflict under dir/ is staged (resolved as it is)"
+git -C "$C" diff --name-only | grep -q "dir/m.txt" && ok "dir/m.txt (a change, not a conflict) is left unstaged" || fail "+ on the conflicts folder staged dir/m.txt too"
+shot 16a-conflicts 1
+do_ gitview.key:t
+
+step "discarding the last file leaves the pane empty"
+L="$BASE/last"
+mkdir -p "$L" && git -C "$L" init -q -b main && printf 'one\n' >"$L/only.txt"
+git -C "$L" -c user.email=e2e@test -c user.name=e2e add -A && git -C "$L" -c user.email=e2e@test -c user.name=e2e commit -qm init
+printf 'two\n' >"$L/only.txt"
+LTAB=$("$APP" do space.new --name last --folder "$L" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+expect panel_up "the panel shows the one-file repo" 20
+do_ gitview.click:only.txt
+expect '[ "$(view_of $LTAB path)" = only.txt ]' "only.txt in the pane"
+do_ gitview-diff.key:x
+confirm_discard gitview-diff
+expect '[ -z "$(git -C "$L" status --short)" ]' "it's discarded"
+expect '[ "$(view_of $LTAB empty)" = true ]' "the pane's view is empty (not a broken one)"
+shot 16b-last-file-gone 1.5
+do_ space.select --index 1
 
 # --- a remote space ------------------------------------------------------------------------
 step "remote space (a fake machine: a second core reached with 'sh -c')"
@@ -318,8 +432,7 @@ if perl -e 'alarm 40; exec @ARGV' hc machine add --via 'sh -c' --name fake --ses
   RTAB=$(echo "$RM" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
   rpanes() { HC_SESSION="${HC_SESSION}r" mod_panes; }
   sleep 1
-  changes_button
-  expect '"$APP" do gitview.key:r' "the panel is up in the remote space"
+  expect panel_up "the panel is up in the remote space" 20
   do_ gitview.click:r.txt
   expect '[ "$(view_of $RTAB path)" = r.txt ] && [ "$(view_of $RTAB on)" = fake ]' "a click shows r.txt from machine fake"
   expect 'rpanes | grep -q gitview-diff' "the diff pane opens in the remote tab"
@@ -337,41 +450,34 @@ else
   fail "hc machine add --via 'sh -c' (the fake machine)"
 fi
 
-# --- the full TUI as panes --------------------------------------------------------------
-step "TUI sidebar (mod.open:gitview-tui-sidebar, cmd-alt-shift-g)"
-do_ layout.hide --id panel
-do_ pane.focus --terminal "$SHELL_T"
-do_ mod.open --name gitview-tui-sidebar
-expect '[ $(terms | awk '"'"'$2=="env"'"'"' | wc -l) -ge 2 ]' "preview + list panes start"
-VIEW=$(ls "$XDG_STATE_HOME"/herdr-gitview/app/views/*.json | grep -v tab.json | head -1)
-PREV=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['preview_pane'])" "$VIEW")
-LIST=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['list_pane'])" "$VIEW")
-expect 'screen $LIST | grep -q "▾"' "the list shows the change sections"
-shot 18-tui-sidebar 2
-hc keys "$LIST" q >/dev/null
-expect '! terms | grep -q "^$LIST "' "q closes the TUI sidebar"
-step "TUI in its own tab (mod.open:gitview-tui-tab, cmd-alt-g)"
-do_ mod.open --name gitview-tui-tab
-expect '[ "$(tab_active)" = gitview ]' "a gitview TUI tab opens"
-shot 19-tui-tab 2
-do_ mod.open --name gitview-tui-tab
-expect '[ "$(tab_active)" = 1 ]' "from inside it closes, back to where you were"
-
 # --- looks: widths and a light theme ---------------------------------------------------------
-step "looks: the panel at 280, 300 and 900 px; a light theme"
-changes_button
+step "the panel at 280, 300 and 900 px and in a light theme: drawn without errors"
+expect panel_up "the panel is up" 20
 do_ gitview.click:src/main.rs
+panel_px() {
+  python3 - "$HERDR_APP_HOME" "$(app_status layout)" <<'PY'
+import json, sys
+home, name = sys.argv[1:]
+print(int(json.load(open(f"{home}/layouts/.state/{name}.json"))["nodes"]["panel"]["size"]["px"]))
+PY
+}
 for w in 280 300 900; do
   do_ layout.resize "{\"id\":\"panel\",\"px\":$w}"
+  expect '[ "$(panel_px)" = '$w' ]' "the panel is $w px"
+  do_ gitview.key:t
+  do_ gitview.key:t
+  status_has '"errors": \[\]' && ok "no mod errors at $w px (list and tree)" || fail "mod errors at $w px: $("$APP" status)"
   shot "20-width-$w" 1.2
 done
 do_ layout.resize '{"id":"panel","px":300}'
 do_ gitview.key:t
 echo '{"zoom": 1, "theme": "paper", "appearance": "light"}' >"$HERDR_APP_HOME/settings.json"
-shot 21-light-tree 2
+sleep 1.5
+do_ gitview-diff.key:r # the pane reloads its diff in the light syntax set
+status_has '"errors": \[\]' && ok "no mod errors in a light theme" || fail "mod errors in light: $("$APP" status)"
+shot 21-light-tree 1
 echo '{"zoom": 1, "theme": "graphite", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
 do_ gitview.key:t
-status_has '"errors": \[\]' && ok "no mod errors in status" || fail "mod errors: $("$APP" status)"
 
 # --- uninstall -------------------------------------------------------------------------
 step "uninstall: our edits go, the layout stays"
