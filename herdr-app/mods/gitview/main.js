@@ -110,7 +110,7 @@ export default class GitList extends View {
   // repo or moved (J/K); a mod pane closed (Loads.revive). Before every command, and from the pump or the
   // timer after stale().
   notice(cx) {
-    if (this.modPanes.gone()) this.loads.revive(cx);
+    if (this.modPanes.gone()) this.loads.afterClose(cx);
     if (this.cycle?.look() === "shown") this.openOnShow(cx);
     if (!this.place.shown()) return;
     const ctx = this.context();

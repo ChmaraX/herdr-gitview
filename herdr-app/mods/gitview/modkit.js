@@ -86,23 +86,38 @@ export class Loads {
     });
   }
 
-  // Every load running now is taken as lost, and each `latest` one runs
-  // again (a late reply of the old run is ignored). For when a mod pane
-  // closed: herdr-app 0.1.12 can drop an exec another copy is waiting on
-  // then (the list's `status` never settled when the diff pane closed for
-  // herdr-nvim's nvim), which held the commands for LOST_MS.
-  revive(cx) {
-    if (!this.running.size) return;
-    console.warn(`gitview: a mod pane closed during ${[...this.running.values()].map((l) => l.what).join(", ")}: not waiting for that, loading again`);
-    this.running.clear();
+  // The loads started by `before` (ms) are taken as lost, and each such
+  // `latest` one runs again (a late reply of the old run is ignored). For
+  // when a mod pane closed: herdr-app 0.1.12 can drop an exec another copy
+  // is waiting on then (the list's `status` never settled when the diff
+  // pane closed for herdr-nvim's nvim), which held the commands for
+  // LOST_MS. A pane leaves panes() a moment before its copy goes, so
+  // `afterClose` looks again a moment later.
+  revive(cx, before = Date.now()) {
+    const lost = [...this.running].filter(([, l]) => l.at <= before);
+    if (!lost.length) return;
+    console.warn(`gitview: a mod pane closed during ${lost.map(([, l]) => l.what).join(", ")}: not waiting for that, loading again`);
+    for (const [id] of lost) this.running.delete(id);
     for (const [what, slot] of this.slots) {
-      if (!slot.at) continue;
+      if (!slot.at || slot.at > before) continue;
       const work = slot.next ?? slot.work;
       slot.at = 0;
       slot.next = null;
       if (work) this.latest(cx, what, work);
     }
     if (!this.busy()) this.waiters.splice(0).forEach((resolve) => resolve());
+  }
+
+  // A mod pane closed: revive now, and the loads started in the next
+  // second that are still running 1.5 s after it.
+  afterClose(cx) {
+    const at = Date.now();
+    this.revive(cx, at);
+    cx.spawn(async (cx) => {
+      await cx.sleep(1500);
+      this.revive(cx, at + 1000);
+      cx.notify();
+    });
   }
 
   // `waiting()` is called about once a second while it waits.

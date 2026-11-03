@@ -112,7 +112,7 @@ export default class GitDiff extends View {
   // shown since (the list moved on and back while this pane wasn't drawn):
   // then this one starts afresh too.
   sync(cx) {
-    if (this.modPanes.gone()) this.loads.revive(cx); // Loads.revive
+    if (this.modPanes.gone()) this.loads.afterClose(cx); // Loads.revive
     if (followStamp(this.watcher) && onScreen(this.tab())) this.reload(cx); // another copy's watch saw the repo change
     if (isDark(theme().background) !== this.dark) {
       this.dark = !this.dark;
