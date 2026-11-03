@@ -270,7 +270,7 @@ Spaces on other machines work the same way.
   `gitview.views[<tab>]` on J/K, and `gitview.dirty` after s/u/x (the list
   refreshes and picks the next file); notes are `gitview.notes["<machine
   or ''>:<repo root>"]` (`{id, file, section, cached, start, end, text,
-  snippet}`; the engine gets `cached`); `gitview.tree` the list mode; `gitview.own[<space>]`
+  snippet}`; the engine gets `cached`); `gitview.changed` a folder watch saw a repo change; `gitview.tree` the list mode; `gitview.own[<space>]`
   cmd-g's tab; `gitview.origins[<space>]` where cmd-g came from.
 - **mods/gitview-agents**: the send dialog (`agents()`, then the binary's
   `send`, then the sent notes leave `gitview.notes`; its error shown in
@@ -335,9 +335,11 @@ Spaces on other machines work the same way.
   exec's own 30 s), the log names it, and a reply that comes after a newer
   status load started is dropped.
 - With two copies waiting on `watchFolder` for the same folder, only the
-  newest wakes (herdr-app 0.1.12): the list's local watch goes quiet while
-  a diff pane watches the same repo, and the list leans on the pane's
-  `gitview.dirty`, its 10 s timer and its other looks.
+  newest wakes (herdr-app 0.1.12), and the list and the diff pane watch the
+  same repo: the copy that wakes stamps shared `gitview.changed["<machine
+  or ''>:<root>"]` (at most every 250 ms; a batch inside that waits for
+  the next stamp), and every copy refreshes when its repo's stamp moves. A
+  refresh never stamps, so nothing loops.
 - A hidden copy (the panel's list while the panel is hidden) and every copy
   in a covered window aren't drawn, so `render()` can't notice the panel
   hiding or a change from the pane: the list also looks from a 300 ms timer
@@ -399,6 +401,8 @@ Spaces on other machines work the same way.
   color the pane's render code gives it).
 - A space on another machine lists, diffs and stages there, picks up new
   files within 4 s, and starts nvim there.
+- With the diff pane open, a file an agent writes shows in the list within
+  2 s, and is gone from it within 2 s once deleted.
 - Uninstall brings back the stock Changes panel; with herdr-nvim installed
   too, either can go first and each uninstall leaves the layout and keys
   byte-identical to before its install.
