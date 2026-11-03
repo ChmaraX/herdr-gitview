@@ -19,12 +19,8 @@ HNV_SRC="${HERDR_NVIM_SRC:-$HOME/projects/herdr-nvim}"
 
 . "$(dirname "$0")/lib.sh"
 
-HNV_SHA=$(git -C "$HNV_SRC" rev-parse --short HEAD)
-HNV="${GITVIEW_BUILD_DIR:-/tmp/gitview-e2e-build}/herdr-nvim-$HNV_SHA"
-if [ ! -d "$HNV" ]; then
-  mkdir -p "$HNV" && git -C "$HNV_SRC" archive HEAD | tar -x -C "$HNV"
-fi
-echo "herdr-nvim $HNV_SHA from $HNV" >>"$LOG"
+HNV=$(hnv_copy "$HNV_SRC")
+echo "herdr-nvim from $HNV" >>"$LOG"
 
 LAYOUT() { echo "$HERDR_APP_HOME/layouts/$(app_status layout).json"; }
 slots() { # "<layout> files=<mod> changes=<mod>"
@@ -77,7 +73,7 @@ git -C "$S" -c user.email=e2e@test -c user.name=e2e add -A
 git -C "$S" -c user.email=e2e@test -c user.name=e2e commit -qm init
 printf 'fn main() {\n    println!("hello, nvim");\n}\n' >"$S/src/main.rs"
 MADE=$("$APP" do space.new --name scratch --folder "$S")
-TAB=$(echo "$MADE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+TAB=$(echo "$MADE" | tab_of)
 SPACE=$(echo "$MADE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["space"])')
 
 # --- order 1 -------------------------------------------------------------------------
@@ -106,7 +102,7 @@ do_ pane.focus --terminal "$(echo "$MADE" | python3 -c 'import json,sys; print(j
 expect panel_up "the gitview panel is up" 20
 expect '[ "$(panel_state)" = "open changes" ]' "the panel shows Changes (gitview), herdr-nvim's sync controller leaves it"
 do_ gitview.click:src/main.rs
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "a click opens gitview's diff pane"
+expect 'has_diff $TAB' "a click opens gitview's diff pane"
 shot coexist-01-diff-pane 1.5
 do_ gitview-diff.key:enter
 DEBUG="$GV_LOG"
@@ -136,7 +132,7 @@ expect '[ "$(nv --remote-expr "&modified")" = 1 ]' "an unsaved edit in nvim"
 # closed used to hang for 35 s (the app dropped its exec; Loads.revive).
 CLICK0=$SECONDS
 do_ gitview.click:src/main.rs
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "the click on the row brings the diff pane back" 30
+expect 'has_diff $TAB' "the click on the row brings the diff pane back" 30
 TOOK=$((SECONDS - CLICK0))
 [ "$TOOK" -lt 5 ] && ok "and it took under 5 s ($TOOK s)" || fail "the click after herdr-nvim open took $TOOK s"
 expect '[ -z "$(tab_nvim)" ]' "nvim's pane is gone (the diff is in its place)"
@@ -156,32 +152,32 @@ list_has_keys() {
 
 step "ZZ in nvim brings the diff back on the same file, the keys on the list (v1)"
 do_ gitview-diff.key:enter
-expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: the file in nvim again, in the diff's place" 30
+expect '[ -n "$(tab_nvim)" ] && ! has_diff $TAB' "Enter: the file in nvim again, in the diff's place" 30
 NV2=$(tab_nvim)
 sleep 1
 # Quit nvim in its pane with ZZ (save if changed, quit; hc keys can't type
 # a colon for :q, shift+; is ;).
 hc keys "$NV2" esc shift+z shift+z >>"$LOG" 2>&1
 expect '[ -z "$(tab_nvim)" ]' "quitting nvim closes its pane" 15
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = src/main.rs ]' "the diff pane is back on src/main.rs within 2 s" 2
+expect 'has_diff $TAB && [ "$(view_of $TAB path)" = src/main.rs ]' "the diff pane is back on src/main.rs within 2 s" 2
 expect list_has_keys "with the keys on the list"
 expect focus_check "and one focus shows"
 shot coexist-03b-q-back 1.5
 
 step "a :w in nvim, then quitting: the diff comes back all the same (the saved file's rev moves)"
 do_ gitview-diff.key:enter
-expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: nvim, in the diff's place" 30
+expect '[ -n "$(tab_nvim)" ] && ! has_diff $TAB' "Enter: nvim, in the diff's place" 30
 expect '[ "$(nv --remote-expr 1)" = 1 ]' "its daemon answers" 15
 nv --remote-send '<esc>Gogitview-saved<esc>:w<cr>'
 expect 'grep -q gitview-saved "$S/src/main.rs"' "saved in nvim (:w)"
 sleep 1 # the list sees the save: the file's rev moves, its view is written again
 hc keys "$(tab_nvim)" esc shift+z shift+q >>"$LOG" 2>&1
 expect '[ -z "$(tab_nvim)" ]' "ZQ closes nvim's pane" 15
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = src/main.rs ]' "the diff pane is back on src/main.rs" 5
+expect 'has_diff $TAB && [ "$(view_of $TAB path)" = src/main.rs ]' "the diff pane is back on src/main.rs" 5
 
 step "a :w in nvim, then cmd-shift-g twice: the diff of that file is back"
 do_ gitview-diff.key:enter
-expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: nvim, in the diff's place" 30
+expect '[ -n "$(tab_nvim)" ] && ! has_diff $TAB' "Enter: nvim, in the diff's place" 30
 expect '[ "$(nv --remote-expr 1)" = 1 ]' "its daemon answers" 15
 nv --remote-send '<esc>Gogitview-saved-again<esc>:w<cr>'
 expect 'grep -q gitview-saved-again "$S/src/main.rs"' "saved in nvim (:w)"
@@ -189,11 +185,11 @@ sleep 1
 do_ mod.open --name gitview-sidebar
 expect '[ "$(panel_state)" = "hidden changes" ] && [ -z "$(tab_nvim)" ]' "cmd-shift-g: the panel and nvim's pane go" 15
 do_ mod.open --name gitview-sidebar
-expect '[ "$(panel_state)" = "open changes" ] && mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = src/main.rs ]' "cmd-shift-g again: the diff of src/main.rs" 15
+expect '[ "$(panel_state)" = "open changes" ] && has_diff $TAB && [ "$(view_of $TAB path)" = src/main.rs ]' "cmd-shift-g again: the diff of src/main.rs" 15
 
 step "cmd-shift-g with the file in nvim closes the whole unit, nvim too (its daemon keeps the edit); again: the diff, the keys on the list"
 do_ gitview-diff.key:enter
-expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: nvim, in the diff's place" 30
+expect '[ -n "$(tab_nvim)" ] && ! has_diff $TAB' "Enter: nvim, in the diff's place" 30
 expect '[ "$(nv --remote-expr 1)" = 1 ]' "its daemon answers on the tab's socket" 15
 nv --remote-send '<esc>ggOgitview-unsaved-2<esc>'
 expect '[ "$(nv --remote-expr "&modified")" = 1 ]' "an unsaved edit in nvim"
@@ -206,22 +202,22 @@ if ! until_ '[ "$(panel_state)" = "hidden changes" ]' 5; then
   do_ mod.open --name gitview-sidebar
 fi
 expect '[ "$(panel_state)" = "hidden changes" ]' "cmd-shift-g: the panel hides" 15
-expect '! mod_panes | grep -q "^$TAB .* gitview-diff$"' "the diff pane goes with it" 15
+expect '! has_diff $TAB' "the diff pane goes with it" 15
 expect '[ -z "$(tab_nvim)" ]' "and nvim's pane too (gitview handed it the file)" 15
 [ "$(nv --remote-expr 'getline(1)')" = gitview-unsaved-2 ] && [ "$(nv --remote-expr '&modified')" = 1 ] \
   && ok "nvim's daemon still holds the buffer and its unsaved edit" || fail "the daemon lost the edit: $(nv --remote-expr 'getline(1)')"
 nv --remote-send '<esc>u' # undone, for what follows
 do_ mod.open --name gitview-sidebar
-expect '[ "$(panel_state)" = "open changes" ] && mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = src/main.rs ]' "cmd-shift-g again: the diff of src/main.rs, not nvim" 15
+expect '[ "$(panel_state)" = "open changes" ] && has_diff $TAB && [ "$(view_of $TAB path)" = src/main.rs ]' "cmd-shift-g again: the diff of src/main.rs, not nvim" 15
 [ -z "$(tab_nvim)" ] && ok "(nvim's pane stays closed)" || fail "nvim's pane came back"
 expect list_has_keys "the keys on the list"
 
 step "leaving the tab before :q: the diff doesn't come back"
 do_ gitview-diff.key:enter
-expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: nvim again" 30
+expect '[ -n "$(tab_nvim)" ] && ! has_diff $TAB' "Enter: nvim again" 30
 NV3=$(tab_nvim)
 sleep 1
-OTHER=$("$APP" do tab.new --space "$SPACE" --folder "$S" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+OTHER=$("$APP" do tab.new --space "$SPACE" --folder "$S" | tab_of)
 expect '[ "$(tab_id)" = "$OTHER" ]' "in another tab"
 sleep 1
 do_ tab.select --id "$TAB"
@@ -229,10 +225,10 @@ expect '[ "$(tab_id)" = "$TAB" ]' "back in the first tab"
 hc keys "$NV3" esc shift+z shift+q >>"$LOG" 2>&1
 expect '[ -z "$(tab_nvim)" ]' "quitting nvim closes its pane" 15
 sleep 3
-! mod_panes | grep -q "^$TAB .* gitview-diff$" && ok "no diff came back (the person had left the tab)" || fail "the diff came back after leaving the tab"
+! has_diff $TAB && ok "no diff came back (the person had left the tab)" || fail "the diff came back after leaving the tab"
 do_ tab.close --id "$OTHER" --confirmed true
 do_ gitview.click:src/main.rs
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "a click opens the diff again"
+expect 'has_diff $TAB' "a click opens the diff again"
 
 step "uninstall gitview: herdr-nvim's layout and keys come back byte for byte"
 gv_down || fail "gitview uninstall"

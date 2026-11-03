@@ -51,10 +51,10 @@ space_diff() {
 # The tab has its diff pane, on that file: the pane takes its commands then.
 # (A space switch can hide the panel a moment, as the tab bar restores the
 # space's own panel; its diff panes close with it and open again.)
-pane_on() { mod_panes | grep -q "^$1 .* gitview-diff$" && [ "$(view_of "$1" path)" = "$2" ]; }
+pane_on() { has_diff $1 && [ "$(view_of "$1" path)" = "$2" ]; }
 
 MADE=$("$APP" do space.new --name scratch --folder "$S")
-TAB=$(echo "$MADE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+TAB=$(echo "$MADE" | tab_of)
 SPACE=$(echo "$MADE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["space"])')
 SHELL_T=$(echo "$MADE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["terminal"])')
 do_ pane.split --direction down --argv "[\"/usr/bin/env\",\"DUMMY_LOG=$BASE/dummy.log\",\"python3\",\"-u\",\"$E2E/dummy-agent.py\"]"
@@ -83,7 +83,7 @@ do_ pane.focus --terminal "$SHELL_T"
 expect panel_up "the panel is up (it takes gitview.* commands)" 20
 expect '[ "$(panel_state)" = "open changes" ]' "the panel shows Changes"
 # The list notices it's shown from a timer too (a covered window doesn't draw).
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "showing the panel opens the diff pane in this tab"
+expect 'has_diff $TAB' "showing the panel opens the diff pane in this tab"
 expect '[ -n "$(view_of $TAB path)" ]' "on the list's first file"
 shot 01-panel-list
 do_ gitview.click:src/main.rs
@@ -323,9 +323,7 @@ shot 12-sent 1
 
 step "placing multi-line notes into a program without bracketed paste: an error, nothing typed"
 PL="$BASE/plain"
-mkdir -p "$PL" && git -C "$PL" init -q -b main && printf 'one\n' >"$PL/p.txt"
-git -C "$PL" -c user.email=e2e@test -c user.name=e2e add -A && git -C "$PL" -c user.email=e2e@test -c user.name=e2e commit -qm init
-printf 'one\ntwo\n' >"$PL/p.txt"
+mini_repo "$PL" p.txt 'one\n' 'one\ntwo\n'
 # Its own space, so its agent is the dialog's first (this space's agents first).
 "$APP" do space.new --name plain --folder "$PL" --argv "[\"/usr/bin/env\",\"DUMMY_PLAIN=1\",\"DUMMY_LOG=$BASE/plain.log\",\"python3\",\"-u\",\"$E2E/dummy-agent.py\"]" >>"$LOG"
 expect '[ -e "$BASE/plain.log.json" ]' "a dummy agent without bracketed paste, in a space of its own"
@@ -355,7 +353,7 @@ do_ gitview-diff.key:enter
 expect '[ -n "$(terms | awk '"'"'$2=="nvim"'"'"')" ]' "nvim runs in a new pane"
 NVIM=$(terms | awk '$2=="nvim"{print $1}')
 hc get "$NVIM" --json | grep -q '"+5"' && ok "at the cursor's line (+5)" || fail "nvim line: $(hc get "$NVIM" --json | head -c 300)"
-mod_panes | grep -q "^$TAB .* gitview-diff$" && ok "the diff pane stays beside it" || fail "the diff pane went"
+has_diff $TAB && ok "the diff pane stays beside it" || fail "the diff pane went"
 shot 13-nvim 2
 do_ gitview.click:src/app/a.rs
 do_ gitview.key:enter
@@ -410,21 +408,19 @@ do_ gitview.click:src/main.rs
 do_ gitview-diff.key:enter
 expect 'grep -q "^open --tab $TAB --space $SPACE .*/src/main.rs:2$" "$BASE/herdr-nvim.log"' "enter asks herdr-nvim: open --tab <tab> --space <space> <file>:<line>"
 [ -z "$(terms | awk '$2=="nvim"')" ] && ok "and starts no nvim of its own" || fail "started nvim anyway"
-expect '! mod_panes | grep -q "^$TAB .* gitview-diff$"' "the diff pane closes (herdr-nvim's nvim sits there)"
+expect '! has_diff $TAB' "the diff pane closes (herdr-nvim's nvim sits there)"
 do_ gitview.click:src/app/a.rs
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "the next file click opens the diff pane again"
+expect 'has_diff $TAB' "the next file click opens the diff pane again"
 rm -rf "$STAND"
 
 step "enter → the editor the engine picks: config.toml's editor (a vim), started with +line file"
 ED="$BASE/edrepo"
-mkdir -p "$ED" && git -C "$ED" init -q -b main && printf 'one\ntwo\nthree\n' >"$ED/e.txt"
-git -C "$ED" -c user.email=e2e@test -c user.name=e2e add -A && git -C "$ED" -c user.email=e2e@test -c user.name=e2e commit -qm init
-printf 'one\ntwo\nthree, changed\n' >"$ED/e.txt"
+mini_repo "$ED" e.txt 'one\ntwo\nthree\n' 'one\ntwo\nthree, changed\n'
 FAKE="$BASE/fakebin" && mkdir -p "$FAKE"
 printf '#!/bin/sh\necho "$@" >>"%s/vim.args"\n' "$BASE" >"$FAKE/vim" && chmod +x "$FAKE/vim"
 GVCONF="$XDG_CONFIG_HOME/herdr/plugins/config/chmarax.gitview"
 mkdir -p "$GVCONF" && printf 'editor = ["%s/vim"]\n' "$FAKE" >"$GVCONF/config.toml"
-ETAB=$("$APP" do space.new --name ed --folder "$ED" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+ETAB=$("$APP" do space.new --name ed --folder "$ED" | tab_of)
 expect panel_up "the panel shows the editor repo" 20
 expect '"$APP" do gitview.file:e.txt >/dev/null && pane_on $ETAB e.txt' "e.txt in the diff pane" 15
 do_ gitview-diff.key:enter
@@ -466,10 +462,10 @@ else
 fi
 
 step "cmd-shift-g toggles the Changes panel; cmd-g opens gitview's own tab"
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "(the diff pane is open before cmd-shift-g)"
+expect 'has_diff $TAB' "(the diff pane is open before cmd-shift-g)"
 SEL=$(view_of $TAB path)
 press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ] && ! space_diff' "hides the panel and its diff pane together"
-press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "open changes" ] && mod_panes | grep -q "^$TAB .* gitview-diff$" && [ "$(view_of $TAB path)" = "$SEL" ]' "shows both again, on the file that was selected ($SEL)"
+press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "open changes" ] && has_diff $TAB && [ "$(view_of $TAB path)" = "$SEL" ]' "shows both again, on the file that was selected ($SEL)"
 if [ "$KEYS" = 1 ]; then
   sleep 0.5
   P0=$(view_of $TAB path)
@@ -481,23 +477,23 @@ fi
 shot 14-cmd-shift-g 1
 press 5:cmd,shift cmd-shift-g gitview-sidebar '[ "$(panel_state)" = "hidden changes" ] && ! space_diff' "hides both again"
 changes_button
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "the Changes button shows both too"
+expect 'has_diff $TAB' "the Changes button shows both too"
 do_ layout.hide --id panel
 expect '! space_diff' "and hiding the panel (the Changes button again) closes the diff pane"
 # The hide was noticed only by a diff pane in the shown tab once (B7).
 changes_button
-expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "shown again in tab 1, with its diff pane"
-TAB2=$("$APP" do tab.new --space "$SPACE" --folder "$S" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+expect 'has_diff $TAB' "shown again in tab 1, with its diff pane"
+TAB2=$("$APP" do tab.new --space "$SPACE" --folder "$S" | tab_of)
 expect '[ "$(tab_id)" = "$TAB2" ] && ! mod_panes | grep -q "^$TAB2 "' "a second tab, without a diff pane"
 do_ layout.hide --id panel
 expect '! space_diff' "the Changes button hides the panel from there: tab 1's diff pane closes too"
 changes_button
-expect 'mod_panes | grep -q "^$TAB2 .* gitview-diff$" && [ -n "$(view_of $TAB2 path)" ]' "and shows it again: its file opens in a diff pane in this tab"
+expect 'has_diff $TAB2 && [ -n "$(view_of $TAB2 path)" ]' "and shows it again: its file opens in a diff pane in this tab"
 do_ tab.close --id "$TAB2" --confirmed true
 expect '[ "$(tab_id)" = "$TAB" ]' "back in tab 1"
 press 5:cmd cmd-g gitview-tab '[ "$(tab_active)" = gitview ]' "opens the gitview tab"
 OWN=$(tab_id)
-expect 'mod_panes | grep -q "^$OWN .* gitview-diff$" && mod_panes | grep -q "^$OWN .* gitview$"' "diff pane and list pane"
+expect 'has_diff $OWN && mod_panes | grep -q "^$OWN .* gitview$"' "diff pane and list pane"
 do_ gitview.click:src/main.rs
 expect '[ "$(view_of $OWN path)" = src/main.rs ]' "a click in its list shows the diff on the left"
 shot 15-own-tab 1.5
@@ -542,10 +538,8 @@ do_ gitview.key:t
 
 step "discarding the last file leaves the pane empty"
 L="$BASE/last"
-mkdir -p "$L" && git -C "$L" init -q -b main && printf 'one\n' >"$L/only.txt"
-git -C "$L" -c user.email=e2e@test -c user.name=e2e add -A && git -C "$L" -c user.email=e2e@test -c user.name=e2e commit -qm init
-printf 'two\n' >"$L/only.txt"
-LTAB=$("$APP" do space.new --name last --folder "$L" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+mini_repo "$L" only.txt 'one\n' 'two\n'
+LTAB=$("$APP" do space.new --name last --folder "$L" | tab_of)
 expect panel_up "the panel shows the one-file repo" 20
 do_ gitview.click:only.txt
 expect 'pane_on $LTAB only.txt' "only.txt in the pane"
@@ -558,10 +552,8 @@ do_ space.select --index 1
 
 step "Commit all: with nothing staged the commit row commits everything (untracked too, unless they're hidden)"
 A="$BASE/all"
-mkdir -p "$A" && git -C "$A" init -q -b main && printf 'one\n' >"$A/tracked.txt"
-git -C "$A" -c user.email=e2e@test -c user.name=e2e add -A && git -C "$A" -c user.email=e2e@test -c user.name=e2e commit -qm init
-git -C "$A" config user.email e2e@test && git -C "$A" config user.name e2e
-printf 'two\n' >>"$A/tracked.txt" && printf 'new\n' >"$A/new.txt"
+mini_repo "$A" tracked.txt 'one\n' 'one\ntwo\n'
+printf 'new\n' >"$A/new.txt"
 "$APP" do space.new --name all --folder "$A" >>"$LOG"
 expect panel_up "the panel shows a repo with nothing staged" 20
 do_ "gitview.commit:e2e: commit all"
@@ -583,15 +575,13 @@ do_ space.select --index 1
 # --- a remote space ------------------------------------------------------------------------
 step "remote space (a fake machine: a second core reached with 'sh -c')"
 R="$BASE/remote-repo"
-mkdir -p "$R" && git -C "$R" init -q -b main && printf 'one\n' >"$R/r.txt"
-git -C "$R" -c user.email=e2e@test -c user.name=e2e add -A && git -C "$R" -c user.email=e2e@test -c user.name=e2e commit -qm init
-printf 'one\ntwo\n' >"$R/r.txt"
+mini_repo "$R" r.txt 'one\n' 'one\ntwo\n'
 if perl -e 'alarm 40; exec @ARGV' hc machine add --via 'sh -c' --name fake --session "${HC_SESSION}r" --json >>"$LOG" 2>&1; then
   ok "hc machine add --via 'sh -c' --name fake (a second local core session)"
   # The app connects to the new machine a moment later.
   remote_space() { RM=$("$APP" do space.new "{\"name\":\"remote\",\"folder\":\"$R\",\"machine\":\"fake\"}" 2>>"$LOG"); }
   expect remote_space "a space on machine fake" 30
-  RTAB=$(echo "$RM" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+  RTAB=$(echo "$RM" | tab_of)
   rpanes() { HC_SESSION="${HC_SESSION}r" mod_panes; }
   sleep 1
   expect panel_up "the panel is up in the remote space" 20

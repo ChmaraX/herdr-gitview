@@ -214,6 +214,25 @@ def walk(tab, n):
 for s in doc.get("spaces", []):
     for t in s["tabs"]: walk(t["id"], t["root"])'
 }
+# A one-file repo: mini_repo DIR FILE COMMITTED CHANGED (printf formats):
+# FILE committed with COMMITTED, then left changed to CHANGED.
+mini_repo() {
+  mkdir -p "$1" && git -C "$1" init -q -b main
+  git -C "$1" config user.email e2e@test && git -C "$1" config user.name e2e
+  printf "$3" >"$1/$2" && git -C "$1" add -A && git -C "$1" commit -qm init
+  printf "$4" >"$1/$2"
+}
+# The tab of a JSON reply ({space, tab, terminal}: space.new, tab.new).
+tab_of() { python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])'; }
+# The tab has its gitview diff pane.
+has_diff() { mod_panes | grep -q "^$1 .* gitview-diff$"; }
+# herdr-nvim's committed HEAD in a scratch folder ($HERDR_NVIM_SRC's), once
+# per commit: the checkout itself is never built in or changed. Prints it.
+hnv_copy() {
+  local dir="${GITVIEW_BUILD_DIR:-/tmp/gitview-e2e-build}/herdr-nvim-$(git -C "$1" rev-parse --short HEAD)"
+  [ -d "$dir" ] || { mkdir -p "$dir" && git -C "$1" archive HEAD | tar -x -C "$dir"; }
+  echo "$dir"
+}
 tab_active() { "$APP" ls | python3 -c "import json,sys; d=json.load(sys.stdin); print([t['name'] for s in d['spaces'] for t in s['tabs'] if t['active'] and s['active']][0])"; }
 tab_id() { "$APP" ls | python3 -c "import json,sys; d=json.load(sys.stdin); print([t['id'] for s in d['spaces'] for t in s['tabs'] if t['active'] and s['active']][0])"; }
 # gitview's shared state (shared.json, saved in the background): a python
