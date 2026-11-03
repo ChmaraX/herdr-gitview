@@ -160,6 +160,12 @@ act history 5 'do_ gitview.key:l; sleep 0.8; do_ gitview.key:enter; sleep 0.8; d
 HCOMMIT=$(view_of "$TAB" commit)
 act tree 3 'do_ gitview.key:t'
 do_ gitview.key:t
+ms_now() { perl -MTime::HiRes=time -e 'printf "%d", time*1000'; }
+# cmd-shift-g: how long the diff pane outlives the hide (polled), then the
+# show again.
+act hide 3 'H0=$(ms_now); do_ mod.open --name gitview-sidebar; for _ in $(seq 1 100); do mod_panes | grep -q "^$TAB .* gitview-diff$" || break; done; echo $(( $(ms_now) - H0 )) >"$J/hide/gone_ms"'
+act show 3 'do_ mod.open --name gitview-sidebar'
+expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "(the diff pane is back after the show)"
 if [ -n "$HNV_SRC" ]; then
   do_ gitview.click:src/lib.rs
   sleep 1
@@ -197,6 +203,9 @@ if [ "$JANK_ASSERT" = 1 ]; then
   done
   budget write-other 'm["execs"].get("diff", 0) == 0' "no diff for a write to another file"
   budget tree 'm["trace_blank"] == 0 and m["no_file"] == 0' "no blank body, no \"No file selected\""
+  GONE=$(cat "$J/hide/gone_ms" 2>/dev/null || echo 99999)
+  [ "$GONE" -le 400 ] && ok "hide: the diff pane is gone ${GONE} ms after cmd-shift-g (the app's own lists polled)" || fail "hide: the diff pane outlived cmd-shift-g by ${GONE} ms"
+  budget show 'm["execs"].get("status", 0) <= 1 and m["execs"].get("diff", 0) <= 1 and m["trace_blank"] <= 1' "show: one status and one diff at most (and only the new pane's first load blank)"
   [ "$HCOMMIT" = null ] && ok "history: back to files, the pane shows the worktree's file" || fail "history: the pane still shows commit $HCOMMIT"
   if [ -n "$HNV_SRC" ] && [ -n "${NVT:-}" ]; then budget nvim-quit 'm["trace_blank"] <= 1' "coming back from nvim, no blank body after the new pane's first file (a new mod copy starts empty: nothing crosses copies)"; fi
 fi
