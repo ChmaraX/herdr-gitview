@@ -117,15 +117,66 @@ expect '! mod_panes | grep -q gitview-diff' "gitview closed its diff pane (herdr
 sleep 1
 echo "after herdr-nvim open, the side panel shows: $(panel_state)" | tee -a "$LOG"
 shot coexist-02-enter-herdr-nvim 2
+# herdr-nvim's nvim of this tab (its terminal carries herdr-nvim.sidebar=<tab>),
+# its daemon's socket (the --server its remote UI attaches to), and asking it.
+tab_nvim() {
+  hc ls --json --label "herdr-nvim.sidebar=$TAB" | python3 -c 'import json,sys; print(" ".join(t["address"] for t in json.load(sys.stdin)["terminals"] if t["state"] == "live"))'
+}
+nv_sock() { hc get "$1" --json | python3 -c 'import json,sys; a=json.load(sys.stdin)["foreground"]["argv"]; print(a[a.index("--server")+1] if "--server" in a else "")'; }
+nv() { nvim --headless --server "$SOCK" "$@" 2>/dev/null; }
+diff_pane() { mod_panes | awk -v t="$TAB" '$1==t && $3=="gitview-diff" {print $2}'; }
+diff_has_keys() { [ -n "$(diff_pane)" ] && [ "$(app_status focused_pane)" = "$(diff_pane)" ]; }
+
+step "a click on the row while it's in nvim brings the diff back; nvim keeps running with the buffer and an unsaved edit"
+SOCK=$(nv_sock "$NV")
+[ -n "$SOCK" ] && ok "herdr-nvim's daemon: $SOCK" || fail "no daemon socket for $NV"
+nv --remote-send '<esc>ggOgitview-unsaved<esc>'
+expect '[ "$(nv --remote-expr "&modified")" = 1 ]' "an unsaved edit in nvim"
 # The click is handled at once: a status load in flight when the diff pane
 # closed used to hang for 35 s (the app dropped its exec; Loads.revive).
 CLICK0=$SECONDS
 do_ gitview.click:src/main.rs
-expect 'mod_panes | grep -q gitview-diff' "the next click in the list opens the diff pane again" 30
+expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "the click on the row brings the diff pane back" 30
 TOOK=$((SECONDS - CLICK0))
 [ "$TOOK" -lt 5 ] && ok "and it took under 5 s ($TOOK s)" || fail "the click after herdr-nvim open took $TOOK s"
+expect '[ -z "$(tab_nvim)" ]' "nvim's pane is gone (the diff is in its place)"
+[ "$(nv --remote-expr 'getline(1)')" = gitview-unsaved ] && [ "$(nv --remote-expr '&modified')" = 1 ] \
+  && ok "nvim still runs, with the buffer and its unsaved edit" || fail "nvim lost the edit: $(nv --remote-expr 'getline(1)')"
+expect diff_has_keys "the diff pane has the keyboard"
+nv --remote-send '<esc>u'
+expect '[ "$(nv --remote-expr "&modified")" = 0 ]' "(the edit undone, for :q)"
 echo "then: panel $(panel_state)" | tee -a "$LOG"
 shot coexist-03-click-again 2
+
+step "quitting nvim (ZQ, as :q) brings the diff back on the same file, with the keyboard"
+do_ gitview-diff.key:enter
+expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: the file in nvim again, in the diff's place" 30
+NV2=$(tab_nvim)
+sleep 1
+# Quit nvim in its pane, as :q does (hc keys can't type a colon: shift+; is ;),
+# with ZQ, which quits the same way when nothing is unsaved.
+hc keys "$NV2" esc shift+z shift+q >>"$LOG" 2>&1
+expect '[ -z "$(tab_nvim)" ]' "quitting nvim closes its pane" 15
+expect 'diff_has_keys && [ "$(view_of $TAB path)" = src/main.rs ]' "the diff pane is back on src/main.rs within 2 s, with the keyboard" 2
+shot coexist-03b-q-back 1.5
+
+step "leaving the tab before :q: the diff doesn't come back"
+do_ gitview-diff.key:enter
+expect '[ -n "$(tab_nvim)" ] && ! mod_panes | grep -q "^$TAB .* gitview-diff$"' "Enter: nvim again" 30
+NV3=$(tab_nvim)
+sleep 1
+OTHER=$("$APP" do tab.new --space "$SPACE" --folder "$S" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab"])')
+expect '[ "$(tab_id)" = "$OTHER" ]' "in another tab"
+sleep 1
+do_ tab.select --id "$TAB"
+expect '[ "$(tab_id)" = "$TAB" ]' "back in the first tab"
+hc keys "$NV3" esc shift+z shift+q >>"$LOG" 2>&1
+expect '[ -z "$(tab_nvim)" ]' "quitting nvim closes its pane" 15
+sleep 3
+! mod_panes | grep -q "^$TAB .* gitview-diff$" && ok "no diff came back (the person had left the tab)" || fail "the diff came back after leaving the tab"
+do_ tab.close --id "$OTHER" --confirmed true
+do_ gitview.click:src/main.rs
+expect 'mod_panes | grep -q "^$TAB .* gitview-diff$"' "a click opens the diff again"
 
 step "uninstall gitview: herdr-nvim's layout and keys come back byte for byte"
 gv_down || fail "gitview uninstall"
