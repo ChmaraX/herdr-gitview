@@ -110,6 +110,7 @@ fail() {
     echo "--- shared"; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({k:v for k,v in d.items() if k.startswith("gitview")}, indent=1)[:4000])' "$HERDR_APP_HOME/shared.json"
     for t in $(terms | awk '{print $1}'); do echo "--- screen $t"; screen "$t" | head -40; done
     echo "--- gitview log"; tail -40 "$GV_LOG"; echo "--- app log"; tail -20 "$BASE/app.log"
+    echo "--- the mods' lines in the app log"; grep -a "gitview" "$BASE/app.log" | grep -v "asking to discard" | tail -20
   } >>"$LOG" 2>&1 || true
   shot FAIL || true
   [ -z "${E2E_KEEP:-}" ] || { echo "kept: source $BASE/env.sh" | tee -a "$LOG"; trap - EXIT; }
