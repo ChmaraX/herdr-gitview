@@ -107,9 +107,11 @@ Spaces on other machines work the same way.
 - **Diff pane keys**: `j`/`k`, arrows, page up/down, `g`/`G`, the wheel and a
   click move the cursor; `v` starts or ends a selection, a mouse drag selects
   (shift-click extends); `a` writes a note on the selection (enter saves, esc
-  cancels); `enter` or a double-click opens nvim at the cursor's line (on a
+  cancels; only on staged or unstaged changes, as in the TUI: not on a
+  commit's or the branch's diff); `enter` or a double-click opens nvim at the cursor's line (on a
   fold: unfolds it, as a click does); `s`/`u`/`x` stage, unstage or discard
-  the shown file, which then shows where it went (or the next file); `J`/`K`
+  the shown file, which then shows where it went (or the next file; with
+  none left, "No file selected"); `J`/`K`
   the next/previous file in the list's order (the list follows); `p` sends;
   `esc` clears the selection; × closes the pane (the next click opens it).
 - **Enter → nvim**: with herdr-nvim installed (`<app home>/mods/herdr-nvim/
@@ -120,22 +122,32 @@ Spaces on other machines work the same way.
   running in the tab (or a layout block) opens the file; else a new nvim
   (the configured editor) starts right of the diff pane, in the repo, and
   closes with `:q`. On another machine it starts there.
+- **Discard** asks first (the app's confirm). From the changes section it
+  keeps a partly staged file's staged part; a section's or folder's `↺`
+  covers what that section holds under it, as `+` and `−` do (a folder in
+  merge conflicts stages only its conflicts).
 - **Send**: enter in the dialog places the notes in the agent's input (a
-  paste through the agent's terminal, bracketed when it asks; no clipboard),
-  shift/ctrl/cmd+enter submits them. Sent notes leave the list; notes are
+  paste through the agent's terminal, bracketed; no clipboard). A program
+  that isn't in bracketed-paste mode can't take multi-line text unsubmitted:
+  the dialog shows "this program can't take multi-line text without
+  submitting; use shift+enter to send" and nothing is typed.
+  Shift/ctrl/cmd+enter submits them. Sent notes leave the list; notes are
   kept per machine and repo until sent or deleted, across restarts.
 - **cmd-shift-g** shows the panel on gitview (and gives it the keyboard), or
   hides it when it already shows gitview. **cmd-g** opens the gitview tab for
   the repo you're in, jumps to it from another tab, and from inside closes it
-  and goes back. **cmd-alt-shift-g** / **cmd-alt-g** open gitview's TUI as
-  terminal panes (the fallback).
+  and goes back.
 - Commands, for keys.json and scripts (they reach every copy on screen):
   `gitview.key:<key>`, `gitview.file:<path>`, `gitview.commit:<message>`,
   `gitview.click:<path>`, `gitview.dblclick:<path>`,
-  `gitview.button:<stage|unstage|discard>:<path | folder/ | section:<id>>`;
+  `gitview.button:<stage|unstage|discard>:<path | folder/ | section:<id> |
+  in:<section>:<path or folder/>>`; the confirm's `gitview.discard:<token>`;
   `gitview-diff.key:<key>`, `gitview-diff.note:<text>` (a note on the
   selection), `gitview-diff.drag:<line>:<line>`, `gitview-diff.close`;
-  `gitview-agents.key:<keystroke>`.
+  `gitview-diff.discard:<token>`; `gitview-agents.key:<keystroke>`. A
+  discard confirm carries a one-time token the copy that asked logs
+  ("gitview: asking to discard <what> (gitview.discard:<token>)"): only that
+  copy acts, once.
 
 ## Built from
 
@@ -152,43 +164,54 @@ Spaces on other machines work the same way.
   `props.replaces` back in every personal layout and removes only our keys;
   it never deletes or switches a layout. herdr-nvim does the same for
   `files`, in either order.
-- **mods/gitview** (the list): `main.js` (state, loading, actions),
-  `keys.js` (keys and commands), `listview.js` (rows and icon buttons),
-  `history.js` (commit rows), `notesview.js` (note rows), `chrome.js`
-  (headers, commit row, footer), `model.js` (status → flat or tree rows, the
-  view for a file, `diff` arguments), `shared.js` (the shared state, the
-  panel in the layout, taking the keyboard), `engine.js` (runs the binary;
-  finds the shown space's folder and machine), `nvim.js` (Enter),
-  `scroller.js` (a list that draws only its visible rows as ordinary
-  elements), `icons/` (Lucide: plus, minus, undo, x, chevrons, folder,
-  history, list, list-tree, send, arrow-left, branch). `mod.json`:
+- **mods/gitview** (the list): `main.js` (loading, selection, actions),
+  `filelist.js` (`FileList`: a status's rows, selection and folding, and
+  `where` (root, machine, base or commit) the status came with, so every op
+  goes to that repo; one for the working tree, one for a commit),
+  `modes.js` (each view's `{list, header, body, under, keys, hints}`:
+  files, commit, log, notes), `keys.js` (key and command dispatch),
+  `listview.js` (rows and their buttons), `history.js` (the history, its
+  rows and actions), `notesview.js` (note rows and actions), `model.js`
+  (status → flat or tree rows, a file's view, `diff` arguments), and,
+  shared with the pane: `chrome.js` (icon buttons, pills, the spinner, a
+  path, the headers of both mods, the commit row, the footer), `modkit.js`
+  (the load counter, the fading message, the folder watch, the command
+  loop, key names, the launchers' one-shot), `actions.js` (which section
+  allows which op, the discard confirm, sending notes), `shared.js` (every
+  shared key, `machineOf`, the panel in the layout, taking the keyboard),
+  `engine.js` (runs the binary; the shown space's folder and machine),
+  `nvim.js` (Enter), `scroller.js` (a list that draws only its visible rows
+  as ordinary elements), `icons/` (Lucide: plus, minus, undo, x, chevrons,
+  folder, history, list, list-tree, send, arrow-left, branch). `mod.json`:
   `{"place": "none", "title": "gitview", "focusable": true}`.
 - **mods/gitview-diff** (the diff pane): `main.js`, `diffview.js` (diff
-  rows, note cards, the composer, a note's range), `parts.js` (header,
-  footer); props `{tab}` (`{space, own}` in cmd-g's tab). `focusable`.
+  rows, note cards, the composer, a note's range); props `{tab}` (`{space,
+  own}` in cmd-g's tab). `focusable`.
 - **The two talk only through shared state**: the list writes
   `gitview.views[<tab>]` (the file, its section and scope, the base or
-  commit, the list's file order for J/K, a `seq`); the pane writes
-  `gitview.cursor[<tab>]` (the list's Enter uses its line),
-  `gitview.views[<tab>]` on J/K and `gitview.dirty` after s/u/x; notes are
-  `gitview.notes["<machine or ''>:<repo root>"]`; `gitview.tree` the list
-  mode; `gitview.own[<space>]` cmd-g's tab.
+  commit, the list's file order for J/K, a `seq`; `{empty: true}` when
+  there's nothing to show); the pane writes `gitview.cursor[<tab>]` (the
+  list's Enter uses its line), `gitview.views[<tab>]` on J/K and after
+  s/u/x, and `gitview.dirty`; notes are `gitview.notes["<machine or
+  ''>:<repo root>"]`; `gitview.tree` the list mode; `gitview.own[<space>]`
+  cmd-g's tab; `gitview.origins[<space>]` where cmd-g came from.
 - **mods/gitview-agents**: the send dialog (`agents()`, then the binary's
-  `send`, then the sent notes leave `gitview.notes`).
+  `send`, then the sent notes leave `gitview.notes`; its error shown in
+  the dialog).
 - **mods/gitview-sidebar** (cmd-shift-g) and **mods/gitview-tab** (cmd-g):
-  2×2 px frameless windows that act and close. **mods/gitview-tui-sidebar**,
-  **mods/gitview-tui-tab**, **mods/gitview-popup**: the TUI's launchers and
-  its dialog host.
+  2×2 px frameless windows that act once and close (`modkit.js` `oneShot`).
 - Files shared between mod folders (`engine.js`, `model.js`, `shared.js`,
-  `nvim.js`, `scroller.js`, `listview.js`, `launch.js`) are symlinks in the
-  repo; install copies them (`cp -L`): a mod can't import from another
-  mod's folder.
+  `nvim.js`, `scroller.js`, `chrome.js`, `modkit.js`, `actions.js`) are
+  symlinks in the repo; install copies them (`cp -L`): a mod can't import
+  from another mod's folder.
 - **The binary** (`mods/gitview/bin/herdr-gitview`, built from this repo;
-  paths in `mods/gitview/config.json`), with `GITVIEW_HOST=app`: `json
+  paths in `mods/gitview/config.json`): `json
   status|diff|stage|unstage|discard|commit|log|commit-files|notes|nvim|send|
   sidebar` (every repo op takes `--on <machine>` and then runs git and file
-  reads there through `hc exec --on`), `app-setup install|uninstall`, and the
-  TUI's `toggle`, `toggle-tab`, `list`, `preview`, `ask`, `pick-agent`.
+  reads there through `hc exec --on`; the mods put `--` before paths,
+  messages and text; in branch scope a poll passes the base it already
+  knows) and `app-setup install|uninstall`. The full contract is the module
+  doc of `src/appjson.rs`.
 - **herdr** functions: `exec`, `watchFolder`, `shared`/`setShared`,
   `nextCommand`, `openOverlay`/`closeOverlay` (`confirm`, `gitview-agents`),
   `run` (`pane.split`, `pane.close`, `pane.focus`, `terminal.open`,
@@ -196,13 +219,16 @@ Spaces on other machines work the same way.
   `layout.hide`), `notify`, `props`, `theme()`, `settings()`, `focused()`,
   `panes()`, `spaces()`, `agents()`, `layout()`, `InputState`/`Input`,
   `TextareaState`/`Textarea`, `svg`, `.frames`, `.tooltip`.
-- **Keys** (`keys.json`): `cmd-shift-g` gitview-sidebar, `cmd-g` gitview-tab,
-  `cmd-alt-shift-g` / `cmd-alt-g` the TUI. Linux (`keys.linux.json`):
+- **Keys** (`keys.json`): `cmd-shift-g` gitview-sidebar, `cmd-g` gitview-tab.
+  Linux (`keys.linux.json`):
   `ctrl-alt-shift-g`, `ctrl-alt-g`. None of herdr-nvim's (`cmd-e`, `cmd-o`,
   `cmd-shift-e`).
 - It runs programs (`herdr-gitview`, `git`, `nvim`, `hc`, `herdr-app`,
   herdr-nvim's CLI) and writes to the repo only when you stage, discard or
-  commit. No network, no clipboard.
+  commit. No clipboard. In a space on another machine every git command
+  and file read goes there over herdr-core's own connection (`hc exec --on
+  <machine>`, ssh or whatever the machine was added with); nothing else
+  reaches the network.
 
 ## Watch out
 
@@ -213,15 +239,18 @@ Spaces on other machines work the same way.
 - `terminal.show {terminal, pane}` answers ok for a mod pane but shows
   nothing there, so the diff pane can't become nvim; a new nvim opens right
   of it instead.
-- Never start work from `render()` (a task spawned there may be dropped and
-  leave a load counted forever): render only notices and wakes a task made
-  in `init`. A fully covered window doesn't draw at all, so the mods also
-  look at shared state twice a second.
+- Never start work from `render()`: render only notices and wakes a task
+  made in `init` (shared.js `pump`). Commands read shared state as they
+  arrive (a fully covered window doesn't draw, so render may not run).
+- With two copies of a mod on screen (the panel and cmd-g's list), a copy
+  that wasn't waiting on `nextCommand()` when a command came never got
+  another (herdr-app 0.1.12): one task only takes commands and queues them;
+  another runs them.
+- A load whose task never comes back (seen once around herdr-nvim's `open`:
+  no process left, the promise never settled) would hold commands and the
+  refresh; after 15 s it no longer counts, and the log names it.
 - A method named `close` on the View is the app's cleanup hook: it runs when
   the pane goes.
-- `json sidebar` finds a tab's root only in this machine's layout: in a
-  remote space the diff pane splits the focused pane instead (and cmd-g's
-  list splits the diff pane in half).
 - herdr-nvim's `open` checks the file on this machine, so in a remote space
   it fails and a plain nvim starts there.
 - `<mod>.<command>` reaches only copies on screen; `exec` has a 30 s limit
@@ -229,7 +258,8 @@ Spaces on other machines work the same way.
 - A click equal to the layout file's own value isn't kept in
   `layouts/.state`: read the file for the default.
 - The stock tab bar remembers the panel per space and restores it when it
-  draws.
+  first draws (none for a new space), whenever that is: scripts show the
+  panel again until it holds.
 
 ## Done when
 
@@ -241,13 +271,19 @@ Spaces on other machines work the same way.
   reuse it; J/K in the pane move the list's selection.
 - `s`/`u`/`x` and the row, folder and section buttons change exactly what
   git says; discard asks first; the commit row commits only staged changes.
-- `t` shows folders; a folder's `+` stages only what's under it.
+- `t` shows folders; a folder's `+` stages only what's under it, in its
+  own section (a conflicts folder: only the conflicts).
+- Discard from changes on a partly staged file keeps the staged part; a
+  cancelled discard never runs, whichever copy's confirm comes later;
+  discarding the last file leaves the pane showing "No file selected"; `s`
+  then `J` in the pane goes on to the next file.
 - `l` lists the commits; enter lists a commit's files and the pane shows
   `commit <sha>`.
 - A drag and a note show a card under the lines; the notes list jumps to it
   and deletes it; enter in the send dialog puts the notes in the agent's
-  input without submitting and leaves the clipboard as it was; shift+enter
-  submits.
+  input without submitting and leaves the clipboard as it was; into a
+  program without bracketed paste it says why and types nothing;
+  shift+enter submits. A note can't be written on a commit's diff.
 - Enter opens nvim at the line (one nvim, reused); with herdr-nvim it calls
   `herdr-nvim open --tab <tab> --space <space> <file>:<line>`, starts no
   nvim and closes the diff pane.
