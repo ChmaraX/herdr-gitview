@@ -30,6 +30,8 @@
 //!   apart differently from here, or a failed read there taken as missing;
 //! - a diff whose git reads fail there (the machine dropped) shown as a
 //!   whole file added or as no change, instead of the error;
+//! - `--root` (the top level status gave) looked up there again anyway, or
+//!   a reply other than without it;
 //! - the reload hints (`rev`, `ignored_dirs`, a diff's `hash` and its
 //!   `--unless`) told from this machine's files, or other there than here,
 //!   or the revs costing more than one call per status;
@@ -858,4 +860,24 @@ fn a_diff_whose_reads_fail_there_is_an_error_not_a_wrong_diff() {
         let err = reply["error"].as_str().unwrap_or_default();
         assert!(err.contains("unreachable"), "{args:?}: {reply}");
     }
+}
+
+#[test]
+fn a_root_status_gave_is_not_looked_up_again_there() {
+    let w = world("root");
+    let diff = ["diff", "--path", "base.txt", "--kind", "modified"];
+    let calls = |args: &[&str]| {
+        let before = w.shim_log().len();
+        let reply = w.run(args, true);
+        let lookups = w.shim_log()[before..]
+            .iter()
+            .filter(|c| c.contains("rev-parse --show-toplevel"))
+            .count();
+        (reply, lookups)
+    };
+    let (looked_up, n) = calls(&diff);
+    assert_eq!(n, 1);
+    let (trusted, n) = calls(&[&diff[..], &["--root"]].concat());
+    assert_eq!(n, 0, "--root: no lookup");
+    assert_eq!(trusted, looked_up);
 }

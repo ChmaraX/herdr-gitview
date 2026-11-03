@@ -13,9 +13,18 @@
 //! machine, and every git command and file read runs there through
 //! `hc exec --on MACHINE --cwd DIR [-i] -- …` (`GITVIEW_HC`, else `hc`).
 //! Nothing of the repo is read on this machine, and the replies have the
-//! same shape as for a local repo.
+//! same shape as for a local repo. Each call there is asked to end within
+//! 25 s (`hc exec --timeout`), under the app's own 30 s.
 //!
-//! **Environment.** `GITVIEW_HC` (the `hc` binary), `GITVIEW_HERDR_APP`
+//! **The repo's top level.** `status` takes any folder of the repo as
+//! `--repo` and replies with its top level as `root`. Every other op takes
+//! that `root` as `--repo`; it's looked up again (one `git rev-parse`, one
+//! `hc exec` on a remote) unless `--root` says it's the top level already,
+//! or, here, DIR holds the repo's `.git`. Pass `--root` only with a `root`
+//! status gave.
+//!
+//! **Environment.** `GITVIEW_GIT` (the `git` binary; else `git` on `PATH`,
+//! or on macOS the real one behind `/usr/bin/git`'s xcrun shim), `GITVIEW_HC` (the `hc` binary), `GITVIEW_HERDR_APP`
 //! (the `herdr-app` binary), `HERDR_APP_HOME` (the app home, else
 //! `$HOME/.config/herdr-app`), `GITVIEW_CONFIG_DIR` (the folder of
 //! `config.toml`, else the TUI plugin's own,
@@ -270,7 +279,7 @@ struct Args {
 
 impl Args {
     fn parse(args: &[String]) -> Args {
-        const FLAGS: [&str; 3] = ["cached", "submit", "unfold"];
+        const FLAGS: [&str; 4] = ["cached", "root", "submit", "unfold"];
         let mut pairs = Vec::new();
         let mut positional = Vec::new();
         let mut it = args.iter();
@@ -299,8 +308,32 @@ impl Args {
         self.pairs.iter().any(|(k, _)| k == key)
     }
 
-    /// `--repo DIR`, on `--on MACHINE` when given.
+    /// `--repo DIR`, on `--on MACHINE` when given, for an op on the repo
+    /// whose top level DIR is (the mods pass what status said `root` was).
+    /// Git isn't asked again when that's sure: `--root` says so, or DIR
+    /// holds the repo's `.git` here (a folder, or a worktree's file).
     fn repo(&self) -> Result<Repo> {
+        let dir = Path::new(self.value("repo").context("--repo")?);
+        let machine = crate::remote::Machine::parse(self.value("on"));
+        if self.flag("root") {
+            return Ok(Repo {
+                root: dir.to_path_buf(),
+                machine,
+            });
+        }
+        if machine == crate::remote::Machine::Local
+            && dir.join(".git").exists()
+            && let Ok(root) = dir.canonicalize()
+        {
+            return Ok(Repo { root, machine });
+        }
+        Repo::discover_on(dir, machine)
+    }
+
+    /// `--repo DIR` (on `--on MACHINE`) for `status`: DIR is any folder in
+    /// the repo (a terminal's), its top level always looked up, since the
+    /// reply's `root` is what the mods key the list by and pass back.
+    fn discover(&self) -> Result<Repo> {
         Repo::discover_on(
             Path::new(self.value("repo").context("--repo")?),
             crate::remote::Machine::parse(self.value("on")),
@@ -458,7 +491,7 @@ struct DiffOut {
 // ---- status -------------------------------------------------------------------
 
 fn status(a: &Args) -> Result<Value> {
-    let repo = a.repo()?;
+    let repo = a.discover()?;
     let cfg = config();
     if a.value("scope") == Some("branch") {
         let branch = repo.head_branch();
