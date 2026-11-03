@@ -23,7 +23,7 @@ import {
 } from "./shared.js";
 import { Flash, Loads, ModPanes, commandLoop, debounced, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
-import { askToClose, editorState, liveEditor, quitEditor, setEditor } from "./editors.js";
+import { closeEditorOf, liveEditor } from "./editors.js";
 import { FileList } from "./filelist.js";
 import { History } from "./history.js";
 import { knowEditor, openNvim } from "./nvim.js";
@@ -265,7 +265,7 @@ export default class GitList extends View {
         this.closeNvimOf(tab, cx);
       }
       const ed = liveEditor(tab);
-      if (ed) this.closeEditor(tab, ed, cx);
+      if (ed) this.closeEditor(tab, ed.name, cx);
     }
   }
 
@@ -285,17 +285,12 @@ export default class GitList extends View {
     });
   }
 
-  closeEditor(tab, ed, cx) {
+  // Unsaved changes: Cancel shows the panel again.
+  closeEditor(tab, name, cx) {
+    const p = panelState();
+    const back = p ? [...(p.stack ? [{ run: ["layout.select", { stack: p.stack, child: p.slot }] }] : []), { run: ["layout.show", { id: p.panel }] }] : [];
     cx.spawn(async () => {
-      const state = await editorState(ed);
-      if (state === "clean") {
-        await quitEditor(ed, "qa");
-        setEditor(tab, null);
-      } else if (state === "dirty") {
-        const p = panelState();
-        const back = p ? [...(p.stack ? [{ run: ["layout.select", { stack: p.stack, child: p.slot }] }] : []), { run: ["layout.show", { id: p.panel }] }] : [];
-        askToClose(ed, back);
-      } else notify({ title: "gitview", body: `${ed.name} stays open: gitview can't ask it about unsaved changes`, level: "info" });
+      if ((await closeEditorOf(tab, { cancel: back })) === "unknown") notify({ title: "gitview", body: `${name} stays open: gitview can't ask it about unsaved changes`, level: "info" });
     });
   }
 

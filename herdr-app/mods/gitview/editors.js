@@ -74,8 +74,24 @@ export async function editorState(rec) {
 }
 
 // "qa" (quit; clean), "wqa" (save all, quit), "qa!" (discard, quit).
+const quitArgv = (rec, how) => ["--server", rec.sock, "--remote-send", `<C-\\><C-N>:${how}<CR>`];
+
 export async function quitEditor(rec, how) {
-  await exec(rec.bin, ["--server", rec.sock, "--remote-send", `<C-\\><C-N>:${how}<CR>`]);
+  await exec(rec.bin, quitArgv(rec, how));
+}
+
+// The tab's editor closes with gitview: "none" (there's none), "clean"
+// (it quit), "dirty" (the question is asked: `cancel` / `after` steps, see
+// askToClose) or "unknown" (it can't be asked; it stays).
+export async function closeEditorOf(tab, { cancel = [], after = [] } = {}) {
+  const ed = liveEditor(tab);
+  if (!ed) return "none";
+  const state = await editorState(ed);
+  if (state === "clean") {
+    await quitEditor(ed, "qa");
+    setEditor(tab, null);
+  } else if (state === "dirty") askToClose(ed, cancel, after);
+  return state;
 }
 
 // Unsaved buffers when gitview closes: the dialog (mod gitview-ask) asks
@@ -83,7 +99,7 @@ export async function quitEditor(rec, how) {
 // hidden copies get no commands). `cancel`: steps run on Cancel (show the
 // panel again); `after`: steps after Save or Discard (close cmd-g's tab).
 export function askToClose(rec, cancel, after = []) {
-  const quit = (how) => [{ exec: [rec.bin, ["--server", rec.sock, "--remote-send", `<C-\\><C-N>:${how}<CR>`]] }, ...after];
+  const quit = (how) => [{ exec: [rec.bin, quitArgv(rec, how)] }, ...after];
   openOverlay({
     mod: "gitview-ask",
     kind: "dialog",

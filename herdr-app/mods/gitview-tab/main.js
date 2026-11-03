@@ -9,7 +9,7 @@ import { focused, notify, run, spaces } from "herdr";
 import { appCli, gv, location } from "./engine.js"; // links to ../gitview (install copies them)
 import { oneShot } from "./modkit.js";
 import { origins, ownTab, setOrigin, setOwnTab } from "./shared.js";
-import { askToClose, editorState, liveEditor, quitEditor, setEditor } from "./editors.js";
+import { closeEditorOf, setEditor } from "./editors.js";
 
 const LIST_PERCENT = 29;
 
@@ -29,11 +29,8 @@ export default class GitviewTab extends View {
         const close = [{ run: ["tab.close", { id: own, confirmed: true }] }, ...(back && space.tabs.some((t) => t.id === back) ? [{ run: ["tab.select", { id: back }] }] : [])];
         // Its editor closes with it (v1): clean, it quits; unsaved, the
         // question first (Cancel keeps the tab and the editor).
-        const ed = liveEditor(own);
-        const state = ed ? await editorState(ed) : "none";
-        if (state === "dirty") return askToClose(ed, [], close);
-        if (state === "clean") await quitEditor(ed, "qa");
-        if (ed) setEditor(own, null);
+        if ((await closeEditorOf(own, { after: close })) === "dirty") return;
+        setEditor(own, null);
         for (const s of close) run(s.run[0], s.run[1]);
         return;
       }
