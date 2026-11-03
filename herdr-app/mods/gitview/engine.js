@@ -37,6 +37,19 @@ export async function gv(args) {
   return out;
 }
 
+// The live terminals carrying a label (`hc ls --label k=v`), by address:
+// what herdr-core has now (a window that isn't drawn can leave a copy's
+// terminals() behind). [] when it can't be asked.
+export async function labelled(label) {
+  try {
+    const cfg = await loadConfig();
+    const r = await exec(cfg.hc || "hc", ["ls", "--json", "--label", label]);
+    return (JSON.parse(r.stdout).terminals ?? []).filter((t) => t.state === "live").map((t) => t.address);
+  } catch {
+    return [];
+  }
+}
+
 // `--on <machine>` for a repo on another machine, nothing here.
 export const onArgs = (on) => (on ? ["--on", on] : []);
 

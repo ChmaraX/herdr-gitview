@@ -14,7 +14,7 @@
 import { View } from "gpui-kit";
 import { v_flex, InputState } from "gpui-base";
 import { notify, run, shared, theme } from "herdr";
-import { gv, message, onArgs } from "./engine.js";
+import { gv, labelled, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
@@ -94,6 +94,13 @@ export default class GitList extends View {
     this.viaApp = false;
     this.afterFocus = then;
     this.place.focusSelf(this, cx);
+  }
+
+  // The keys here: within the list when the app's focus is already on it
+  // (the message box back to the rows), else through the app.
+  focusHere(cx) {
+    if (this.viaApp) this.handle.focus();
+    else this.focusList(cx);
   }
 
   // Whether the list shows itself focused: it has the keys, and the app's
@@ -248,10 +255,30 @@ export default class GitList extends View {
   // themselves (no handoff) stays.
   closeUnit(tabs, cx) {
     for (const tab of tabs) {
-      if (handoffIn(tab)?.seen) for (const p of herdrNvimPanes(tab)) run("pane.close", { pane: p.pane });
+      const rec = handoffIn(tab);
+      if (rec) {
+        // Ours (gitview handed the file over): closed now, its diff shown
+        // again when the panel is (followHandoff: nvim's pane is gone).
+        setHandoff(tab, { ...rec, seen: true });
+        this.closeNvimOf(tab, cx);
+      }
       const ed = liveEditor(tab);
       if (ed) this.closeEditor(tab, ed, cx);
     }
+  }
+
+  // herdr-nvim's panes in the tab: the ones the app lists, and its nvim's
+  // terminals as herdr-core has them (ended: its pane goes; the daemon
+  // stays).
+  closeNvimOf(tab, cx) {
+    const panes = herdrNvimPanes(tab);
+    for (const p of panes) run("pane.close", { pane: p.pane });
+    cx.spawn(async () => {
+      const known = new Set(panes.map((p) => p.terminal).filter(Boolean));
+      const local = tab.includes("/") ? null : tab;
+      if (!local) return;
+      for (const t of await labelled(`herdr-nvim.sidebar=${local}`)) if (!known.has(t)) run("terminal.kill", { terminal: t });
+    });
   }
 
   closeEditor(tab, ed, cx) {
@@ -584,7 +611,7 @@ export default class GitList extends View {
       try {
         const r = await gv(["commit", "--repo", work.where.root, ...onArgs(work.where.on), "--", text]);
         this.commitInput.set_value("");
-        this.handle.focus();
+        this.focusHere(cx);
         notify({ title: "Committed", body: r.summary ?? text, level: "success" });
       } catch (e) {
         // The message stays in the box either way.
@@ -658,7 +685,7 @@ export default class GitList extends View {
   }
 
   clickRow(row, e, cx) {
-    this.handle.focus();
+    this.focusHere(cx);
     const list = this.list();
     if (!list || row.kind === "header") return;
     if (row.kind === "dir") {
@@ -708,7 +735,7 @@ export default class GitList extends View {
     return this.place
       .frame(v_flex().id("gitview").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13), t, focused)
       .track_focus(this.handle)
-      .on_mouse_down("left", (_e, cx) => { this.handle.focus(); if (!this.viaApp) this.focusList(cx); cx.notify(); })
+      .on_mouse_down("left", (_e, cx) => { this.focusHere(cx); cx.notify(); })
       .on_size_change((size, cx) => {
         if (size.width === this.width) return;
         this.width = size.width;

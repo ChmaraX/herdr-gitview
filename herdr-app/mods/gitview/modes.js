@@ -35,7 +35,7 @@ function filesBody(v, t, focused, list) {
     t, selected: list.row()?.key, hover: v.hover, focused, tree: list.tree, inNvim: (row) => v.handedOff(row),
     onClick: (row, e, cx) => v.clickRow(row, e, cx),
     onHover: (row, h, cx) => v.hoverRow(row.key, h, cx),
-    onAction: (op, row, cx) => { v.handle.focus(); v.rowAction(op, row, cx); cx.notify(); },
+    onAction: (op, row, cx) => { v.focusHere(cx); v.rowAction(op, row, cx); cx.notify(); },
   };
   return v.scroll.view(t, (i) => (i === 0 || i > rows.length ? div().h(6) : renderRow(rows[i - 1], ctx)));
 }
@@ -124,7 +124,7 @@ export const MODES = {
       // "Loading history…" only once it takes a while (the spinner's 250 ms).
       if (!commits.length) return empty(t, v.history.loading ? (v.loads.shown() ? "Loading history…" : "") : "No commits");
       v.scroll.measure(padded(commits.map(() => COMMIT_ROW)));
-      const ctx = { t, selected: v.history.selected, focused, onClick: (i, cx) => { v.handle.focus(); v.history.selected = i; openCommit(v, commits[i], cx); cx.notify(); } };
+      const ctx = { t, selected: v.history.selected, focused, onClick: (i, cx) => { v.focusHere(cx); v.history.selected = i; openCommit(v, commits[i], cx); cx.notify(); } };
       return v.scroll.view(t, (i) => (i === 0 || i > commits.length ? div().h(6) : commitRow(commits[i - 1], i - 1, ctx)));
     },
     keys: [
@@ -151,7 +151,7 @@ export const MODES = {
       v.scroll.measure(padded(notes.map(() => NOTE_ROW)));
       const ctx = {
         t, selected: v.noteSel, hover: v.hover, focused,
-        onClick: (i, e, cx) => { v.handle.focus(); v.noteSel = i; if (e.click_count >= 2) jumpToNote(v, notes[i], cx); cx.notify(); },
+        onClick: (i, e, cx) => { v.focusHere(cx); v.noteSel = i; if (e.click_count >= 2) jumpToNote(v, notes[i], cx); cx.notify(); },
         onHover: (n, h, cx) => v.hoverRow(n.id, h, cx),
         onDelete: (n, cx) => { deleteNote(v, n); cx.notify(); },
       };

@@ -109,6 +109,13 @@ export default class GitDiff extends View {
     return diffPane(this.tab())?.pane ?? null;
   }
 
+  // The keys here: the handle when the app's focus is on this pane, else
+  // the app's focus first (one focus shows).
+  focusHere(cx) {
+    if (this.myPane() && focused()?.pane === this.myPane()) this.handle.focus();
+    else this.focusPane(cx);
+  }
+
   // The keyboard and the app's focus together.
   focusPane(cx) {
     const me = this.myPane();
@@ -439,7 +446,7 @@ export default class GitDiff extends View {
     if (p && text) addNote(this.notesKey(), { file: p.file, section: p.section, cached: p.cached, start: p.start, end: p.end, snippet: p.snippet, text });
     this.pendingNote = null;
     this.anchor = null;
-    this.handle.focus();
+    this.focusHere(cx);
     cx.notify();
   }
 
@@ -459,7 +466,7 @@ export default class GitDiff extends View {
     if (this.pendingNote) {
       if (k !== "escape") return false; // the composer types
       this.pendingNote = null;
-      this.handle.focus();
+      this.focusHere(cx);
       return true;
     }
     const act = actionFor([KEYS], k);
@@ -499,7 +506,7 @@ export default class GitDiff extends View {
   // ---- mouse ----------------------------------------------------------------
 
   down(index, e, cx) {
-    this.handle.focus();
+    this.focusHere(cx);
     this.flash.clear();
     if (this.diff.rows[index]?.k === "fold") return this.unfoldAll(cx);
     this.cursor = index;
@@ -641,7 +648,7 @@ export default class GitDiff extends View {
       .text_color(t.foreground)
       .text_size(13)
       .track_focus(this.handle)
-      .on_mouse_down("left", (_e, cx) => { this.handle.focus(); cx.notify(); })
+      .on_mouse_down("left", (_e, cx) => { this.focusHere(cx); cx.notify(); })
       .on_mouse_up("left", (_e, cx) => this.up(cx))
       .on_size_change((size, cx) => {
         if (size.width === this.width) return;
