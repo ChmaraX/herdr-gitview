@@ -271,12 +271,7 @@ pub fn open_in_running_nvim(
     }
     candidates.extend(shown.iter().filter_map(|t| terminal(t)));
     let nvim = find_nvim(candidates, &[])?;
-    let keys = format!(
-        "<C-\\><C-n>:edit +{line} {}<CR>",
-        file.display().to_string().replace(' ', "\\ ")
-    );
-    let out = crate::nvim::remote("nvim", Some(&nvim.socket), &["--remote-send", &keys])?;
-    out.status.success().then_some(nvim.pane_id)
+    crate::nvim::edit_at("nvim", Some(&nvim.socket), file, line).then_some(nvim.pane_id)
 }
 
 /// The herdr-nvim link-up, in one place. herdr-nvim's contract:

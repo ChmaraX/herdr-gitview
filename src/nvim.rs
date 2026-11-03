@@ -63,3 +63,26 @@ pub fn open_file(editor: &str, server: Option<&Path>, file: &Path) -> bool {
         .map(|out| out.status.success())
         .unwrap_or(false)
 }
+
+/// The expression [`edit_at`] sends: `:edit +<line> <file>`, with the file
+/// name built from its code points (`list2str`) and escaped by nvim itself
+/// (`fnameescape`). No character of the name is ever read as a key, a
+/// command separator (`|`), a special file name (`%`, `#`) or a quote.
+pub fn edit_expr(file: &Path, line: u32) -> String {
+    let points: Vec<String> = file
+        .to_string_lossy()
+        .chars()
+        .map(|c| u32::from(c).to_string())
+        .collect();
+    format!(
+        "execute('edit +{line} ' .. fnameescape(list2str([{}], 1)))",
+        points.join(",")
+    )
+}
+
+/// Open `file` at `line` in the running nvim. Returns whether it succeeded.
+pub fn edit_at(editor: &str, server: Option<&Path>, file: &Path, line: u32) -> bool {
+    remote(editor, server, &["--remote-expr", &edit_expr(file, line)])
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
