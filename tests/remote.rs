@@ -36,7 +36,8 @@
 //!   `--unless`) told from this machine's files, or other there than here,
 //!   or the revs costing more than one call per status;
 //! - `json editor` there answered from this machine (its `PATH`, `$VISUAL`,
-//!   its system opener) instead of that machine's login shell.
+//!   its system opener) instead of that machine's login shell, or broken
+//!   by what that shell's profile prints (a banner).
 
 mod common;
 
@@ -79,6 +80,8 @@ fi
 # the caller's environment.
 if [ -n "${SHIM_LOGIN_PATH+x}" ] && [ "$1" = sh ] && [ "$2" = -lc ]; then
   shift 2
+  # A profile that prints, as an MOTD or a fortune does.
+  [ -n "${SHIM_LOGIN_BANNER-}" ] && printf '%s' "$SHIM_LOGIN_BANNER"
   exec env -i HOME="$cwd" PATH="$SHIM_LOGIN_PATH" VISUAL="${SHIM_VISUAL-}" EDITOR="${SHIM_EDITOR-}" /bin/sh -c "$@"
 fi
 if [[ " $* " == *" rev-parse --show-toplevel "* ]]; then
@@ -769,6 +772,14 @@ fn the_editor_is_picked_from_the_machines_login_shell() {
     );
     assert_eq!(
         pick(&[("SHIM_EDITOR", "hx --vsplit")])["editor"],
+        serde_json::json!({"argv": [there("hx"), "--vsplit"], "kind": "other", "name": "hx"})
+    );
+    // A login profile that prints first: the same answer.
+    assert_eq!(
+        pick(&[
+            ("SHIM_EDITOR", "hx --vsplit"),
+            ("SHIM_LOGIN_BANNER", "Welcome to box\nLast login: today\n")
+        ])["editor"],
         serde_json::json!({"argv": [there("hx"), "--vsplit"], "kind": "other", "name": "hx"})
     );
     // Nothing there: an error, never this machine's opener.

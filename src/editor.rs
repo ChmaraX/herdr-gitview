@@ -184,10 +184,13 @@ fn facts_about(
 }
 
 /// One login shell there (so `$VISUAL`, `$EDITOR` and `PATH` are the
-/// person's): NUL-separated fields, `$VISUAL` and `$EDITOR` first when
-/// `vars`, then each name's path (empty: not there).
-const LOOKUP: &str = r#"[ "$1" = vars ] && printf '%s\0%s\0' "$VISUAL" "$EDITOR"; shift
+/// person's): after [`MARK`], NUL-separated fields, `$VISUAL` and `$EDITOR`
+/// first when `vars`, then each name's path (empty: not there).
+const LOOKUP: &str = r#"printf '\0gitview-lookup\0'; [ "$1" = vars ] && printf '%s\0%s\0' "$VISUAL" "$EDITOR"; shift
 for n; do p=$(command -v -- "$n" 2>/dev/null); case "$p" in /*) [ -f "$p" ] && [ -x "$p" ] || p= ;; *) p= ;; esac; printf '%s\0' "$p"; done"#;
+
+/// What [`LOOKUP`] prints before its answer.
+const MARK: &str = "\0gitview-lookup\0";
 
 fn remote_answers(
     machine: &Machine,
@@ -211,7 +214,10 @@ fn remote_answers(
         );
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut fields: Vec<String> = text.split('\0').map(str::to_string).collect();
+    // What the person's login profile printed (a banner, a fortune) comes
+    // before the mark; anything after the fields, after the last NUL.
+    let answer = text.split_once(MARK).map_or("", |(_, answer)| answer);
+    let mut fields: Vec<String> = answer.split('\0').map(str::to_string).collect();
     fields.pop(); // after the last NUL
     let want = names.len() + if vars { 2 } else { 0 };
     if fields.len() != want {
