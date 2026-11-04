@@ -354,8 +354,13 @@ export default class GitDiff extends View {
   }
 
   // J/K: the next or previous file of the list.
+  // Presses before the list answered are dropped: each would ask "next"
+  // from the same file (one ask slot), so holding J moved one file anyway.
+  // (Bounded as the wait is: a dropped exec never gets to `done`.)
   nextFile(delta, cx) {
-    if (this.view) this.askList(cx, delta > 0 ? "next" : "prev", this.view);
+    if (!this.view || Date.now() - (this.stepping ?? 0) < 6000) return;
+    this.stepping = Date.now();
+    this.askList(cx, delta > 0 ? "next" : "prev", this.view, () => (this.stepping = 0));
   }
 
   // ---- actions --------------------------------------------------------------
@@ -395,15 +400,19 @@ export default class GitDiff extends View {
   // s/u/x and J/K: the tab's list (the one writer of its view) does them
   // (gitview.ask) and writes the view they lead to. Until it answers (5 s
   // at most) this counts as loading, so the next key acts on that view.
-  askList(cx, op, v) {
+  askList(cx, op, v, done = null) {
     const tab = this.tab();
-    if (!tab) return;
+    if (!tab) return done?.();
     const seq = ask(tab, op, v);
     this.loads.run(cx, op, async (cx) => {
-      for (let i = 0; i < 50 && (answerIn(tab)?.seq ?? 0) < seq; i++) await cx.sleep(100);
-      const a = answerIn(tab);
-      if (a?.seq === seq && a.msg) this.flash.set(a.msg);
-      this.sync(cx);
+      try {
+        for (let i = 0; i < 50 && (answerIn(tab)?.seq ?? 0) < seq; i++) await cx.sleep(100);
+        const a = answerIn(tab);
+        if (a?.seq === seq && a.msg) this.flash.set(a.msg);
+        this.sync(cx);
+      } finally {
+        done?.();
+      }
     });
   }
 
