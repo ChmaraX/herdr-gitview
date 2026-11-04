@@ -18,7 +18,7 @@
 //    can't put a terminal in a mod pane, so the diff pane can't become the
 //    editor itself.) In a remote space it runs on that machine.
 
-import { exec, layout, notify, run, terminals } from "herdr";
+import { exec, layout, notify, run, shared, terminals } from "herdr";
 import { setEditor, socketFor, trackEditor } from "./editors.js";
 import { gv, message, onArgs } from "./engine.js";
 import { setHandoff, viewIn } from "./shared.js";
@@ -109,6 +109,7 @@ export async function openNvim(o) {
     // (A Vim string in '…': a ' in the path is written '' there.)
     const listen = sock ? ["--cmd", `call serverstart('${sock.replaceAll("'", "''")}')`] : [];
     const before = new Set(terminals().map((t) => t.address));
+    if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "nvim", opens: editor.name, tab: o.tab ?? null })}`);
     run("terminal.open", { argv: [...editor.argv, ...listen, ...line, file], folder: o.root, place: "right" });
     if (o.tab && o.cx) {
       const rec = { kind: editor.kind, name: editor.name, bin: editor.argv[0], sock, file, terminal: null };
@@ -117,6 +118,7 @@ export async function openNvim(o) {
     }
     return "new";
   } catch (e) {
+    if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "nvim", failed: message(e) })}`);
     notify({ title: "gitview", body: message(e), level: "error" });
     return null;
   }
