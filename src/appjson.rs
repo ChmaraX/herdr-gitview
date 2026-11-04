@@ -28,7 +28,9 @@
 //! (the `herdr-app` binary), `HERDR_APP_HOME` (the app home, else
 //! `$HOME/.config/herdr-app`), `GITVIEW_CONFIG_DIR` (the folder of
 //! `config.toml`, else the TUI plugin's own,
-//! `~/.config/herdr/plugins/config/chmarax.gitview`).
+//! `~/.config/herdr/plugins/config/chmarax.gitview`). For tests only:
+//! `GITVIEW_CALL_LIMIT_MS` (how long a call to `herdr-app` or herdr-core
+//! may take, else 10 s).
 //!
 //! **Arguments.** `--key value` and `--flag`; after `--` everything is
 //! positional, so callers put `--` before paths, messages and text (one may

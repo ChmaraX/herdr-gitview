@@ -102,6 +102,7 @@ fn against_hanging_hc(name: &str, args: &[&str]) -> (Duration, serde_json::Value
         .env("GITVIEW_HC", &hc)
         .env("GITVIEW_HERDR_APP", dir.join("no-app"))
         .env("GITVIEW_CONFIG_DIR", dir.join("no-config"))
+        .env("GITVIEW_CALL_LIMIT_MS", "1000")
         .output()
         .unwrap();
     let took = t.elapsed();
@@ -125,9 +126,9 @@ fn ops_that_ask_herdr_core_end_when_it_doesnt_answer() {
         .collect();
     for run in runs {
         let (name, (took, reply, pid)) = run.join().unwrap();
-        assert!(took < Duration::from_secs(15), "{name} took {took:?}");
+        assert!(took < Duration::from_secs(5), "{name} took {took:?}");
         let err = reply["error"].as_str().unwrap_or_default();
-        assert!(err.contains("took more than 10 s"), "{name}: {reply}");
+        assert!(err.contains("took more than 1 s"), "{name}: {reply}");
         pid_in(&pid);
         assert!(!alive(&pid), "{name}: hc's sleep is still running");
     }

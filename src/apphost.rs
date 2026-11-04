@@ -22,8 +22,15 @@ use serde_json::{Value, json};
 use crate::deadline::output_within;
 use crate::logx::log;
 
-/// How long a call to `herdr-app` or herdr-core may take.
-const CALL_LIMIT: Duration = Duration::from_secs(10);
+/// How long a call to `herdr-app` or herdr-core may take: 10 s.
+/// `GITVIEW_CALL_LIMIT_MS` sets it, for tests only (so a test of a hung
+/// call needn't wait 10 s).
+fn call_limit() -> Duration {
+    std::env::var("GITVIEW_CALL_LIMIT_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map_or(Duration::from_secs(10), Duration::from_millis)
+}
 
 pub use crate::remote::hc_bin;
 
@@ -59,7 +66,7 @@ impl App {
                 .args(args)
                 .env("HERDR_APP_HOME", &self.home),
             None,
-            CALL_LIMIT,
+            call_limit(),
         )?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
@@ -110,7 +117,7 @@ pub fn hc_rpc(method: &str, params: Value) -> Result<Value> {
     let out = output_within(
         Command::new(hc_bin()).arg("connect"),
         Some(input.as_bytes()),
-        CALL_LIMIT,
+        call_limit(),
     )?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let reply = stdout
@@ -135,7 +142,7 @@ fn hc_json(args: &[&str]) -> Result<Value> {
     let out = output_within(
         Command::new(&bin).args(args).arg("--json"),
         None,
-        CALL_LIMIT,
+        call_limit(),
     )?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     log(format!(
