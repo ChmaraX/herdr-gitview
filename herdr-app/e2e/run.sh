@@ -20,6 +20,14 @@
 # GITVIEW_BIN).
 set -euo pipefail
 
+# The mods' unit tests first (under a second, no app): a decision they
+# break fails here, not minutes into the run.
+node --test "$(dirname "$0")"/../test/*.test.mjs >/dev/null 2>&1 || {
+  node --test "$(dirname "$0")"/../test/*.test.mjs 2>&1 | grep -E "^✖|Error|expected|actual" | head -20
+  echo "the unit tests (herdr-app/test) fail" >&2
+  exit 1
+}
+
 . "$(dirname "$0")/lib.sh"
 
 S="$BASE/scratch"

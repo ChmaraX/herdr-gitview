@@ -23,6 +23,7 @@ import {
 } from "./shared.js";
 import { Flash, Loads, commandLoop, debounced, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
+import { staleWhy } from "./notice.js";
 import { closeEditorOf, liveEditor } from "./editors.js";
 import { FileList } from "./filelist.js";
 import { History } from "./history.js";
@@ -141,27 +142,29 @@ export default class GitList extends View {
   }
 
   // Whether something notice() acts on changed (render and the timer ask;
-  // no side effects).
+  // no side effects): the facts for notice.js staleWhy.
   stale() {
-    if (this.loads.panesMoved()) return true;
-    if (this.cycle && (this.cycle.shown !== this.place.shown() || this.cycle.asideStale())) return true;
-    if (!this.place.shown()) return false;
-    if (this.place.closesForHerdrNvim) {
-      // followHandoff, on an edge only: the record not seen yet, or nvim's
-      // pane came or went (not a redraw every look while nvim is open).
-      const rec = handoffIn(this.tab());
-      if (rec && (!rec.seen || (herdrNvimPanes(this.tab()).length > 0) !== this.nvimSeen)) return true;
-    }
-    if (stampMoved(this.watcher)) return true;
-    const ctx = this.context();
-    return ctx.key !== this.ctx?.key || ctx.tab !== this.ctx?.tab || (askIn(this.tab())?.seq ?? 0) > (this.seen.asks[this.tab()] ?? 0);
+    const tab = this.tab();
+    const shown = this.place.shown();
+    const rec = shown && this.place.closesForHerdrNvim ? handoffIn(tab) : null;
+    const ctx = shown ? this.context() : null;
+    return staleWhy({
+      panesMoved: this.loads.panesMoved(),
+      cycle: this.cycle && { was: this.cycle.shown, aside: this.cycle.asideStale() },
+      shown,
+      handoff: rec && { seen: rec.seen, nvim: herdrNvimPanes(tab).length > 0, nvimSeen: this.nvimSeen },
+      stamp: shown && stampMoved(this.watcher),
+      key: ctx?.key,
+      wasKey: this.ctx?.key,
+      tab: ctx?.tab,
+      wasTab: this.ctx?.tab,
+      ask: shown ? askIn(tab)?.seq ?? 0 : 0,
+      askSeen: this.seen.asks[tab] ?? 0,
+    }) !== null;
   }
 
-  // What stale() looks for: the panel showed; another repo, space or tab;
-  // another list's watch stamped the repo; the pane asked something
-  // (gitview.ask); a mod pane closed (Loads.revive); nvim's pane came or
-  // went (the handoff). Before every command, and from the kick task or the
-  // timer after stale().
+  // Acts on what stale() looks for (notice.js has the table). Before every
+  // command, and from the kick task or the timer after stale().
   notice(cx) {
     this.loads.panesClosed(cx);
     this.cycle?.stepAside();

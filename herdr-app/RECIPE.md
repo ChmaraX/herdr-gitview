@@ -275,7 +275,8 @@ Spaces on other machines work the same way.
   goes to that repo; one for the working tree, one for a commit),
   `modes.js` (each view's `{title, list, enter, header, body, under,
   keys}`, the keys a keymap.js table: files, commit, log, notes; only `setMode` changes the view, and
-  it runs `enter`), `keys.js` (key and command dispatch),
+  it runs `enter`), `keys.js` (key and command dispatch), `notice.js` (what a look acts on:
+  the table of stale()'s reasons, pure),
   `listview.js` (rows and their buttons), `history.js` (the history, its
   rows and actions), `notesview.js` (note rows and actions), `model.js`
   (status → flat or tree rows, a file's view, `diff` arguments), and,
@@ -493,6 +494,11 @@ Spaces on other machines work the same way.
 - Uninstall brings back the stock Changes panel; with herdr-nvim installed
   too, either can go first and each uninstall leaves the layout and keys
   byte-identical to before its install.
+- `node --test herdr-app/test/*.test.mjs` passes, in under a second with no
+  app (the mods' pure decisions: the panel's edges, what a look acts on,
+  the shared views and asks, the list's selection and J/K, the loads'
+  coalescing, the pane's rows; `test/stub.mjs` stands in for `herdr` and
+  gpui-kit). run.sh runs it first.
 - `herdr-app/e2e/run.sh`, `herdr-app/e2e/coexist.sh` and
   `herdr-app/e2e/jank.sh` pass: no blank diff body on j/k, s, u, discard,
   commit or an agent's write; one status and one diff per s/u/x; no diff
