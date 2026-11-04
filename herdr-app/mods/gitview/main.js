@@ -394,7 +394,12 @@ export default class GitList extends View {
       this.error = null;
       this.loadedKey = ctx.key;
       if (!ctx.on) setIgnoredDirs(status.root, status.ignored_dirs ?? []);
-      if (!ctx.on) watch(this.watcher, status.root, cx, (cx, paths) => { if (this.place.shown() && !this.ownBatch(paths)) this.refresh(cx, { quiet: true, why: `watch ${JSON.stringify(paths).slice(0, 200)}` }); });
+      if (!ctx.on) {
+        watch(this.watcher, status.root, cx, (cx, paths) => {
+          if (!this.place.shown()) return false; // followed once it shows
+          if (!this.ownBatch(paths)) this.refresh(cx, { quiet: true, why: `watch ${JSON.stringify(paths).slice(0, 200)}` });
+        });
+      }
       else this.watcher.root = null; // a local repo's watch ends
       this.followSelection();
       // cmd-g's tab: its pane came with it, so its first file shows at once.

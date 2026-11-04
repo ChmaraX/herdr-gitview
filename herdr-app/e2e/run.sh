@@ -225,6 +225,14 @@ expect '[ -n "$(view_of $OWN0 path)" ]' "and its first file shows in its diff pa
 # only the newest watch wakes: the stamp (gitview.changed) carries it over.
 printf 'w\n' >"$S/w.txt"
 expect '"$APP" do gitview.file:w.txt >/dev/null && [ "$(view_of $OWN0 path)" = w.txt ]' "a file written now shows in cmd-g's list within 2 s" 2
+# Written while another tab shows: cmd-g's list (the only watch that
+# wakes) sees it once its tab shows again, not at its next poll.
+do_ tab.select --index 1
+expect '[ "$(tab_active)" = 1 ]' "(in tab 1 for a moment)"
+printf 'w3\n' >"$S/w3.txt"
+sleep 1
+do_ tab.select --id "$OWN0"
+expect '"$APP" do gitview.file:w3.txt >/dev/null && [ "$(view_of $OWN0 path)" = w3.txt ]' "a file written while another tab showed is in cmd-g's list within 2 s of coming back" 2
 do_ gitview.button:discard:drop.txt
 expect 'overlay_open confirm' "the tab's list asks about drop.txt"
 confirm_discard gitview # its Confirm reaches every list on screen
@@ -236,7 +244,7 @@ expect '[ "$(tab_active)" = 1 ]' "back in tab 1"
 expect '[ "$(panel_state)" = "open changes" ]' "the panel is back in tab 1"
 printf 'w2\n' >"$S/w2.txt"
 expect '"$APP" do gitview.file:w2.txt >/dev/null && [ "$(view_of $TAB path)" = w2.txt ]' "after cmd-g's tab closed, a file written shows in the panel's list within 2 s" 2
-rm -f "$S/w.txt" "$S/w2.txt"
+rm -f "$S/w.txt" "$S/w2.txt" "$S/w3.txt"
 rm -f "$S/keep.txt"
 do_ gitview.key:r
 

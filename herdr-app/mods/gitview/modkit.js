@@ -293,8 +293,10 @@ export function watch(watcher, root, cx, changed) {
         if (watcher.root !== root) break;
         const at = Date.now();
         stampChanged(root, at, paths);
-        watcher.seen = at;
-        changed(cx, paths);
+        // `changed` returns false when it didn't act on it (its copy isn't
+        // on screen): then the stamp stays unseen, so the copy follows it
+        // once it shows (stale(), followStamp).
+        if (changed(cx, paths) !== false) watcher.seen = at;
       }
     } catch {
       if (watcher.root === root) watcher.root = null;
