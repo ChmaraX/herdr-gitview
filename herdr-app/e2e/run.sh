@@ -168,6 +168,15 @@ expect 'overlay_open confirm' "pane x asks first"
 confirm_discard gitview-diff
 expect '[ ! -e "$S/tmp.txt" ]' "pane x then confirm discards it"
 expect '[ "$(view_of $TAB path)" != tmp.txt ]' "and the pane moves on to another file"
+# Shared state outlives a list copy (app restart, layout switch, the mods
+# installed again): a new copy must not do the pane's last ask again.
+printf 'scratch again\n' >"$S/tmp.txt"
+"$REPO/herdr-app/install.sh" >>"$LOG" 2>&1 || fail "install.sh again"
+expect panel_up "the mods installed again (new list copies)" 20
+do_ gitview.key:r
+sleep 2
+[ -e "$S/tmp.txt" ] && ok "a new list copy doesn't discard tmp.txt again (the pane's answered ask)" || fail "a new list copy did the pane's old discard again"
+rm -f "$S/tmp.txt"
 do_ gitview.button:unstage:section:staged
 expect '[ -z "$(staged)" ]' "the staged section's − unstages all"
 do_ gitview.button:stage:section:changes

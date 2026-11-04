@@ -11,9 +11,11 @@
 //   one before: the pane starts it afresh), `line` (a note to jump to) and
 //   `focus` (the pane takes the keyboard); `{empty: true, seq, showing}`
 //   when there's nothing to show.
-// - "gitview.ask": {<tab>: {seq, op, view}}: the diff pane asks the tab's
-//   list to stage, unstage or discard its file (`op`), or to show the next
-//   or previous one ("next", "prev": J/K).
+// - "gitview.ask": {<tab>: {seq, op, view, at}}: the diff pane asks the
+//   tab's list to stage, unstage or discard its file (`op`), or to show the
+//   next or previous one ("next", "prev": J/K). The answer removes it, and
+//   one older than 10 s is ignored: shared state outlives the app, and a
+//   new list copy must never do an old ask again (a discard).
 // - "gitview.answer": {<tab>: {seq, msg}}: the list did the ask `seq` (and
 //   wrote the view it led to); `msg`: what to say ("last file").
 // - "gitview.cursor": {<tab>: {root, on, path, section, commit, line,
@@ -84,15 +86,21 @@ export function setView(tab, view) {
   return all[tab];
 }
 
+// The ask to do, if any: not answered yet and under 10 s old.
+export const ASK_MS = 10000;
+export function liveAsk(a, answered, now) {
+  return a && a.seq > (answered?.seq ?? 0) && now - (a.at ?? 0) <= ASK_MS ? a : null;
+}
 export function askIn(tab) {
-  return (shared("gitview.ask") ?? {})[tab] ?? null;
+  return liveAsk((shared("gitview.ask") ?? {})[tab], answerIn(tab), Date.now());
 }
 
-// Returns the ask's seq.
+// Returns the ask's seq (after the last ask and the last answer: an answer
+// removes its ask).
 export function ask(tab, op, view) {
   const all = onlyLive(shared("gitview.ask"), liveTabs());
-  const seq = ((shared("gitview.ask") ?? {})[tab]?.seq ?? 0) + 1;
-  setShared("gitview.ask", { ...all, [tab]: { seq, op, view } });
+  const seq = Math.max(all[tab]?.seq ?? 0, answerIn(tab)?.seq ?? 0) + 1;
+  setShared("gitview.ask", { ...all, [tab]: { seq, op, view, at: Date.now() } });
   return seq;
 }
 
@@ -102,6 +110,11 @@ export function answerIn(tab) {
 
 export function answer(tab, seq, msg = null) {
   setShared("gitview.answer", { ...onlyLive(shared("gitview.answer"), liveTabs()), [tab]: { seq, msg } });
+  const asks = { ...(shared("gitview.ask") ?? {}) };
+  if (asks[tab] && asks[tab].seq <= seq) {
+    delete asks[tab];
+    setShared("gitview.ask", asks);
+  }
 }
 
 export function cursorIn(tab) {
