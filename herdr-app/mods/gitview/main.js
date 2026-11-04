@@ -12,7 +12,7 @@
 // Commands: `gitview.key:<key>`, `gitview.file:<path>`, `gitview.commit:<msg>`.
 
 import { View } from "gpui-kit";
-import { v_flex, InputState } from "gpui-base";
+import { v_flex, TextareaState } from "gpui-base";
 import { notify, run, shared, theme } from "herdr";
 import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
@@ -43,7 +43,10 @@ export default class GitList extends View {
     this.cycle = this.place.cycle(); // the panel's show/hide (placement.js)
     this.handle = cx.focus_handle();
     this.scroll = new Scroller("gitview-list");
-    this.commitInput = InputState.new({ placeholder: "Commit message" });
+    // Enter commits, Shift-Enter starts a new line (as the composer); one
+    // line high until the message has more (v1 wrote it in nvim).
+    this.commitInput = TextareaState.new({ placeholder: "Commit message", rows: 1 });
+    this.commitInput.set_auto_grow(1, 8);
     this.commitInput.on("change", (_e, cx) => cx.notify());
     this.commitInput.on("submit", (_e, cx) => this.commit(cx));
     this.commitInput.on("focus", (_e, cx) => {

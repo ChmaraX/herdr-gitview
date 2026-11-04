@@ -4,7 +4,7 @@
 // functions; the views pass the handlers. Shared (linked; install copies it).
 
 import { div, svg } from "gpui-kit";
-import { h_flex, Input } from "gpui-base";
+import { h_flex, Textarea } from "gpui-base";
 import { LETTER_COLOR } from "./model.js";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -174,6 +174,7 @@ export function commitBox(t, state, typing, staged, busy, onCommit, narrow = fal
   const ready = Boolean(state.value().trim()) && !busy;
   return h_flex()
     .flex_none()
+    .items_end()
     .p(10)
     .gap(8)
     .border_t(1)
@@ -183,8 +184,9 @@ export function commitBox(t, state, typing, staged, busy, onCommit, narrow = fal
         .id("gitview-commit-message")
         .flex_1()
         .min_w(0)
-        .h(32)
+        .min_h(32)
         .px(10)
+        .py(7)
         .flex()
         .items_center()
         .rounded(8)
@@ -192,7 +194,7 @@ export function commitBox(t, state, typing, staged, busy, onCommit, narrow = fal
         .border_color(typing ? t.accent : t.border)
         .cursor_text()
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .child(Input.new(state).h_full().text_size(12).text_color(t.foreground)),
+        .child(Textarea.new(state).w_full().text_size(12).text_color(t.foreground)),
     )
     .child(
       div()

@@ -271,8 +271,10 @@ expect '[ "$(shared "s.get(\"gitview.tree\")")" = false ]' "t again: flat"
 step "commit row"
 do_ gitview.click:config.toml
 do_ gitview.key:s
-do_ "gitview.commit:e2e: commit the staged config"
+# A message of more than one line (Shift-Enter in the box), as v1's nvim.
+do_ "gitview.commit:$(printf 'e2e: commit the staged config\n\nwith a body line')"
 expect 'git -C "$S" log -1 --format=%s | grep -qx "e2e: commit the staged config"' "the commit row commits the staged changes"
+[ "$(git -C "$S" log -1 --format=%b)" = "with a body line" ] && ok "with the message's body" || fail "the body: $(git -C "$S" log -1 --format=%b)"
 git -C "$S" status --short | grep -q "src/main.rs" && ok "unstaged changes stay out of it" || fail "commit took unstaged changes"
 HEAD_SHA=$(git -C "$S" rev-parse HEAD)
 
