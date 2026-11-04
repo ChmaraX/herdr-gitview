@@ -74,6 +74,9 @@ export default class GitList extends View {
     this.loads.onLost = (cx) => {
       this.committing = 0;
       this.ownOp = null;
+      // The pane's ask it was doing: answered once the repo is shown.
+      if (this.acting) this.toAnswer = { ...this.acting, after: Date.now() };
+      this.acting = null;
       this.refresh(cx, { quiet: true, why: "revive" });
     };
     this.watcher = {};
@@ -219,6 +222,7 @@ export default class GitList extends View {
     }
     if (!["stage", "unstage", "discard"].includes(a.op) || !v || v.commit) return answer(tab, a.seq);
     this.act([a.op, "--section", v.section, "--", v.path], { root: v.root, on: v.on }, cx, { tab, seq: a.seq });
+    if (a.op === "discard") this.confirmClosing(cx); // the pane's confirm
   }
 
   // ---- the handoff to herdr-nvim ----------------------------------------------
@@ -619,6 +623,20 @@ export default class GitList extends View {
     if (!p) return;
     this.pendingDiscard = null;
     this.act(["discard", "--section", p.section, "--", ...p.paths], p.where, cx);
+    this.confirmClosing(cx);
+  }
+
+  // The confirm dialog (a mod) closes right after its command: app bug #1
+  // can drop the discard's exec then, though no pane closed. A discard
+  // still running 1.5 s on is taken as lost (Loads.revive), and the repo
+  // shown as it is (onLost).
+  confirmClosing(cx) {
+    const at = Date.now();
+    cx.spawn(async (cx) => {
+      await cx.sleep(1500);
+      this.loads.revive(cx, at + 1000);
+      cx.notify();
+    });
   }
 
   // One op on the repo the list came from, then a refresh.
@@ -627,6 +645,7 @@ export default class GitList extends View {
   act(args, where, cx, asked = null) {
     // Its own watch batch can come before the op's reply: from now on.
     this.ownOp = { at: Date.now() + 60000, paths: args.slice(args.indexOf("--") + 1) };
+    this.acting = asked;
     this.loads.run(cx, args[0], async (cx) => {
       try {
         const op = [args[0], "--repo", where.root, "--root", ...onArgs(where.on), ...args.slice(1)];
@@ -645,9 +664,11 @@ export default class GitList extends View {
         if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "list", opFailed: args[0], error: message(e) })}`);
         notify({ title: "gitview", body: message(e), level: "error" });
         if (asked) answer(asked.tab, asked.seq);
+        this.acting = null;
         this.ownOp = null;
         return;
       }
+      if (this.acting === asked) this.acting = null;
       if (asked) this.toAnswer = { ...asked, after: Date.now() };
       if (this.ownOp) this.ownOp.at = Date.now(); // (revive may have dropped it)
       this.refresh(cx);
