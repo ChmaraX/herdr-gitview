@@ -251,7 +251,9 @@ export default class GitDiff extends View {
       let diff;
       try {
         diff = await gv(again && this.diff.hash ? diffArgs(view, { dark: this.dark, unfold: this.unfold, unless: this.diff.hash }) : args);
-        if (diff.same) return;
+        // The rows shown are still right; the cursor record follows the
+        // file anyway (back from another file's Preview, the same diff).
+        if (diff.same) return this.publishCursor();
         this.diffArgs = JSON.stringify(args);
       } catch (e) {
         if (sameFile(this.view, view) && !sameFile(this.diffView, view)) {
