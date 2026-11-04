@@ -13,7 +13,7 @@
 
 import { View } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
-import { notify, run, shared, theme } from "herdr";
+import { focused, notify, run, shared, theme } from "herdr";
 import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
@@ -88,9 +88,15 @@ export default class GitList extends View {
       cx.notify();
     });
     this.refresh(cx);
-    // Polls, while it's on screen: a remote repo every 4 s; a local one is
-    // the folder watch's, polled only after 30 s without a status.
-    cx.timer.every(4000, (cx) => { if (this.ctx?.on && this.place.shown()) this.refresh(cx, { poll: true, why: "poll" }); });
+    // Polls, while it's on screen: a remote repo every 4 s while the person
+    // works in gitview (the list or the tab's diff pane has the keys), else
+    // every 10 s; a local one is the folder watch's, polled only after 30 s
+    // without a status.
+    cx.timer.every(4000, (cx) => {
+      if (!this.ctx?.on || !this.place.shown()) return;
+      const here = this.showsFocus() || (focused()?.pane ?? null) === (diffPane(this.tab())?.pane ?? undefined);
+      if (here || Date.now() - (this.statusAt ?? 0) >= 10000) this.refresh(cx, { poll: true, why: "poll" });
+    });
     cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.place.shown() && Date.now() - (this.statusAt ?? 0) > 30000) this.refresh(cx, { poll: true, why: "poll" }); });
     // As a render would: only while it's on screen (a hidden copy isn't
     // drawn; its 300 ms look is all it has then).
@@ -383,7 +389,10 @@ export default class GitList extends View {
         // A repo whose plain status failed on a submodule (the engine said
         // so): straight to the status that works.
         const sub = this.noSubmodules.has(ctx.key) ? ["--ignore-submodules"] : [];
-        status = await gv(["status", "--repo", ctx.cwd, "--scope", this.scope, ...known, ...sub, ...onArgs(ctx.on)]);
+        // A poll of a repo it knows: its root, not looked up again (--root).
+        const root = poll && this.loadedKey === ctx.key ? old?.where.root : null;
+        const repo = root ? ["--repo", root, "--root"] : ["--repo", ctx.cwd];
+        status = await gv(["status", ...repo, "--scope", this.scope, ...known, ...sub, ...onArgs(ctx.on)]);
       } catch (e) {
         if (current() && ctx.key === this.ctx.key) {
           const m = message(e);
