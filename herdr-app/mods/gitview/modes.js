@@ -62,7 +62,7 @@ export const MODES = {
     }),
     body: (v, t, focused) => filesBody(v, t, focused, v.work),
     under: (v, t) => (v.scope === "worktree" && v.work
-      ? commitBox(t, v.commitInput, v.typing, v.work.status.sections.some((s) => s.id === "staged"), v.committing, (cx) => v.commit(cx), v.width < 320)
+      ? commitBox(t, v.commitInput, v.typing, v.work.status.sections.some((s) => s.id === "staged"), v.commitRunning(), (cx) => v.commit(cx), v.width < 320)
       : null),
     keys: [
       { caps: ["j", "k"], label: "move", on: { j: down, down, k: up, up } },

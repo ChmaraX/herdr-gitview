@@ -28,6 +28,7 @@ export class Loads {
     this.onError = onError;
     this.slots = new Map(); // what → {started, at, next}: latest()'s
     this.panes = new ModPanes(); // for revive: app bug #1 (a dropped exec)
+    this.onLost = null; // (cx, whats): the copy's own state about lost loads
   }
 
   // A mod pane went since the last look: the loads running are taken as
@@ -124,6 +125,7 @@ export class Loads {
     if (!lost.length) return;
     console.warn(`gitview: a mod pane closed during ${lost.map(([, l]) => l.what).join(", ")}: not waiting for that, loading again`);
     for (const [id] of lost) this.running.delete(id);
+    this.onLost?.(cx, lost.map(([, l]) => l.what));
     for (const [what, slot] of this.slots) {
       if (!slot.at || slot.at > before) continue;
       const work = slot.next ?? slot.work;

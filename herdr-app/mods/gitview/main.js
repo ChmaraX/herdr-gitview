@@ -66,6 +66,14 @@ export default class GitList extends View {
     this.noSubmodules = new Set(); // repos (keys) whose status needs --ignore-submodules
     this.flash = new Flash(cx);
     this.loads = new Loads((m) => this.flash.set(m));
+    // A lost op (app bug #1) never gets to its finally or its refresh: no
+    // commit stays running, its own batches aren't skipped, and the repo
+    // is shown as it is.
+    this.loads.onLost = (cx) => {
+      this.committing = 0;
+      this.ownOp = null;
+      this.refresh(cx, { quiet: true, why: "revive" });
+    };
     this.watcher = {};
     // What render notices (stale(): another repo, space or tab, a stamp,
     // the pane's ask, the panel's edges) is acted on from a task of this
@@ -482,8 +490,9 @@ export default class GitList extends View {
   // The tab's diff pane, opened on first use: full height at the tab's
   // right edge (`json sidebar`), left of this panel.
   ensurePane(tab, cx, { focusPane = false } = {}) {
-    if (diffPane(tab) || this.opening === tab) return;
-    this.opening = tab;
+    // `opening`: a split on its way (bounded: a dropped exec never ends it).
+    if (diffPane(tab) || (this.opening?.tab === tab && Date.now() - this.opening.at < 15000)) return;
+    this.opening = { tab, at: Date.now() };
     cx.spawn(async (cx) => {
       try {
         const { pane } = await gv(["sidebar", "--tab", tab, "--mod", "gitview-diff", "--props", JSON.stringify({ tab })]);
@@ -607,7 +616,7 @@ export default class GitList extends View {
         return;
       }
       if (asked) this.toAnswer = { ...asked, after: Date.now() };
-      this.ownOp.at = Date.now();
+      if (this.ownOp) this.ownOp.at = Date.now(); // (revive may have dropped it)
       this.refresh(cx);
     });
   }
@@ -627,8 +636,8 @@ export default class GitList extends View {
   commit(cx) {
     const text = this.commitInput.value().trim();
     const work = this.work;
-    if (!text || !work || this.scope !== "worktree" || this.committing) return;
-    this.committing = true;
+    if (!text || !work || this.scope !== "worktree" || this.commitRunning()) return;
+    this.committing = Date.now();
     const started = Date.now();
     this.ownOp = { at: started + 60000, paths: [] }; // its index and refs writes
     this.loads.run(cx, "commit", async (cx) => {
@@ -643,11 +652,16 @@ export default class GitList extends View {
           notify({ title: "gitview", body: "the commit is still running or timed out: check git log", level: "warning" });
         } else notify({ title: "Commit failed", body: message(e), level: "error" });
       } finally {
-        this.committing = false;
+        this.committing = 0;
       }
-      this.ownOp.at = Date.now();
+      if (this.ownOp) this.ownOp.at = Date.now(); // (revive may have dropped it)
       this.refresh(cx);
     });
+  }
+
+  // A commit on its way (its start; bounded as the exec is).
+  commitRunning() {
+    return Boolean(this.committing) && Date.now() - this.committing < EXEC_LIMIT_MS + 1000;
   }
 
   toggleScope(cx) {
