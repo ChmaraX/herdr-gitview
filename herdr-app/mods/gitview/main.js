@@ -615,13 +615,12 @@ export default class GitList extends View {
     if (!paths.length) return;
     if (op !== "discard") return this.act([op, "--section", section, "--", ...paths], list.where, cx);
     const what = row.kind === "header" ? `All ${paths.length} changed files` : row.kind === "dir" ? `All ${paths.length} changed files in ${row.path}` : row.file.path;
-    this.pendingDiscard = confirmDiscard("gitview", what, { where: list.where, paths, section });
+    confirmDiscard("gitview", what, { where: list.where, paths, section });
   }
 
   discardConfirmed(command, cx) {
-    const p = takeDiscard(this.pendingDiscard, command);
+    const p = takeDiscard("gitview", command);
     if (!p) return;
-    this.pendingDiscard = null;
     this.act(["discard", "--section", p.section, "--", ...p.paths], p.where, cx);
     this.confirmClosing(cx);
   }

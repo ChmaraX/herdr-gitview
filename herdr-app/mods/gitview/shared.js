@@ -23,6 +23,8 @@
 //   there); `preview`: the pane shows the file's Preview (the pane's own
 //   dedupe, and what the e2e reads).
 // - "gitview.keys": {overlay}: the keys card is open (keymap.js).
+// - "gitview.discards": {<token>: {mod, at, payload}}: discards waiting on
+//   the confirm dialog (actions.js), for whichever copy hears its Confirm.
 // - "gitview.notes": {"<machine or ''>:<repo root>": [note]}: review notes,
 //   kept until sent. A note is {id, file, section, cached, start, end,
 //   text, snippet}; `cached`: written on the staged diff.

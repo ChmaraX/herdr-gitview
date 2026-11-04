@@ -2,7 +2,7 @@
 // which op, the discard confirm, sending notes. Shared (linked; install
 // copies it).
 
-import { agents, openOverlay } from "herdr";
+import { agents, openOverlay, setShared, shared } from "herdr";
 import { gv } from "./engine.js";
 import { notesOf } from "./shared.js";
 
@@ -19,10 +19,17 @@ export function opsFor(section) {
 }
 
 // Asks first (the app's confirm dialog). Its Confirm runs
-// `<mod>.discard:<token>`, and every copy of the mod hears it, so only the
-// copy holding that token acts, once. Returns the pending discard to keep.
+// `<mod>.discard:<token>`, which reaches one copy of the mod, not always
+// the one that asked (another tab's, while the app's focus lags): what the
+// discard is goes in shared "gitview.discards" by token, so whichever copy
+// hears it does it, once. A token without its record (cancelled long ago,
+// or made up) does nothing.
+const DISCARD_MS = 10 * 60 * 1000;
 export function confirmDiscard(mod, what, payload) {
   const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const now = Date.now();
+  const all = Object.fromEntries(Object.entries(shared("gitview.discards") ?? {}).filter(([, r]) => now - r.at < DISCARD_MS));
+  setShared("gitview.discards", { ...all, [token]: { mod, at: now, payload } });
   console.log(`${mod}: asking to discard ${what} (${mod}.discard:${token})`);
   openOverlay({
     mod: "confirm",
@@ -32,13 +39,18 @@ export function confirmDiscard(mod, what, payload) {
     height: 190,
     props: { title: "Discard changes?", detail: `${what}: this can't be undone.`, command: { name: `${mod}.discard:${token}` } },
   });
-  return { ...payload, token };
 }
 
-// The pending discard a `discard:<token>` command confirms, or null.
-export function takeDiscard(pending, command) {
+// The discard a `discard:<token>` command confirms (taken: it runs once),
+// or null.
+export function takeDiscard(mod, command) {
   const token = command.slice("discard:".length);
-  return pending && token && pending.token === token ? pending : null;
+  const all = { ...(shared("gitview.discards") ?? {}) };
+  const rec = token ? all[token] : null;
+  if (!rec || rec.mod !== mod || Date.now() - rec.at > DISCARD_MS) return null;
+  delete all[token];
+  setShared("gitview.discards", all);
+  return rec.payload;
 }
 
 // The send dialog for a repo's notes (`key`: shared.js notesKey). Resolves

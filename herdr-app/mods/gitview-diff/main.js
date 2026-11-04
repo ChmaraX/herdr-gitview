@@ -393,15 +393,14 @@ export default class GitDiff extends View {
     const v = this.view;
     if (!v || v.commit) return;
     if (!allowed(op, v.section)) return this.flash.set(`can't ${op} it: it's ${v.scope}`);
-    if (op === "discard") this.pendingDiscard = confirmDiscard("gitview-diff", v.path, { view: v });
+    if (op === "discard") confirmDiscard("gitview-diff", v.path, { view: v, tab: this.tab() });
     else this.askList(cx, op, v);
   }
 
   // s/u/x and J/K: the tab's list (the one writer of its view) does them
   // (gitview.ask) and writes the view they lead to. Until it answers (5 s
   // at most) this counts as loading, so the next key acts on that view.
-  askList(cx, op, v, done = null) {
-    const tab = this.tab();
+  askList(cx, op, v, done = null, tab = this.tab()) {
     if (!tab) return done?.();
     const seq = ask(tab, op, v);
     this.loads.run(cx, op, async (cx) => {
@@ -493,10 +492,10 @@ export default class GitDiff extends View {
     if (command === "focus") takeKeyboard(this, cx);
     else if (command === "close") this.closePane(); // the × button, for scripts
     else if (what === "discard") {
-      const p = takeDiscard(this.pendingDiscard, command);
-      if (!p) return;
-      this.pendingDiscard = null;
-      if (sameFile(p.view, this.view)) this.askList(cx, "discard", p.view);
+      // The file the person confirmed, through its tab's list (this copy
+      // may be another tab's).
+      const p = takeDiscard("gitview-diff", command);
+      if (p) this.askList(cx, "discard", p.view, null, p.tab);
     } else if (what === "key") this.key(keyEvent(rest.join(":")), cx);
     else if (what === "drag") {
       // A mouse drag over new-side lines <a> to <b>, for scripts.
