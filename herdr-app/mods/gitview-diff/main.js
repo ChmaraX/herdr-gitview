@@ -257,7 +257,7 @@ export default class GitDiff extends View {
         this.diffArgs = JSON.stringify(args);
       } catch (e) {
         if (sameFile(this.view, view) && !sameFile(this.diffView, view)) {
-          this.diff = EMPTY;
+          this.diff = { rows: [], error: message(e) }; // said in the body, after the flash too
           this.diffView = view;
         }
         throw e;
@@ -639,8 +639,8 @@ export default class GitDiff extends View {
           .font_family(settings().font_family ?? "JetBrains Mono")
           .text_size(12)
           .child(this.scroll.view(t, (i) => diffs.renderRow(display[i], ctx)))
-          .when(Boolean(this.diff.empty || this.diff.binary), (e) =>
-            e.child(div().absolute().top(10).px(14).text_color(t.dim).child(this.diff.binary ? "Binary file" : "No text changes")),
+          .when(Boolean(this.diff.error || this.diff.empty || this.diff.binary), (e) =>
+            e.child(div().absolute().top(10).px(14).text_color(this.diff.error ? t.ansi1 : t.dim).child(this.diff.error ? `Couldn't load the diff: ${this.diff.error}` : this.diff.binary ? "Binary file" : "No text changes")),
           )
       : div().flex_1() // a new pane's first file, on its way
     ).when(b.old && Date.now() - this.switchedAt > 150, (e) => e.opacity(0.55));
