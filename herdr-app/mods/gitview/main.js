@@ -631,6 +631,7 @@ export default class GitList extends View {
       try {
         await gv([args[0], "--repo", where.root, "--root", ...onArgs(where.on), ...args.slice(1)]);
       } catch (e) {
+        if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "list", opFailed: args[0], error: message(e) })}`);
         notify({ title: "gitview", body: message(e), level: "error" });
         if (asked) answer(asked.tab, asked.seq);
         this.ownOp = null;
