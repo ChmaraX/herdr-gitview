@@ -6,7 +6,7 @@
 
 import { focused, panes, props, run, spaces } from "herdr";
 import { location } from "./engine.js";
-import { diffPane, hides, isOwnTab, onScreen, ownTab, panelDiffPanes, panelState } from "./shared.js";
+import { diffPane, isOwnTab, onScreen, ownTab, panelState } from "./shared.js";
 import { takeKeyboard } from "./modkit.js";
 
 // ---- the list ------------------------------------------------------------------
@@ -70,27 +70,35 @@ const TAB = {
 
 export const listPlacement = () => (props()?.own || props()?.cwd ? TAB : PANEL);
 
-// The panel's show/hide cycle, as the TUI's toggle did. Hidden by the
-// person (cmd-shift-g, the Changes or Files button): the diff panes it
-// opened in the shown space's tabs close. Hidden because the person went to
-// another space whose panel is closed (the tab bar puts each space's panel
-// back): nothing closes, so coming back finds the diff as it was. Shown:
-// look() says so, and the list opens its file in the tab's diff pane when
-// the tab has none. The list looks from a timer too: a hidden copy isn't
-// drawn, but its timers run, so a hide is seen whatever tab shows and
-// whether or not it has a diff pane.
+// The panel's show/hide edges, from the last look (`was`: {shown, space})
+// and this one (`now`: {shown, space: the active space's id or null, tabs:
+// its tab ids}). Pure; returns {was: the next look's, edge}:
+// - "shown": the panel showed (the first look counts): the list opens its
+//   file when the tab has no diff pane;
+// - {hidden: tabs, space}: the person hid it (cmd-shift-g, the Changes or
+//   Files button): the unit in the shown space's tabs closes (the diff
+//   panes, nvim, an editor);
+// - null: nothing, or hidden because the person went to another space
+//   whose panel is closed (the tab bar puts each space's panel back):
+//   nothing closes, so coming back finds the diff as it was.
+export function cycleEdge(was, now) {
+  const next = { shown: now.shown, space: now.space };
+  if (now.shown === was.shown) return { was: next, edge: null };
+  if (now.shown) return { was: next, edge: "shown" };
+  const moved = was.space !== null && now.space !== was.space;
+  return { was: next, edge: moved || !now.space ? null : { hidden: new Set(now.tabs), space: now.space } };
+}
+
+// The panel's cycle, as the TUI's toggle did (cycleEdge). The list looks
+// from a timer too: a hidden copy isn't drawn, but its timers run, so a
+// hide is seen whatever tab shows and whether or not it has a diff pane.
+// cmd-shift-g also says so itself (`hiddenBy`), before it hides the panel:
+// the list may look only after it's shown again.
 class PanelCycle {
   constructor() {
     this.shown = null; // not looked yet
     this.space = null;
     this.aside = false; // hidden for cmd-g's tab (stepAside)
-    this.hides = null; // cmd-shift-g's hides (shared), as last looked
-  }
-
-  // cmd-shift-g hid the panel since the last look (the list may have missed
-  // it: shown again before its next look, or a napped app's slow timers).
-  hidMeanwhile() {
-    return this.hides !== null && hides() !== this.hides;
   }
 
   // cmd-g's tab has a list of its own: while it shows, the panel steps
@@ -116,25 +124,22 @@ class PanelCycle {
     return isOwnTab(focused()?.tab) ? Boolean(panelState()?.shown) && !this.aside : this.aside;
   }
 
-  // "shown" on the edge to shown (the first look counts); on a hide the
-  // person made, {hidden: the shown space's tabs} (their diff panes are
-  // closed; the list closes the rest of the unit); a hide by cmd-shift-g
-  // missed, shown again since: both, {hidden, shown: true}; else null.
+  // This look's edge (cycleEdge).
   look() {
-    const shown = PANEL.shown();
     const space = spaces().find((s) => s.active) ?? null;
-    const moved = this.space !== null && space?.id !== this.space;
-    this.space = space?.id ?? null;
-    const missed = shown && this.shown === true && this.hidMeanwhile();
-    this.hides = hides();
-    if (missed && space) return { hidden: new Set(space.tabs.map((t) => t.id)), shown: true };
-    if (shown === this.shown) return null;
-    this.shown = shown;
-    if (shown) return "shown";
-    if (moved || !space) return null;
-    const tabs = new Set(space.tabs.map((t) => t.id));
-    for (const pane of panelDiffPanes()) if (tabs.has(pane.tab)) run("pane.close", { pane: pane.pane });
-    return { hidden: tabs };
+    const { was, edge } = cycleEdge(this, { shown: PANEL.shown(), space: space?.id ?? null, tabs: space?.tabs.map((t) => t.id) ?? [] });
+    Object.assign(this, was);
+    return edge;
+  }
+
+  // cmd-shift-g hides the panel in `space`: the hide edge, unless a look
+  // saw it already (then null). The next look that finds it shown is a
+  // "shown" edge.
+  hiddenBy(spaceId) {
+    if (this.shown !== true) return null;
+    this.shown = false;
+    const space = spaces().find((s) => s.id === spaceId);
+    return space ? { hidden: new Set(space.tabs.map((t) => t.id)), space: space.id } : null;
   }
 }
 

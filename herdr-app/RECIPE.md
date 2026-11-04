@@ -227,6 +227,10 @@ Spaces on other machines work the same way.
   with unsaved changes a dialog asks "Save them?": Save `:wqa`, Discard
   `:qa!`, Cancel brings the panel back and the editor stays; another editor
   stays open and says so). A herdr-nvim pane the person opened stays.
+  cmd-shift-g closes the diff panes itself and sends the list
+  `gitview.hidden:<space>` before it hides the panel, so the list closes
+  that space's unit even when its next look comes after a show; the other
+  ways the list sees on its look (placement.js `cycleEdge`).
   Closing cmd-g's tab closes its editor the same way; going to a
   space whose panel is closed isn't a hide (the tab bar puts each space's
   panel back), so the diff is there when you come back; when it shows again, its selected (else first) file opens

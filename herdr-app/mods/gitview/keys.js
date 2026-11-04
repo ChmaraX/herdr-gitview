@@ -50,7 +50,10 @@ export function runCommand(view, command, cx) {
   // cmd-shift-g showed the panel: the keyboard and the app's focus (its
   // file opens as the panel shows: placement.js, also after a hide this
   // list never saw).
-  else if (command === "focus:panel") {
+  // cmd-shift-g hides the panel in that space (placement.js hiddenBy).
+  else if (what === "hidden") {
+    if (view.cycle) view.onEdge(view.cycle.hiddenBy(arg), cx);
+  } else if (command === "focus:panel") {
     if (view.cycle) view.focusList(cx);
   } else if (what === "discard") view.discardConfirmed(command, cx);
   else if (what === "key") view.key(keyEvent(arg), cx);

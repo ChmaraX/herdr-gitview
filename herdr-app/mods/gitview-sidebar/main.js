@@ -10,7 +10,7 @@ import { View, div } from "gpui-kit";
 import { notify, run, spaces } from "herdr";
 import { appCli } from "./engine.js";
 import { oneShot } from "./modkit.js"; // links to ../gitview (install copies them)
-import { noteHide, panelDiffPanes, panelState } from "./shared.js";
+import { panelDiffPanes, panelState } from "./shared.js";
 
 export default class GitviewPanel extends View {
   init(_props, cx) {
@@ -22,13 +22,13 @@ export default class GitviewPanel extends View {
       const p = panelState();
       if (!p) return notify({ title: "gitview", body: "This layout has no gitview Changes panel (run gitview's install.sh).", level: "warning" });
       if (p.shown) {
-        // The diff panes go with it at once (the list, hidden from now on,
-        // would see the hide only on its next look; it still closes the rest
-        // of the unit then: nvim, an editor).
+        // The diff panes go with it at once, and the list hears of the hide
+        // (it closes the rest of the unit: nvim, an editor): hidden, it
+        // would see it only on its next look, maybe after a show.
         const space = spaces().find((s) => s.active);
         const tabs = new Set(space?.tabs.map((t) => t.id) ?? []);
         for (const pane of panelDiffPanes()) if (tabs.has(pane.tab)) run("pane.close", { pane: pane.pane });
-        noteHide();
+        if (space) run(`gitview.hidden:${space.id}`);
         return run("layout.hide", { id: p.panel });
       }
       if (p.stack) run("layout.select", { stack: p.stack, child: p.slot });

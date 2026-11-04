@@ -18,7 +18,7 @@ import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import {
-  answer, askIn, cursorIn, diffPane, panelState, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, setHandoff, setTreeMode, setView,
+  answer, askIn, cursorIn, diffPane, panelDiffPanes, panelState, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, setHandoff, setTreeMode, setView,
   treeMode, viewIn,
 } from "./shared.js";
 import { Flash, Loads, commandLoop, debounced, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
@@ -144,7 +144,7 @@ export default class GitList extends View {
   // no side effects).
   stale() {
     if (this.loads.panesMoved()) return true;
-    if (this.cycle && (this.cycle.shown !== this.place.shown() || this.cycle.asideStale() || this.cycle.hidMeanwhile())) return true;
+    if (this.cycle && (this.cycle.shown !== this.place.shown() || this.cycle.asideStale())) return true;
     if (!this.place.shown()) return false;
     if (this.place.closesForHerdrNvim) {
       // followHandoff, on an edge only: the record not seen yet, or nvim's
@@ -165,9 +165,7 @@ export default class GitList extends View {
   notice(cx) {
     this.loads.panesClosed(cx);
     this.cycle?.stepAside();
-    const edge = this.cycle?.look();
-    if (edge?.hidden) this.closeUnit(edge.hidden, cx);
-    if (edge === "shown" || edge?.shown) this.openOnShow(cx);
+    this.onEdge(this.cycle?.look(), cx);
     if (!this.place.shown()) return;
     const ctx = this.context();
     const tabChanged = ctx.tab !== this.ctx?.tab;
@@ -182,6 +180,16 @@ export default class GitList extends View {
     }
     this.followAsk(cx);
     if (this.place.closesForHerdrNvim) this.followHandoff(cx); // it hands its diff to herdr-nvim
+  }
+
+  // The panel's edge (placement.js cycleEdge): a hide closes the unit in
+  // the shown space's tabs (the diff panes first), a show opens the file.
+  onEdge(edge, cx) {
+    if (edge === "shown") this.openOnShow(cx);
+    else if (edge?.hidden) {
+      for (const pane of panelDiffPanes()) if (edge.hidden.has(pane.tab)) run("pane.close", { pane: pane.pane });
+      this.closeUnit(edge.hidden, cx);
+    }
   }
 
   // The diff pane's ask (gitview.ask): s/u/x on its file, or J/K. Done
