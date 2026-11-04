@@ -26,6 +26,8 @@
 //!   text);
 //! - HEAD's commit or branch misread: before the first commit, on a branch,
 //!   detached;
+//! - branch scope or history before the first commit failing with git's
+//!   raw message (`Not a valid object name HEAD`), not saying why;
 //! - diff rows without their markers, numbers or tint roles; history, a
 //!   commit's files or a commit's own diff (the root commit's too) wrong.
 
@@ -641,4 +643,20 @@ fn a_diff_of_a_path_outside_the_repo_is_refused_as_file_refuses_it() {
         let v = gv(d, &["diff", "--path", path, "--kind", "untracked"]);
         assert_eq!(v["rows"].as_array().unwrap().len(), 1, "{path}: {v}");
     }
+}
+
+#[test]
+fn branch_scope_and_history_before_the_first_commit_say_so() {
+    let repo = fixture("json-unborn");
+    let d = &repo.dir;
+    common::git(d, &["checkout", "-q", "--orphan", "fresh"]);
+    for args in [&["status", "--scope", "branch"][..], &["log"]] {
+        let err = gv_err(d, args);
+        assert!(err.starts_with("no commits yet, so "), "{args:?}: {err}");
+        assert!(!err.contains("fatal"), "{err}");
+    }
+    // With commits, a failure still says git's own words.
+    common::git(d, &["checkout", "-q", "main"]);
+    let err = gv_err(d, &["log", "--merge-base", "nosuchrev"]);
+    assert!(err.contains("nosuchrev"), "{err}");
 }

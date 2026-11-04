@@ -512,6 +512,9 @@ fn status(a: &Args) -> Result<Value> {
     if a.value("scope") == Some("branch") {
         let branch = repo.head_branch();
         let head = repo.head_sha();
+        if head.is_none() {
+            bail!("{NO_COMMITS}, so no branch to compare with its base");
+        }
         // The caller may pass back the base it got last time: base detection
         // costs a dozen git calls, too many for every poll. It holds only
         // while HEAD is where it was resolved for: after a rebase or a merge
@@ -861,6 +864,9 @@ fn file(a: &Args) -> Result<Value> {
 
 // ---- history ------------------------------------------------------------------
 
+/// What branch scope and history say before the first commit.
+const NO_COMMITS: &str = "no commits yet";
+
 /// Newest first; with `--merge-base`, only the commits on top of it.
 fn log(a: &Args) -> Result<Value> {
     let repo = a.repo()?;
@@ -869,9 +875,14 @@ fn log(a: &Args) -> Result<Value> {
         None => LOG_LIMIT,
     };
     let commits = match a.value("merge-base") {
-        Some(mb) => repo.log_branch_commits(mb, limit)?,
-        None => repo.log_commits(limit)?,
+        Some(mb) => repo.log_branch_commits(mb, limit),
+        None => repo.log_commits(limit),
     };
+    // Asked only when git fails: an unborn branch has no history to show.
+    let commits = commits.or_else(|e| match repo.head_sha() {
+        None => bail!("{NO_COMMITS}, so no history"),
+        Some(_) => Err(e),
+    })?;
     let commits: Vec<CommitOut> = commits.iter().map(CommitOut::from).collect();
     Ok(json!({ "commits": commits }))
 }
