@@ -19,10 +19,8 @@ import { focused, run, setShared, settings, shared, spaces, theme } from "herdr"
 import { gv, message } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
-import {
-  addNote, answerIn, ask, cursorIn, diffPane, liveView, notesKey, notesOf, previewOff, removeNotes, setCursor, setPreviewOff,
-  viewIn,
-} from "./shared.js";
+import { addNote, answerIn, ask, cursorIn, liveView, notesKey, notesOf, previewOff, removeNotes, setCursor, setPreviewOff, viewIn } from "./shared.js";
+import { diffPane } from "./layout.js";
 import { Flash, Loads, commandLoop, debounced, debugLook, keyEvent, keyName, takeKeyboard, trace } from "./modkit.js";
 import { panePlacement } from "./placement.js";
 import { editorLabel, knowEditor, openNvim } from "./nvim.js";

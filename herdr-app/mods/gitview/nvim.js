@@ -21,7 +21,8 @@
 import { exec, layout, notify, run, terminals } from "herdr";
 import { setEditor, socketFor, trackEditor } from "./editors.js";
 import { gv, message, onArgs } from "./engine.js";
-import { diffPane, setHandoff, viewIn } from "./shared.js";
+import { setHandoff, viewIn } from "./shared.js";
+import { diffPane } from "./layout.js";
 
 // Terminals shown in the layout's blocks (an nvim panel, say).
 function layoutTerminals(node, out = []) {
@@ -105,7 +106,8 @@ export async function openNvim(o) {
     // (its own server stays, for the engine to find); the editor is kept with
     // the tab (editors.js): closing gitview closes it too.
     const sock = editor.kind === "nvim" && !o.on && o.tab ? await socketFor(o.tab) : null;
-    const listen = sock ? ["--cmd", `call serverstart('${sock}')`] : [];
+    // (A Vim string in '…': a ' in the path is written '' there.)
+    const listen = sock ? ["--cmd", `call serverstart('${sock.replaceAll("'", "''")}')`] : [];
     const before = new Set(terminals().map((t) => t.address));
     run("terminal.open", { argv: [...editor.argv, ...listen, ...line, file], folder: o.root, place: "right" });
     if (o.tab && o.cx) {

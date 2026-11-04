@@ -17,10 +17,8 @@ import { notify, run, shared, theme } from "herdr";
 import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
-import {
-  answer, askIn, cursorIn, diffPane, panelDiffPanes, panelState, handoffIn, setIgnoredDirs, handoffs, herdrNvimPanes, liveView, notesKey, notesOf, setHandoff, setTreeMode, setView,
-  treeMode, viewIn,
-} from "./shared.js";
+import { answer, askIn, cursorIn, handoffIn, setIgnoredDirs, handoffs, liveView, notesKey, notesOf, setHandoff, setTreeMode, setView, treeMode, viewIn } from "./shared.js";
+import { diffPane, panelDiffPanes, panelState, herdrNvimPanes } from "./layout.js";
 import { Flash, Loads, commandLoop, debounced, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
 import { staleWhy } from "./notice.js";

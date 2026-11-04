@@ -6,7 +6,8 @@
 
 import { View, div } from "gpui-kit";
 import { focused, notify, run, spaces } from "herdr";
-import { appCli, gv, location } from "./engine.js"; // links to ../gitview (install copies them)
+import { appCli, gv } from "./engine.js"; // links to ../gitview (install copies them)
+import { location } from "./layout.js";
 import { oneShot } from "./modkit.js";
 import { origins, ownTab, setOrigin, setOwnTab } from "./shared.js";
 import { closeEditorOf, setEditor } from "./editors.js";

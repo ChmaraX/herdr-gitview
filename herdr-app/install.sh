@@ -14,8 +14,9 @@
 #   - copies every mod folder in herdr-app/mods: gitview (the file list, in
 #     the Changes panel and in cmd-g's tab), gitview-diff (the diff pane),
 #     gitview-agents (send notes to an agent), gitview-sidebar (cmd-shift-g:
-#     show or hide the Changes panel with gitview, its diff pane with it) and
-#     gitview-tab (cmd-g: gitview in a tab of its own)
+#     show or hide the Changes panel with gitview, its diff pane with it),
+#     gitview-tab (cmd-g: gitview in a tab of its own), gitview-ask (the
+#     editor's "Save them?" dialog) and gitview-keys (the keys card, ?)
 #   - writes mods/gitview/config.json: the binary, herdr-app and hc paths
 #     (herdr-app: $HERDR_APP_BIN, else found on PATH or in /Applications)
 #   - runs `herdr-app check` on each mod, before anything outside the mod

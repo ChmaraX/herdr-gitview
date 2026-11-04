@@ -5,8 +5,8 @@
 // "am I the panel?". Shared (linked; install copies it).
 
 import { focused, panes, props, run, spaces } from "herdr";
-import { location } from "./engine.js";
-import { diffPane, isOwnTab, onScreen, ownTab, panelState } from "./shared.js";
+import { isOwnTab, ownTab } from "./shared.js";
+import { diffPane, location, onScreen, panelState } from "./layout.js";
 import { takeKeyboard } from "./modkit.js";
 
 // ---- the list ------------------------------------------------------------------

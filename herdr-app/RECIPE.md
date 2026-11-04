@@ -289,8 +289,10 @@ Spaces on other machines work the same way.
   coalesced, an older reply dropped; the fading message, the folder watch, the command
   loop, key names, the launchers' one-shot), `actions.js` (which section
   allows which op, the discard confirm, sending notes), `shared.js` (every
-  shared key, `machineOf`, the panel in the layout, taking the keyboard),
-  `engine.js` (runs the binary; the shown space's folder and machine),
+  shared key, `machineOf`, cmd-g's tabs), `layout.js` (where things are in
+  the app's live lists: the tab's diff pane, herdr-nvim's panes, the panel
+  in the layout, the shown space's folder and machine), `engine.js` (runs
+  the binary),
   `nvim.js` (Enter), `scroller.js` (a list that draws only its visible rows
   as ordinary elements), `icons/` (Lucide: plus, minus, undo, x, chevrons,
   folder, history, list, list-tree, send, arrow-left, branch, diff, eye).
@@ -346,7 +348,7 @@ Spaces on other machines work the same way.
   2×2 px frameless windows that act once and close (`modkit.js` `oneShot`).
 - Files shared between mod folders (`engine.js`, `model.js`, `shared.js`,
   `nvim.js`, `scroller.js`, `chrome.js`, `modkit.js`, `actions.js`,
-  `placement.js`, `keymap.js`, `editors.js`) are
+  `placement.js`, `keymap.js`, `editors.js`, `layout.js`) are
   symlinks in the repo; install copies them (`cp -L`): a mod can't import
   from another mod's folder.
 - **The binary** (`mods/gitview/bin/herdr-gitview`, built from this repo;

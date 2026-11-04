@@ -10,7 +10,7 @@ import { View, div } from "gpui-kit";
 import { notify, run, spaces } from "herdr";
 import { appCli } from "./engine.js";
 import { oneShot } from "./modkit.js"; // links to ../gitview (install copies them)
-import { panelDiffPanes, panelState } from "./shared.js";
+import { panelDiffPanes, panelState } from "./layout.js";
 
 export default class GitviewPanel extends View {
   init(_props, cx) {
