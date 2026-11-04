@@ -145,7 +145,13 @@ echo "then: panel $(panel_state)" | tee -a "$LOG"
 shot coexist-03-click-again 2
 
 # The list holds the keys with the app's focus (its trace: focused, and
-# the app's focus came with it).
+# the app's focus came with it). The list gets there by pane.go, which
+# needs a drawn window (herdr-app 0.1.12: a no-op in one that never drew,
+# even between two terminals): covered, it's skipped, saying so.
+list_keys_check() {
+  if drawn; then expect list_has_keys "$1"
+  else skip "$1 (the window isn't drawn: pane.go, the list's way to the keys, does nothing there)"; fi
+}
 list_has_keys() {
   grep -a 'GVTRACE.*"mod":"list"' "$BASE/app.log" | grep -F "\"tab\":\"$TAB\"" | tail -1 | sed 's/.*GVTRACE //' | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("focused") and d.get("viaApp") else 1)'
 }
@@ -160,7 +166,7 @@ sleep 1
 hc keys "$NV2" esc shift+z shift+z >>"$LOG" 2>&1
 expect '[ -z "$(tab_nvim)" ]' "quitting nvim closes its pane" 15
 expect 'has_diff $TAB && [ "$(view_of $TAB path)" = src/main.rs ]' "the diff pane is back on src/main.rs within 2 s" 2
-expect list_has_keys "with the keys on the list"
+list_keys_check "with the keys on the list"
 expect focus_check "and one focus shows"
 shot coexist-03b-q-back 1.5
 
@@ -210,7 +216,7 @@ nv --remote-send '<esc>u' # undone, for what follows
 do_ mod.open --name gitview-sidebar
 expect '[ "$(panel_state)" = "open changes" ] && has_diff $TAB && [ "$(view_of $TAB path)" = src/main.rs ]' "cmd-shift-g again: the diff of src/main.rs, not nvim" 15
 [ -z "$(tab_nvim)" ] && ok "(nvim's pane stays closed)" || fail "nvim's pane came back"
-expect list_has_keys "the keys on the list"
+list_keys_check "the keys on the list"
 
 step "leaving the tab before :q: the diff doesn't come back"
 do_ gitview-diff.key:enter
