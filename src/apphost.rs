@@ -290,7 +290,11 @@ pub fn open_in_herdr_nvim(
     if let Some(space) = space.filter(|s| !s.is_empty()) {
         cmd.args(["--space", space]);
     }
-    // It may start herdr-nvim's nvim daemon first.
+    // It may start herdr-nvim's nvim daemon first. The open runs in its own
+    // process group, killed whole past 30 s; that's safe only because the
+    // daemon detaches its stdio and the open returns at once (0.2–0.5 s). A
+    // herdr-nvim that kept our pipes would make us wait 30 s and then kill
+    // its daemon too.
     let out = output_within(
         cmd.arg(&target).env_remove("HC_SCOPE"), // a scope that isn't ours gets its hc calls ended
         None,
