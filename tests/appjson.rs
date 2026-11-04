@@ -16,6 +16,9 @@
 //!   files the list hides, or takes unstaged changes while something is
 //!   staged;
 //! - a branch base passed back by the caller kept after HEAD moved;
+//! - a diff of a path outside the repo (absolute, `..`) shown, where
+//!   `json file` refuses it; or a path inside refused (a subfolder, an
+//!   untracked file, `./`, a name with a newline);
 //! - spans split where the colors don't change (more for the mod to
 //!   build), or their text changed by the merge;
 //! - a huge diff's last sent rows left without syntax colors (only the
@@ -607,5 +610,35 @@ fn every_row_sent_of_a_huge_diff_has_its_syntax_colors() {
             (&pair[0][1], &pair[0][2]) != (&pair[1][1], &pair[1][2]),
             "{pair:?}"
         );
+    }
+}
+
+#[test]
+fn a_diff_of_a_path_outside_the_repo_is_refused_as_file_refuses_it() {
+    let repo = fixture("json-diff-outside");
+    let d = &repo.dir;
+    let outside = d
+        .parent()
+        .unwrap()
+        .join(format!("gitview-diff-outside-{}.txt", std::process::id()));
+    std::fs::write(&outside, "secret\n").unwrap();
+    let rel = format!("../{}", outside.file_name().unwrap().to_str().unwrap());
+    let abs = outside.to_str().unwrap();
+    for args in [
+        vec!["--path", rel.as_str(), "--kind", "untracked"],
+        vec!["--path", abs, "--kind", "untracked"],
+        vec!["--path", "base.txt", "--orig", abs, "--kind", "renamed"],
+    ] {
+        let err = gv_err(d, &[&["diff"][..], &args].concat());
+        assert!(err.contains("a path inside the repo"), "{args:?}: {err}");
+        assert!(!err.contains("secret"));
+    }
+    let _ = std::fs::remove_file(&outside);
+
+    write(d, "sub/new.txt", "fresh\n");
+    write(d, "odd\nname.txt", "fresh\n");
+    for path in ["sub/new.txt", "./sub/new.txt", "odd\nname.txt"] {
+        let v = gv(d, &["diff", "--path", path, "--kind", "untracked"]);
+        assert_eq!(v["rows"].as_array().unwrap().len(), 1, "{path}: {v}");
     }
 }

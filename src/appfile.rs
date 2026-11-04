@@ -116,7 +116,7 @@ fn image_ext(path: &Path) -> Option<String> {
 }
 
 /// `path` as given, when it stays inside the repo: relative, no `..`.
-fn inside(raw: &str) -> Result<PathBuf> {
+pub(crate) fn inside(raw: &str) -> Result<PathBuf> {
     let path = PathBuf::from(raw.strip_prefix("./").unwrap_or(raw));
     if raw.is_empty()
         || path

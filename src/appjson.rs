@@ -587,8 +587,15 @@ fn diff(a: &Args) -> Result<Value> {
     }
     let kind: ChangeKind =
         serde_json::from_value(json!(a.value("kind").unwrap_or("modified"))).context("--kind")?;
+    // Only paths inside the repo, as for `file` (the paths are passed on
+    // as given).
+    let path = a.value("path").context("--path")?;
+    crate::appfile::inside(path)?;
+    if let Some(orig) = a.value("orig") {
+        crate::appfile::inside(orig)?;
+    }
     let mut req = ShowReq::worktree(
-        PathBuf::from(a.value("path").context("--path")?),
+        PathBuf::from(path),
         a.value("orig").map(PathBuf::from),
         a.flag("cached"),
         kind,
