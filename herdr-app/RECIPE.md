@@ -124,7 +124,9 @@ Spaces on other machines work the same way.
   Local repos refresh on a folder watch (batches of git's objects, logs and
   locks or ignored folders are no change; a list's own op's batch is
   shown by the refresh after the op), with a poll after 30 s without a
-  status; a space on another machine every 4 s while the panel shows.
+  status; a space on another machine while the panel shows: every 4 s
+  while the list or the tab's diff pane has the keys, else every 10 s (a
+  poll passes the root it knows with `--root`).
 - **List keys** (once it has the keyboard: a click anywhere in it, `pane.go`,
   cmd-shift-g): `j`/`k` or arrows move and the diff follows; `enter` or a
   double-click opens nvim (on a folder: folds it); `h`/`←` folds or goes to
@@ -490,7 +492,8 @@ Spaces on other machines work the same way.
   contrast with its tint (drawn pixels when the window is drawn, and the
   color the pane's render code gives it).
 - A space on another machine lists, diffs and stages there, picks up new
-  files within 4 s, and starts nvim there.
+  files within 4 s while you work in gitview (10 s otherwise), and starts
+  nvim there.
 - With the diff pane open, a file an agent writes shows in the list within
   2 s, and is gone from it within 2 s once deleted.
 - Uninstall brings back the stock Changes panel; with herdr-nvim installed
