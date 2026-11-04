@@ -13,7 +13,8 @@ export const COMPOSER = 104;
 
 // Diff rows, note cards and the composer in display order. A card follows
 // the last row of its range (new-side numbers), a whole-file note goes
-// first; the composer follows the selection's last row.
+// first; the composer follows the selection's last row; a cut diff ends
+// with {cut: rows}.
 export function displayRows(diff, notes, composerAfter) {
   const out = [];
   const pending = notes.filter((n) => n.end > 0);
@@ -24,6 +25,8 @@ export function displayRows(diff, notes, composerAfter) {
     if (here !== null) for (const n of pending.filter((n) => n.end === here)) out.push({ note: n });
     if (i === composerAfter) out.push({ composer: true });
   });
+  // The engine sends 5 000 rows at most: say where it stopped.
+  if (diff.truncated) out.push({ cut: diff.rows.length });
   return out;
 }
 
@@ -110,6 +113,7 @@ export function renderRow(item, ctx) {
   const { t } = ctx;
   if (item.note) return noteCard(item.note, ctx);
   if (item.composer) return composer(ctx);
+  if (item.cut) return div().h(ROW).flex_none().px(14).text_color(t.dim).child(`diff cut at ${String(item.cut).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} lines`);
   const { row, index } = item;
   const selected = ctx.selection && index >= ctx.selection[0] && index <= ctx.selection[1];
   return h_flex()

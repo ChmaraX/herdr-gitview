@@ -16,3 +16,11 @@ test("a file's notes come first; a line's note right under its last line (by the
 test("a deleted line (no new number) gets no note; the composer goes under the row it's for", () => {
   assert.deepEqual(shape(displayRows({ rows }, [], 1)), ["row:0", "row:1", "composer", "row:2", "row:3"]);
 });
+
+// Round 10 (U1): the engine stops at 5 000 rows and said so; the pane just
+// ended, as if the file did.
+test("a diff the engine cut ends with a row saying so", () => {
+  const out = displayRows({ rows, truncated: true }, [], null);
+  assert.deepEqual(out.at(-1), { cut: 4 });
+  assert.equal(displayRows({ rows }, [], null).some((x) => x.cut), false);
+});
