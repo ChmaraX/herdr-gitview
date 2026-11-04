@@ -8,8 +8,8 @@
 // `on` maps key names (modkit.js keyName: "J" for shift-j, "enter", "?")
 // to run(v, cx); `caps` are the keys the card and the chips show; `rank`
 // makes it a footer chip (lowest first, as many as fit); `when(v)` hides
-// the chip when it doesn't apply now; `label` may be `label(v)` (Enter's
-// says the editor it starts).
+// the chip and the card's line when it doesn't apply now; `label` may be
+// `label(v)` (Enter's says the editor it starts).
 
 import { closeOverlay, openOverlay, setShared, shared } from "herdr";
 
@@ -33,7 +33,7 @@ export function chipsOf(tables, v) {
 // The keys card's content, plain data for the dialog's props: [{title,
 // keys: [{caps, label}]}].
 export function cardOf(groups, v) {
-  return groups.map(({ title, table }) => ({ title, keys: table.map((e) => ({ caps: e.caps, label: labelOf(e, v) })) }));
+  return groups.map(({ title, table }) => ({ title, keys: table.filter((e) => !e.when || e.when(v)).map((e) => ({ caps: e.caps, label: labelOf(e, v) })) }));
 }
 
 // The keys card (mod gitview-keys, a dialog): opens it, or closes it when

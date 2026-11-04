@@ -22,6 +22,8 @@ import { NOTE_ROW, deleteNote, jumpToNote, noteMove, noteRow } from "./notesview
 const down = (v, cx) => v.move(1, cx);
 const up = (v, cx) => v.move(-1, cx);
 const back = (to) => (v, cx) => v.setMode(to, cx);
+// s/u/x and the commit box: the working tree only (not "vs base").
+const worktree = (v) => v.scope === "worktree";
 // 6 px above and below the rows, like the stock panel.
 const padded = (sizes) => [6, ...sizes, 6];
 const empty = (t, text) => div().px(16).py(12).text_color(t.dim).child(text);
@@ -66,11 +68,11 @@ export const MODES = {
       : null),
     keys: [
       { caps: ["j", "k"], label: "move", on: { j: down, down, k: up, up } },
-      { caps: ["s"], label: "stage", rank: 1, on: { s: (v, cx) => v.rowAction("stage", null, cx) } },
-      { caps: ["u"], label: "unstage", rank: 2, on: { u: (v, cx) => v.rowAction("unstage", null, cx) } },
+      { caps: ["s"], label: "stage", rank: 1, when: worktree, on: { s: (v, cx) => v.rowAction("stage", null, cx) } },
+      { caps: ["u"], label: "unstage", rank: 2, when: worktree, on: { u: (v, cx) => v.rowAction("unstage", null, cx) } },
       { caps: ["enter"], label: enterLabel, rank: 3, on: { enter: (v, cx) => v.enter(cx), e: (v, cx) => v.enter(cx) } },
-      { caps: ["x"], label: "discard", rank: 4, on: { x: (v, cx) => v.rowAction("discard", null, cx) } },
-      { caps: ["c"], label: "commit", rank: 5, on: { c: (v) => v.commitInput.focus() } },
+      { caps: ["x"], label: "discard", rank: 4, when: worktree, on: { x: (v, cx) => v.rowAction("discard", null, cx) } },
+      { caps: ["c"], label: "commit", rank: 5, when: worktree, on: { c: (v) => worktree(v) && v.commitInput.focus() } },
       { caps: ["l"], label: "history", rank: 6, on: { l: (v, cx) => openLog(v, cx) } },
       { caps: ["t"], label: "tree", rank: 7, on: { t: (v, cx) => v.toggleTree(cx) } },
       { caps: ["n"], label: "notes", rank: 8, on: { n: back("notes") } },
