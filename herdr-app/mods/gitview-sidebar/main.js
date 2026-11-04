@@ -10,7 +10,7 @@ import { View, div } from "gpui-kit";
 import { notify, run, spaces } from "herdr";
 import { appCli } from "./engine.js";
 import { oneShot } from "./modkit.js"; // links to ../gitview (install copies them)
-import { panelDiffPanes, panelState } from "./shared.js";
+import { noteHide, panelDiffPanes, panelState } from "./shared.js";
 
 export default class GitviewPanel extends View {
   init(_props, cx) {
@@ -28,6 +28,7 @@ export default class GitviewPanel extends View {
         const space = spaces().find((s) => s.active);
         const tabs = new Set(space?.tabs.map((t) => t.id) ?? []);
         for (const pane of panelDiffPanes()) if (tabs.has(pane.tab)) run("pane.close", { pane: pane.pane });
+        noteHide();
         return run("layout.hide", { id: p.panel });
       }
       if (p.stack) run("layout.select", { stack: p.stack, child: p.slot });

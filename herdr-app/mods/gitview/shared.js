@@ -21,6 +21,8 @@
 //   there); `preview`: the pane shows the file's Preview (the pane's own
 //   dedupe, and what the e2e reads).
 // - "gitview.keys": {overlay}: the keys card is open (keymap.js).
+// - "gitview.hides": how many times cmd-shift-g hid the panel (a list that
+//   sees it move while the panel shows missed that hide: placement.js).
 // - "gitview.notes": {"<machine or ''>:<repo root>": [note]}: review notes,
 //   kept until sent. A note is {id, file, section, cached, start, end,
 //   text, snippet}; `cached`: written on the staged diff.
@@ -252,6 +254,10 @@ export function ownTab(space) {
   return tab && s?.tabs.some((t) => t.id === tab) ? tab : null;
 }
 
+export const hides = () => shared("gitview.hides") ?? 0;
+export function noteHide() {
+  setShared("gitview.hides", hides() + 1);
+}
 export function setOwnTab(space, tab) {
   setShared("gitview.own", { ...onlyLive(shared("gitview.own"), liveSpaces()), [space]: tab });
 }

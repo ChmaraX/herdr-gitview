@@ -6,7 +6,7 @@
 
 import { focused, panes, props, run, spaces } from "herdr";
 import { location } from "./engine.js";
-import { diffPane, isOwnTab, onScreen, ownTab, panelDiffPanes, panelState } from "./shared.js";
+import { diffPane, hides, isOwnTab, onScreen, ownTab, panelDiffPanes, panelState } from "./shared.js";
 import { takeKeyboard } from "./modkit.js";
 
 // ---- the list ------------------------------------------------------------------
@@ -84,6 +84,13 @@ class PanelCycle {
     this.shown = null; // not looked yet
     this.space = null;
     this.aside = false; // hidden for cmd-g's tab (stepAside)
+    this.hides = null; // cmd-shift-g's hides (shared), as last looked
+  }
+
+  // cmd-shift-g hid the panel since the last look (the list may have missed
+  // it: shown again before its next look, or a napped app's slow timers).
+  hidMeanwhile() {
+    return this.hides !== null && hides() !== this.hides;
   }
 
   // cmd-g's tab has a list of its own: while it shows, the panel steps
@@ -111,12 +118,16 @@ class PanelCycle {
 
   // "shown" on the edge to shown (the first look counts); on a hide the
   // person made, {hidden: the shown space's tabs} (their diff panes are
-  // closed; the list closes the rest of the unit); else null.
+  // closed; the list closes the rest of the unit); a hide by cmd-shift-g
+  // missed, shown again since: both, {hidden, shown: true}; else null.
   look() {
     const shown = PANEL.shown();
     const space = spaces().find((s) => s.active) ?? null;
     const moved = this.space !== null && space?.id !== this.space;
     this.space = space?.id ?? null;
+    const missed = shown && this.shown === true && this.hidMeanwhile();
+    this.hides = hides();
+    if (missed && space) return { hidden: new Set(space.tabs.map((t) => t.id)), shown: true };
     if (shown === this.shown) return null;
     this.shown = shown;
     if (shown) return "shown";

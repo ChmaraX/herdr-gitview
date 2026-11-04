@@ -136,7 +136,7 @@ export default class GitList extends View {
   // no side effects).
   stale() {
     if (this.loads.panesMoved()) return true;
-    if (this.cycle && (this.cycle.shown !== this.place.shown() || this.cycle.asideStale())) return true;
+    if (this.cycle && (this.cycle.shown !== this.place.shown() || this.cycle.asideStale() || this.cycle.hidMeanwhile())) return true;
     if (!this.place.shown()) return false;
     if (this.place.closesForHerdrNvim) {
       // followHandoff, on an edge only: the record not seen yet, or nvim's
@@ -158,8 +158,8 @@ export default class GitList extends View {
     this.loads.panesClosed(cx);
     this.cycle?.stepAside();
     const edge = this.cycle?.look();
-    if (edge === "shown") this.openOnShow(cx);
-    else if (edge?.hidden) this.closeUnit(edge.hidden, cx);
+    if (edge?.hidden) this.closeUnit(edge.hidden, cx);
+    if (edge === "shown" || edge?.shown) this.openOnShow(cx);
     if (!this.place.shown()) return;
     const ctx = this.context();
     const tabChanged = ctx.tab !== this.ctx?.tab;
