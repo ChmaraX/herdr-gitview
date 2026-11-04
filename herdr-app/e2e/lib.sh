@@ -362,11 +362,10 @@ hc server start >>"$LOG" 2>&1
 read -r WX WY WVIS WDISPLAY < <("$PY" "$E2E/spot.py" 0 1280 820 2>/dev/null || echo "40 60 0 -")
 printf '{"state": "windowed", "bounds": [%s, %s, 1280, 820], "display": "%s"}\n' "$WX" "$WY" "$WDISPLAY" >"$HERDR_APP_HOME/window.json"
 echo "window at {$WX, $WY}, $WVIS of it not under other windows" >>"$LOG"
-# Entirely covered, macOS slows the app's timers down (App Nap; the app
-# takes no -NSAppSleepDisabled): the mods' 25 ms looks come seconds apart
-# and checks on their traces can fail. Said up front, so a failure reads
-# as that.
-[ "$WVIS" = 0.00 ] && echo "WARN the private window is entirely under other windows: macOS may nap it (timers seconds apart); a failure here may be that" | tee -a "$LOG"
+# Entirely covered, the window draws no frames: pane.go does nothing there
+# (app bug #3), and macOS may nap the app (timers seconds apart; the app
+# takes no -NSAppSleepDisabled). Said up front, so a failure reads as that.
+[ "$WVIS" = 0.00 ] && echo "WARN the private window is entirely under other windows: no frames (pane.go does nothing), maybe napped; a failure here may be that" | tee -a "$LOG"
 # Started in the background (`open -g -n`): the person's frontmost app stays
 # frontmost. Its environment is this script's (LaunchServices would give it
 # launchd's), passed variable by variable. Such a window never draws on its
