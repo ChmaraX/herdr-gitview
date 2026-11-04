@@ -20,8 +20,9 @@
 //! `--repo` and replies with its top level as `root`. Every other op takes
 //! that `root` as `--repo`; it's looked up again (one `git rev-parse`, one
 //! `hc exec` on a remote) unless `--root` says it's the top level already,
-//! or, here, DIR holds the repo's `.git`. Pass `--root` only with a `root`
-//! status gave.
+//! or, here, DIR holds the repo's `.git`. `status` too takes `--root` (a
+//! poll of a repo it knew), but without it always looks the top level up.
+//! Pass `--root` only with a `root` status gave.
 //!
 //! **Environment.** `GITVIEW_GIT` (the `git` binary; else `git` on `PATH`,
 //! or on macOS the real one behind `/usr/bin/git`'s xcrun shim), `GITVIEW_HC` (the `hc` binary), `GITVIEW_HERDR_APP`
@@ -340,9 +341,13 @@ impl Args {
     }
 
     /// `--repo DIR` (on `--on MACHINE`) for `status`: DIR is any folder in
-    /// the repo (a terminal's), its top level always looked up, since the
-    /// reply's `root` is what the mods key the list by and pass back.
+    /// the repo (a terminal's), its top level looked up, since the reply's
+    /// `root` is what the mods key the list by and pass back; unless
+    /// `--root` says DIR is a `root` status gave already.
     fn discover(&self) -> Result<Repo> {
+        if self.flag("root") {
+            return self.repo();
+        }
         Repo::discover_on(
             Path::new(self.value("repo").context("--repo")?),
             crate::remote::Machine::parse(self.value("on")),

@@ -880,4 +880,12 @@ fn a_root_status_gave_is_not_looked_up_again_there() {
     let (trusted, n) = calls(&[&diff[..], &["--root"]].concat());
     assert_eq!(n, 0, "--root: no lookup");
     assert_eq!(trusted, looked_up);
+
+    // A status poll of a repo status knew, likewise.
+    let (looked_up, n) = calls(&["status"]);
+    assert_eq!(n, 1);
+    let (trusted, n) = calls(&["status", "--root"]);
+    assert_eq!(n, 0, "status --root: no lookup");
+    assert_eq!(trusted, looked_up);
+    assert_eq!(trusted["root"], "ROOT");
 }
