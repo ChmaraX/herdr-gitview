@@ -56,6 +56,7 @@ export const MODES = {
     header: (v, t, notes) => filesHeader(t, {
       status: v.work?.status,
       files: v.work?.files() ?? 0,
+      ...v.work?.totals(),
       notes: notes.length,
       loading: v.loads.shown(),
       wide: v.width >= 340,
@@ -97,7 +98,7 @@ export const MODES = {
     header: (v, t) => {
       const c = v.commitFiles;
       const n = c?.files() ?? 0;
-      return subHeader(t, { title: c?.where.short ?? "", detail: c?.where.subject, pill: `${n} file${n === 1 ? "" : "s"}`, onBack: (cx) => { v.setMode("log", cx); cx.notify(); } });
+      return subHeader(t, { title: c?.where.short ?? "", detail: c?.where.subject, ...c?.totals(), pill: `${n} file${n === 1 ? "" : "s"}`, onBack: (cx) => { v.setMode("log", cx); cx.notify(); } });
     },
     body: (v, t, focused) => filesBody(v, t, focused, v.commitFiles),
     keys: [

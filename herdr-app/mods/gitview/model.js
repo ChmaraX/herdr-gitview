@@ -82,6 +82,21 @@ export function scopeLabel(entry, where) {
   return entry.cached ? "staged" : "uncommitted";
 }
 
+// The header's "+A −D": every file of every section, so a file both staged
+// and changed counts twice, as v1's did (one entry per section). A binary
+// file has no counts (null) and adds nothing.
+export function lineTotals(sections) {
+  let add = 0;
+  let del = 0;
+  for (const s of sections ?? []) {
+    for (const f of s.files) {
+      add += f.add ?? 0;
+      del += f.del ?? 0;
+    }
+  }
+  return { add, del };
+}
+
 // One file of a list ({file, section}), as the diff pane needs it.
 export function entryOf({ file, section }) {
   return {

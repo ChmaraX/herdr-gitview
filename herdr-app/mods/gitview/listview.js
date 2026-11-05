@@ -6,7 +6,7 @@
 import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { opsFor } from "./actions.js";
-import { icon, iconButton, letter, pathLabel } from "./chrome.js";
+import { icon, iconButton, letter, lineCounts, pathLabel } from "./chrome.js";
 
 export const ROW = 28;
 export const HEADER = 28;
@@ -77,7 +77,6 @@ export function renderRow(row, ctx) {
     .child(letter(t, f.letter))
     .child(pathLabel(t, f.path, { folder: !ctx.tree }))
     .when(Boolean(ctx.inNvim?.(row)), (e) => e.child(div().flex_none().px(5).rounded(5).border_1().border_color(t.border).text_size(10).text_color(t.muted).child("in nvim")))
-    .when(!tools && f.add > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
-    .when(!tools && f.del > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi1).child(`−${f.del}`)))
+    .when(!tools, (e) => e.children(lineCounts(t, f.add, f.del)))
     .when(tools, (e) => e.child(actions(t, row, "", ctx)));
 }

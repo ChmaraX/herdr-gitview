@@ -35,6 +35,12 @@ export function iconButton(t, id, icon, tip, onPress, { size = 22 } = {}) {
 
 export const icon = (name, size, color) => svg(`${ICONS}/${name}.svg`).size(size).flex_none().text_color(color);
 
+// "+A −D" in the stats' colours, a zero side left out (v1's rule).
+export function lineCounts(t, add, del) {
+  const n = (text, color) => div().flex_none().text_size(11).text_color(color).child(text);
+  return [add > 0 ? n(`+${add}`, t.ansi2) : null, del > 0 ? n(`−${del}`, t.ansi1) : null].filter(Boolean);
+}
+
 export function pill(t, text, { accent = false, id, onPress } = {}) {
   const p = div()
     .flex_none()
@@ -98,6 +104,7 @@ export function filesHeader(t, h) {
         .when(Boolean(s?.branch), (e) => e.child(icon("branch", 12, t.dim)).child(div().min_w(0).truncate().text_size(12).text_color(t.muted).child(s.branch))),
     )
     .when(h.notes > 0, (e) => e.child(pill(t, `${h.notes} note${h.notes > 1 ? "s" : ""}`, { accent: true, id: "gitview-notes-pill", onPress: h.onNotes })))
+    .children(lineCounts(t, h.add, h.del))
     .child(pill(t, `${h.files} file${h.files === 1 ? "" : "s"}`))
     .child(spinner(t, h.loading))
     .when(h.wide, (e) =>
@@ -114,6 +121,7 @@ export function subHeader(t, h) {
     .child(iconButton(t, "gitview-back", "arrow-left", "Back (esc)", h.onBack, { size: 24 }))
     .child(div().flex_none().font_semibold().child(h.title))
     .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(h.detail ?? ""))
+    .children(lineCounts(t, h.add, h.del))
     .when(Boolean(h.pill), (e) => e.child(pill(t, h.pill, { id: "gitview-sub-pill", onPress: h.onPill })))
     .child(spinner(t, h.loading))
     .when(Boolean(h.onSend), (e) => e.child(iconButton(t, "gitview-send", "send", "Send to an agent (p)", h.onSend)));
@@ -158,8 +166,7 @@ export function diffHeader(t, view, { loading, onClose, rich }) {
       e
         .child(letter(t, view.letter, 12))
         .child(pathLabel(t, view.path, { bold: true }))
-        .when(view.add > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi2).child(`+${view.add}`)))
-        .when(view.del > 0, (e) => e.child(div().flex_none().text_size(11).text_color(t.ansi1).child(`−${view.del}`)))
+        .children(lineCounts(t, view.add, view.del))
         .child(pill(t, view.scope)),
     )
     .when(Boolean(view && rich), (e) => e.child(segmented(t, rich.preview, rich.onPick, rich.compact)))

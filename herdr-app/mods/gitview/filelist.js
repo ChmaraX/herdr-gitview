@@ -3,7 +3,7 @@
 // on which machine, and for a commit which one: it was loaded with the
 // status, so an op always goes to the repo the rows came from.
 
-import { entryOf, fileOrder, listRows, parentDirs, viewOf } from "./model.js";
+import { entryOf, fileOrder, lineTotals, listRows, parentDirs, viewOf } from "./model.js";
 
 // Where a row is, as the selection keeps it: {section, path} (a folder's
 // path ends in "/"). Section headers aren't selectable.
@@ -54,6 +54,11 @@ export class FileList {
 
   files() {
     return this.status?.sections.reduce((n, s) => n + s.files.length, 0) ?? 0;
+  }
+
+  // {add, del} over the files shown (lineTotals).
+  totals() {
+    return lineTotals(this.status?.sections);
   }
 
   index(row) {

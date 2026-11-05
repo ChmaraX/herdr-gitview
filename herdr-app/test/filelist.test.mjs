@@ -65,3 +65,15 @@ test("J into a folded folder (tree mode) unfolds it and selects the file", () =>
   assert.equal(first.key, "changes:src/y.rs");
   assert.ok(l.rows.includes(first));
 });
+
+// The header's "+A −D" (v1's rule: one entry per section, binary adds nothing).
+test("line totals count a file in both sections twice and skip binary files", async () => {
+  const { lineTotals } = await import("../mods/gitview/model.js");
+  const sections = [
+    { id: "staged", files: [{ path: "a.rs", add: 3, del: 1 }, { path: "logo.png", add: null, del: null }] },
+    { id: "changes", files: [{ path: "a.rs", add: 2, del: 0 }, { path: "b.rs", add: 0, del: 4 }] },
+  ];
+  assert.deepEqual(lineTotals(sections), { add: 5, del: 5 });
+  assert.deepEqual(lineTotals([{ id: "changes", files: [{ path: "x.bin" }] }]), { add: 0, del: 0 });
+  assert.deepEqual(lineTotals(undefined), { add: 0, del: 0 });
+});
