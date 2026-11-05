@@ -407,6 +407,7 @@ P0=$(view_of $TAB path) # (a.rs: the double-click's command opens b.rs without s
 do_ gitview-diff.key:J
 expect '! nvim_up' "clean, J in the diff pane: nvim quits (v1)" 15
 expect 'has_diff $TAB && [ "$(view_of $TAB path)" != "$P0" ] && [ -n "$(view_of $TAB path)" ]' "and the diff shows the next file after $P0"
+until_ '[ "$(left clean)" -ge 1 ]' 3 || true # the trace's lines come within a second
 [ "$(diff_count $TAB)" = 1 ] && [ "$(left clean)" -ge 1 ] && ok "one diff pane, asked first" || fail "$(diff_count $TAB) diff panes, $(left clean) clean asks"
 
 step "the editor is part of gitview: hiding the panel quits a clean nvim; unsaved changes ask first"
