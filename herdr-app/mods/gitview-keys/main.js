@@ -84,6 +84,8 @@ export default class GitviewKeys extends View {
                 ),
             ),
           ),
-      );
+      )
+      // Where to point at a problem (gitview's trace, telemetry.js).
+      .child(div().flex_none().pt(8).text_size(11).text_color(t.dim).child(`Something wrong? The command palette's "gitview: mark (something's wrong)" marks it in the trace (${shared("gitview.trace") === false ? "off" : "on"}; "gitview: tracing on/off").`));
   }
 }

@@ -420,6 +420,28 @@ Spaces on other machines work the same way.
   each copy logs what it draws whenever that changes (`GVTRACE` lines) and
   looks every 25 ms from a timer as its render would; `jank.sh` counts
   blank bodies, flashes and spinner blinks from that, and the json runs.
+- The person's app (started from the Dock) sends stdout and stderr nowhere,
+  so the mods keep a trace of their own (`gitview/telemetry.js`): one JSON
+  line per input (key, click, command), exec (`gv()`, `herdr-app`, nvim
+  asks, with the mod's ms: the app's queue time included), pane or layout
+  command, decision (an edge, why the list looked again, the handoff, an
+  ask and its answer, a discard's token, an editor making way), render
+  summary (count, total and max ms each 10 s, and any render over 16 ms),
+  warn (a lost or revived load, a command waiting, a caught error, with a
+  snapshot at most every 10 s) and mark. Lines carry `{t, mod, copy, tab,
+  space, kind}`; no file contents, commit messages, note bodies or diff
+  text. The app's `fs/promises` has no append (only writeFile, readFile,
+  readdir, unlink, mkdir, exists), so each copy rewrites its own segment
+  file in `<appHome>/data/gitview/trace/` once a second when it has lines
+  (at once on a warn or a mark), a new one past 512 KB, and past 40 files
+  the oldest go; the engine appends its own `engine.jsonl` there
+  (`GITVIEW_TRACE`, rotated at 8 MB). On unless shared `gitview.trace` is
+  false: the palette's "gitview: tracing on/off" (mod gitview-tracing).
+  "gitview: mark (something's wrong)" (mod gitview-mark; no key: the free
+  ones are what older installs bound and app-setup removes) writes a mark
+  with a snapshot (the tab's panes, the shared records' sizes and the
+  tab's own, each copy's state) and says so in a toast. The lead reads it
+  with `herdr-app/tools/trace.py [dir] [--since 10m] [--around mark]`.
 - A hidden copy (the panel's list while the panel is hidden) and every copy
   in a covered window aren't drawn, so `render()` can't notice the panel
   hiding or a change from the pane: the list also looks from a 300 ms timer
