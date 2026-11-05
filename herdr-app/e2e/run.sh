@@ -403,9 +403,10 @@ expect 'nvim_buf $NVIM | grep -q "src/app/b.rs$"' "a double-click on a file open
 [ "$(terms | awk '$2=="nvim"' | wc -l | tr -d ' ')" = 1 ] && ok "no second nvim" || fail "second nvim"
 ed_nv --remote-send '<esc>:silent! bufdo e!<cr>' >/dev/null
 expect '[ "$(ed_nv --remote-expr "len(filter(getbufinfo({'"'"'bufloaded'"'"': 1}), '"'"'v:val.changed'"'"'))")" = 0 ]' "(the change dropped: nvim is clean)"
+P0=$(view_of $TAB path) # (a.rs: the double-click's command opens b.rs without selecting it)
 do_ gitview-diff.key:J
 expect '! nvim_up' "clean, J in the diff pane: nvim quits (v1)" 15
-expect 'has_diff $TAB && [ "$(view_of $TAB path)" != src/app/b.rs ] && [ -n "$(view_of $TAB path)" ]' "and the diff shows the next file ($(view_of $TAB path))"
+expect 'has_diff $TAB && [ "$(view_of $TAB path)" != "$P0" ] && [ -n "$(view_of $TAB path)" ]' "and the diff shows the next file after $P0"
 [ "$(diff_count $TAB)" = 1 ] && [ "$(left clean)" -ge 1 ] && ok "one diff pane, asked first" || fail "$(diff_count $TAB) diff panes, $(left clean) clean asks"
 
 step "the editor is part of gitview: hiding the panel quits a clean nvim; unsaved changes ask first"
