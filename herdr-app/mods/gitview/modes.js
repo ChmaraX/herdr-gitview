@@ -26,7 +26,9 @@ const back = (to) => (v, cx) => v.setMode(to, cx);
 const worktree = (v) => v.scope === "worktree";
 // 6 px above and below the rows, like the stock panel.
 const padded = (sizes) => [6, ...sizes, 6];
-const empty = (t, text) => div().px(16).py(12).text_color(t.dim).child(text);
+// Takes the growing space as the rows do, so the commit box and the footer
+// stay at the bottom with no files, while loading or on an error.
+const empty = (t, text) => div().flex_1().min_h(0).px(16).py(12).text_color(t.dim).child(text);
 
 // A list of file rows (the changed files or a commit's).
 function filesBody(v, t, focused, list) {
