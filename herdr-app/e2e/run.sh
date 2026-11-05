@@ -745,7 +745,8 @@ rm -f "$S/probe.rs"
 step "the trace: every copy's and the engine's lines in one folder, and trace.py reads it"
 TRD="$HERDR_APP_HOME/data/gitview/trace"
 do_ mod.open --name gitview-mark
-expect '[ "$(cat "$TRD"/*.jsonl 2>/dev/null | grep -c "\"kind\":\"mark\"")" -ge 2 ]' "the mark command: a mark with its snapshot, and the list's own part" 10
+expect 'cat "$TRD"/*.jsonl | grep -q "\"mod\":\"gitview-mark\".*\"kind\":\"mark\"" && cat "$TRD"/*.jsonl | grep -q "\"mod\":\"list\".*\"kind\":\"mark\""' "the mark command: a mark with its snapshot, and the list's own part (within its 1 s flush)" 10
+sleep 1.5 # the other copies' last lines
 python3 "$REPO/herdr-app/tools/trace.py" "$TRD" >"$ART/trace.txt" 2>&1 || fail "trace.py: $(tail -3 "$ART/trace.txt")"
 python3 "$REPO/herdr-app/tools/trace.py" "$TRD" --around mark >"$ART/trace-mark.txt" 2>&1
 grep -q '"panes"' "$ART/trace.txt" && grep -q 'list/.* mark ' "$ART/trace-mark.txt" && ok "trace.py --around mark: the mark and the copies' snapshots" || fail "no mark in trace.py's output"
