@@ -388,7 +388,7 @@ ed_sock() { shared "s.get('gitview.editors',{}).get('$TAB',{}).get('sock') or ''
 ed_nv() { nvim --headless --server "$(ed_sock)" "$@" 2>/dev/null; }
 nvim_up() { [ -n "$(terms | awk '$2=="nvim"')" ]; }
 diff_count() { mod_panes | grep -c "^$1 .* gitview-diff$"; }
-left() { grep -a 'GVEVENT' "$BASE/app.log" | grep -c "\"leave\":\"nvim\",\"state\":\"$1\""; }
+left() { cat "$TRD"/*.jsonl | grep -c "\"leave\":\"nvim\",\"state\":\"$1\""; }
 expect '[ "$(ed_nv --remote-expr 1)" = 1 ]' "gitview can ask it (its socket answers)" 15
 ed_nv --remote-send '<esc>ggOgitview-unsaved<esc>' >/dev/null
 expect '[ "$(ed_nv --remote-expr "&modified")" = 1 ]' "an unsaved change in nvim"
@@ -743,7 +743,6 @@ rm -f "$S/probe.rs"
 
 # --- the trace ---------------------------------------------------------------------------
 step "the trace: every copy's and the engine's lines in one folder, and trace.py reads it"
-TRD="$HERDR_APP_HOME/data/gitview/trace"
 do_ mod.open --name gitview-mark
 expect 'grep -qh "\"mod\":\"gitview-mark\".*\"kind\":\"mark\"" "$TRD"/*.jsonl && grep -qh "\"mod\":\"list\".*\"kind\":\"mark\"" "$TRD"/*.jsonl' "the mark command: a mark with its snapshot, and the list's own part (within its 1 s flush)" 10
 sleep 1.5 # the other copies' last lines
@@ -756,7 +755,6 @@ grep -q ' exec .*sidebar ' "$ART/trace.txt" && grep -q 'cmd=pane.close' "$ART/tr
   && ok "a diff pane's split (sidebar), a pane.close and the panel's edges" || fail "the split, close or edges are missing"
 BYTES=$(cat "$TRD"/*.jsonl | wc -c | tr -d ' ') # (grep -q on a pipe: cat's SIGPIPE fails it under pipefail)
 echo "trace: $BYTES bytes in $(ls "$TRD" | wc -l | tr -d ' ') files after ${SECONDS}s ($(( BYTES * 60 / (SECONDS > 0 ? SECONDS : 1) / 1024 )) KB/min)" | tee -a "$LOG" >"$ART/trace-size.txt"
-cp -R "$TRD" "$ART/trace"
 
 # --- uninstall -------------------------------------------------------------------------
 step "uninstall: our edits go, the layout stays"

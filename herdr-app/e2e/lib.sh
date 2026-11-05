@@ -41,20 +41,13 @@ export HERDR_PLUGIN_STATE_DIR="$BASE/gvstate"
 GV_LOG="$HERDR_PLUGIN_STATE_DIR/debug.log"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 mkdir -p "$HERDR_APP_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
-# The gitview mods' debug mode (shared gitview.debug): each copy logs what it
-# draws (GVTRACE, for jank.sh) and looks every 25 ms as its render would. The
-# private window starts in the background and never renders, so without it
-# a diff pane would notice the list's writes only on its own commands; a
-# window on screen renders on every change. GITVIEW_DEBUG=0 turns it off.
-# The gitview trace (telemetry.js) is on unless shared gitview.trace is
-# false: GITVIEW_TRACE_E2E=0 turns it off (jank.sh's on/off comparison).
-GITVIEW_DEBUG="${GITVIEW_DEBUG:-1}"
+# The mods run as the person's do (no debug mode). What they do and draw is
+# read from their trace (telemetry.js: TRD, `draws`), on unless shared
+# gitview.trace is false: GITVIEW_TRACE_E2E=0 turns it off (jank.sh's on/off
+# comparison; the checks that read the trace skip then).
 TRACE_OFF=$([ "${GITVIEW_TRACE_E2E:-1}" = 0 ] && echo ', "gitview.trace": false' || true)
-if [ "$GITVIEW_DEBUG" = 1 ]; then
-  echo "{\"frame.welcomed\": true, \"layout\": \"main\", \"gitview.debug\": true$TRACE_OFF}" >"$HERDR_APP_HOME/shared.json"
-else
-  echo "{\"frame.welcomed\": true, \"layout\": \"main\"$TRACE_OFF}" >"$HERDR_APP_HOME/shared.json"
-fi
+echo "{\"frame.welcomed\": true, \"layout\": \"main\"$TRACE_OFF}" >"$HERDR_APP_HOME/shared.json"
+TRD="$HERDR_APP_HOME/data/gitview/trace"
 echo '{"zoom": 1, "theme": "graphite", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
 declare -p HERDR_APP_HOME HC_SESSION XDG_STATE_HOME XDG_CONFIG_HOME XDG_DATA_HOME | sed 's/^declare -x/export/' >"$BASE/env.sh"
 
@@ -109,6 +102,7 @@ cleanup() {
     ps eww -o command= -p "$p" 2>/dev/null | grep -qE "=(/private)?${BASE//./\\.}/" && kill "$p" 2>/dev/null
   done
   cp "$GV_LOG" "$ART/gitview-debug.log" 2>/dev/null; cp "$BASE/app.log" "$ART/app.log" 2>/dev/null
+  [ -d "$TRD" ] && { rm -rf "$ART/trace"; cp -R "$TRD" "$ART/trace"; } 2>/dev/null
   rm -rf "$BASE"
   echo "artifacts: $ART"
 }
@@ -119,11 +113,32 @@ trap 'exit 130' INT TERM
 PASSES=0 SKIPS=0
 step() {
   # After every step: one focus on screen (focus_check).
-  if [ -n "${APP_PID:-}" ] && [ "${GITVIEW_DEBUG:-1}" = 1 ] && grep -aq GVTRACE "$BASE/app.log" 2>/dev/null; then
+  if [ -n "${APP_PID:-}" ] && [ -n "$(draws | head -1)" ]; then
     until_ focus_check 3 || fail "more than one focus shows: $(focus_check)"
   fi
   printf '\n== %s\n' "$*" | tee -a "$LOG"
 }
+# The mods' "draw" lines (what each copy draws, a line per change), oldest
+# first, as JSON lines; `draws MS`: from that epoch ms on. A copy writes its
+# lines within a second (telemetry.js), so a check that reads them waits.
+draws() {
+  python3 - "$TRD" "${1:-0}" <<'PY' 2>/dev/null
+import glob, json, os, sys
+out = []
+for f in glob.glob(os.path.join(sys.argv[1], "*.jsonl")):
+    for l in open(f, errors="ignore"):
+        if '"kind":"draw"' in l:
+            try:
+                d = json.loads(l)
+            except ValueError:
+                continue
+            if d["t"] >= int(sys.argv[2]):
+                out.append(d)
+for d in sorted(out, key=lambda d: d["t"]):
+    print(json.dumps(d))
+PY
+}
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time*1000'; }
 # At most one thing shows focus in the shown tab: the app's focus ring (on
 # a terminal, nvim or the diff pane) or the gitview list's own frame. From
 # the mods' trace (their last lines for that tab) and `herdr-app status`:
@@ -133,19 +148,14 @@ step() {
 # - the diff pane holds the keys only with the app's ring on it.
 # Prints what's wrong; exits 1 then.
 focus_check() {
+  draws >"$BASE/draws.now"
   "$APP" status 2>/dev/null | python3 -c '
 import json, sys
 st = json.load(sys.stdin)
 tab = st.get("tab")
 last = {}
 for l in open(sys.argv[1], errors="ignore"):
-    i = l.find("GVTRACE ")
-    if i < 0:
-        continue
-    try:
-        d = json.loads(l[i + 8:])
-    except ValueError:
-        continue
+    d = json.loads(l)
     last[(d["mod"], d.get("tab"))] = d
 lst = last.get(("list", tab))
 pane = last.get(("pane", tab))
@@ -159,7 +169,7 @@ if lf and not lst.get("viaApp"):
 if pf and not pane.get("ring"):
     bad.append("the diff pane holds the keys but the app focus ring is on pane %s" % st.get("focused_pane"))
 print("; ".join(bad))
-sys.exit(1 if bad else 0)' "$BASE/app.log"
+sys.exit(1 if bad else 0)' "$BASE/draws.now"
 }
 ok() { PASSES=$((PASSES + 1)); printf 'PASS %s\n' "$*" | tee -a "$LOG"; }
 skip() { SKIPS=$((SKIPS + 1)); printf 'SKIP %s\n' "$*" | tee -a "$LOG"; }

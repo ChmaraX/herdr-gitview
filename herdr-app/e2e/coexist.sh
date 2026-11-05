@@ -153,7 +153,7 @@ list_keys_check() {
   else skip "$1 (the window isn't drawn: pane.go, the list's way to the keys, does nothing there)"; fi
 }
 list_has_keys() {
-  grep -a 'GVTRACE.*"mod":"list"' "$BASE/app.log" | grep -F "\"tab\":\"$TAB\"" | tail -1 | sed 's/.*GVTRACE //' | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("focused") and d.get("viaApp") else 1)'
+  draws | grep '"mod": "list"' | grep -F "\"tab\": \"$TAB\"" | tail -1 | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("focused") and d.get("viaApp") else 1)'
 }
 
 step "ZZ in nvim brings the diff back on the same file, the keys on the list (v1)"

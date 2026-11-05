@@ -107,6 +107,18 @@ export class Tracer {
     }
   }
 
+  // What the copy draws (`fields()`: the body's kind, the file, the
+  // spinner, focus…), a "draw" line each time it changes: for counting
+  // blank bodies, flips and spinner blinks without frames (jank.sh), and
+  // what the person saw. Built only while tracing.
+  drew(fields) {
+    if (!tracing()) return;
+    const key = JSON.stringify(fields());
+    if (key === this.lastDraw) return;
+    this.lastDraw = key;
+    this.line("draw", JSON.parse(key));
+  }
+
   summary(force = false) {
     const r = this.renders;
     if (!r.n || (!force && Date.now() - r.at < SUMMARY_MS)) return;
@@ -187,10 +199,8 @@ export function run(name, args = {}) {
   }
 }
 
-// A decision, for the trace (and, with gitview.debug, the app's log as
-// GVEVENT, as before).
+// A decision, for the trace.
 export function event(mod, fields) {
-  if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod, ...fields })}`);
   tracer().line("state", { by: mod, ...fields });
 }
 

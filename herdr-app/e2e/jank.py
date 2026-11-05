@@ -1,8 +1,8 @@
 """jank.py ACTION_DIR: what one recorded action looked like.
 
 ACTION_DIR holds:
-- trace.log: the mods' GVTRACE lines of the action (what each copy draws,
-  a line each time that changes; modkit.js trace);
+- trace.log: the mods' draw lines of the action, JSON (what each copy
+  draws, a line each time that changes; telemetry.js Tracer.drew);
 - execs.log: one line per `herdr-gitview json` run (start end code args);
 - with E2E_FOREGROUND, the distinct frames (f-<ms>.png, `herdr-app shot` in
   a loop, a frame kept only when it differs from the one before).
@@ -116,12 +116,10 @@ lines = []
 tp = os.path.join(d, "trace.log")
 if os.path.exists(tp):
     for l in open(tp):
-        i = l.find("GVTRACE ")
-        if i >= 0:
-            try:
-                lines.append(json.loads(l[i + 8:]))
-            except ValueError:
-                pass
+        try:
+            lines.append(json.loads(l))
+        except ValueError:
+            pass
 pane = [l for l in lines if l["mod"] == "pane"]
 res.update(blank=res["blank"], loading=0, no_file=0, mode_flips=0, spinner_blinks=0, trace_header_changes=0, stale_end=False)
 tb = 0

@@ -20,7 +20,7 @@ import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import { answer, askIn, cursorIn, handoffIn, setIgnoredDirs, handoffs, liveView, notesKey, notesOf, setHandoff, setTreeMode, setView, treeMode, viewIn } from "./shared.js";
 import { diffPane, panelDiffPanes, panelState, herdrNvimPanes } from "./layout.js";
-import { Flash, Loads, commandLoop, debounced, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
+import { Flash, Loads, commandLoop, debounced, followStamp, stampMoved, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
 import { staleWhy } from "./notice.js";
 import { closeEditorOf, editorIn, editorState, liveEditor, quitEditor, setEditor } from "./editors.js";
@@ -104,9 +104,6 @@ export default class GitList extends View {
       if (here || Date.now() - (this.statusAt ?? 0) >= 10000) this.refresh(cx, { poll: true, why: "poll" });
     });
     cx.timer.every(10000, (cx) => { if (!this.ctx?.on && this.place.shown() && Date.now() - (this.statusAt ?? 0) > 30000) this.refresh(cx, { poll: true, why: "poll" }); });
-    // As a render would: only while it's on screen (a hidden copy isn't
-    // drawn; its 300 ms look is all it has then).
-    debugLook(cx, () => { if (this.place.shown() && this.stale()) this.kick(); trace("list", () => this.traceFields(), this); });
     commandLoop(cx, { tr: this.tr, loads: this.loads, flash: this.flash, name: "gitview", before: (cx) => this.notice(cx), handle: (c, cx) => runCommand(this, c, cx) });
     if (this.place.takesKeyboard) this.focusList(cx);
   }
@@ -372,11 +369,11 @@ export default class GitList extends View {
           setHandoff(tab, null);
           this.closeNvimOf(tab, cx);
           for (let i = 0; i < 30 && herdrNvimPanes(tab).length; i++) await cx.sleep(100);
-          this.debug({ leave: "herdr-nvim" });
+          event("list", { leave: "herdr-nvim" });
         } else if (askable(liveEditor(tab))) {
           const ed = liveEditor(tab);
           const state = await editorState(ed);
-          this.debug({ leave: ed.name, state });
+          event("list", { leave: ed.name, state });
           if (state === "dirty") return notify({ title: "gitview", body: "editor has unsaved changes — stays open", level: "info" });
           if (state === "clean") {
             // That nvim gone (not a new one Enter in the diff pane started
@@ -397,10 +394,6 @@ export default class GitList extends View {
       }
     });
     return false;
-  }
-
-  debug(fields) {
-    event("list", fields);
   }
 
   // The handoff can still bring its diff back: no other file shown since.
@@ -551,7 +544,7 @@ export default class GitList extends View {
     }
     const next = work.shownFile();
     if (next) this.show(next);
-    else setView(tab, null);
+    else this.writeView(tab, null);
   }
 
   // Another tab shows: the list selects the file its pane shows.
@@ -594,8 +587,15 @@ export default class GitList extends View {
     // the selected one): nothing to write, nothing for the pane to reload.
     const was = liveView(viewIn(tab));
     const same = was && sameShown(was, next) && !line && !focusPane;
-    if (!same) setView(tab, next);
+    if (!same) this.writeView(tab, next);
     if (open && cx && this.place.opensDiffPane) this.ensurePane(tab, cx, { focusPane });
+  }
+
+  // The one writer of the pane's view (S1), traced: the pane's follow is
+  // checked from these lines and the pane's diff execs.
+  writeView(tab, view) {
+    const rec = setView(tab, view);
+    this.tr.line("state", { view: rec.seq, path: view?.path ?? null, section: view?.section ?? null, commit: view?.commit ? view.commit.slice(0, 7) : null });
   }
 
   // The tab's diff pane, opened on first use: full height at the tab's
@@ -835,7 +835,7 @@ export default class GitList extends View {
     const view = liveView(viewIn(tab));
     if (!tab || !this.work || !view) return;
     const row = this.work.shownFile();
-    if (!row) setView(tab, null);
+    if (!row) this.writeView(tab, null);
     else if (!sameFile(view, this.work.viewFor(row))) this.select(row, cx, { open: false, browse: false });
   }
 
@@ -887,7 +887,7 @@ export default class GitList extends View {
 
   // ---- view -----------------------------------------------------------------
 
-  // What the list draws now, for the debug trace (modkit.js trace).
+  // What the list draws now, for the trace (Tracer.drew).
   traceFields() {
     const list = this.list();
     const body = this.mode === "log"
@@ -939,7 +939,7 @@ export default class GitList extends View {
     const focused = this.showsFocus();
     const notes = this.notes();
     const mode = MODES[this.mode];
-    trace("list", () => this.traceFields(), this);
+    this.tr.drew(() => this.traceFields());
     return this.place
       .frame(v_flex().id("gitview").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13), t, focused)
       .track_focus(this.handle)

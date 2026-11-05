@@ -2,7 +2,7 @@
 # How gitview looks while it works: a realistic repo (a clone of this one with
 # a dozen assorted changes) driven through everyday actions by the mods'
 # commands, in a private Herdr app. For each action it records the mods'
-# render trace (GITVIEW_DEBUG: what each copy draws, a line per change) and
+# draw lines (their trace: what each copy draws, a line per change) and
 # every `herdr-gitview json` run (the installed binary is wrapped to log
 # them), then measures with jank.py: blank diff bodies, "Loading…" and "No
 # file selected" flashes, Diff/Preview flips, spinner blinks, header
@@ -94,13 +94,14 @@ act() {
   local d="$J/$name" mark tmark rec=""
   rm -rf "$d" && mkdir -p "$d"
   mark=$(wc -l <"$EXECS")
-  tmark=$(wc -l <"$BASE/app.log")
+  tmark=$(now_ms)
   if [ "$FRAMES" = 1 ]; then recorder "$d" "$secs" & rec=$!; fi
   sleep 0.3
   eval "$@" >>"$LOG" 2>&1 || true
   if [ -n "$rec" ]; then wait "$rec"; else sleep "$secs"; fi
   tail -n +"$((mark + 1))" "$EXECS" >"$d/execs.log"
-  tail -n +"$((tmark + 1))" "$BASE/app.log" | grep -a GVTRACE >"$d/trace.log" || true
+  sleep 1.2 # the copies' last draw lines (written once a second)
+  draws "$tmark" >"$d/trace.log" || true
   local m
   m=$("$PY" "$E2E/jank.py" "$d")
   echo "{\"action\": \"$name\", \"m\": $m}" >>"$RESULTS"

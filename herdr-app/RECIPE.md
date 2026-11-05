@@ -414,12 +414,12 @@ Spaces on other machines work the same way.
   250 ms; a batch inside that waits for the next stamp), and every list
   refreshes when its repo's stamp moves. A refresh never stamps, so
   nothing loops.
-- A window started in the background (the e2e's `open -g -n`, so the
-  person's app keeps the front) never renders on its own: no frames, no
-  `render()`. With shared `gitview.debug` (the e2e's `GITVIEW_DEBUG=1`)
-  each copy logs what it draws whenever that changes (`GVTRACE` lines) and
-  looks every 25 ms from a timer as its render would; `jank.sh` counts
-  blank bodies, flashes and spinner blinks from that, and the json runs.
+- The e2e runs the person's code: no debug mode. A window started in the
+  background (the e2e's `open -g -n`, so the person's app keeps the front)
+  renders while some of it shows (herdr-app 0.1.13); entirely covered it
+  draws nothing, and lib.sh warns. What the copies draw is in their trace
+  (`draw` lines, a line per change: `draws` in lib.sh); `jank.sh` counts
+  blank bodies, flashes and spinner blinks from those, and the json runs.
 - The person's app (started from the Dock) sends stdout and stderr nowhere,
   so the mods keep a trace of their own (`gitview/telemetry.js`): one JSON
   line per input (key, click, command), exec (`gv()`, `herdr-app`, nvim

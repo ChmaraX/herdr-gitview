@@ -22,7 +22,7 @@ import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
 import { addNote, answerIn, ask, cursorIn, liveView, notesKey, notesOf, previewOff, removeNotes, setCursor, setPreviewOff, viewIn } from "./shared.js";
 import { diffPane } from "./layout.js";
-import { Flash, Loads, commandLoop, debounced, debugLook, keyEvent, keyName, takeKeyboard, trace } from "./modkit.js";
+import { Flash, Loads, commandLoop, debounced, keyEvent, keyName, takeKeyboard } from "./modkit.js";
 import { panePlacement } from "./placement.js";
 import { editorLabel, knowEditor, openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
@@ -98,7 +98,6 @@ export default class GitDiff extends View {
     // What render notices (a new view, a theme switch) loads from here.
     this.kick = debounced(cx, 0, (cx) => this.sync(cx));
     this.sync(cx);
-    debugLook(cx, () => { if (focused()?.tab === this.tab()) this.renderLook(); trace("pane", () => this.traceFields(), this); });
     commandLoop(cx, { tr: this.tr, loads: this.loads, flash: this.flash, name: "gitview-diff", before: (cx) => this.sync(cx), handle: (c, cx) => this.command(c, cx) });
   }
 
@@ -563,7 +562,7 @@ export default class GitDiff extends View {
     return { kind: this.lastBody, old: true };
   }
 
-  // What the pane draws now, for the debug trace (modkit.js trace).
+  // What the pane draws now, for the trace (Tracer.drew).
   traceFields() {
     const v = this.view;
     const b = this.bodyNow();
@@ -662,7 +661,7 @@ export default class GitDiff extends View {
           )
       : div().flex_1() // a new pane's first file, on its way
     ).when(b.old && Date.now() - this.switchedAt > 150, (e) => e.opacity(0.55));
-    trace("pane", () => this.traceFields(), this);
+    this.tr.drew(() => this.traceFields());
     return v_flex()
       .id("gitview-diff")
       .size_full()
