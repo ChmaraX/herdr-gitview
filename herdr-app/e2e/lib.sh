@@ -202,7 +202,8 @@ screen() { hc read "$1" --lines 0 2>/dev/null; }
 # frames: screenshots are stale and a mod can't take the keyboard.
 drawn() { "$PY" "$E2E/drawn.py" "$APP_PID"; }
 # The frontmost app's pid (System Events; read only, nothing is raised).
-front_pid() { osascript -e 'tell application "System Events" to get unix id of first process whose frontmost is true' 2>/dev/null; }
+# Empty when System Events can't be asked (no Apple Events permission).
+front_pid() { osascript -e 'tell application "System Events" to get unix id of first process whose frontmost is true' 2>/dev/null || true; }
 # Key presses reach the private app only while it is the frontmost app (keys
 # to a background app are dropped), and it's never made frontmost here.
 keys_reach() { drawn && [ "$(front_pid)" = "$APP_PID" ]; }
@@ -411,6 +412,7 @@ FRONT1=$(front_pid)
 if [ -n "${E2E_FOREGROUND:-}" ]; then
   echo "note: E2E_FOREGROUND: the private app started in the foreground (frontmost now: pid $FRONT1)" | tee -a "$LOG"
 else
-  [ "$FRONT1" = "$FRONT0" ] && ok "the private app started in the background (the frontmost app is still pid $FRONT0)" \
+  [ -z "$FRONT0" ] && echo "note: System Events can't be asked (no Apple Events permission): the frontmost app isn't checked" | tee -a "$LOG"
+  [ -n "$FRONT0" ] && [ "$FRONT1" = "$FRONT0" ] && ok "the private app started in the background (the frontmost app is still pid $FRONT0)" \
     || echo "note: the frontmost app changed from pid $FRONT0 to $FRONT1 while the private app started" | tee -a "$LOG"
 fi
