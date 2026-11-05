@@ -741,6 +741,22 @@ fi
 echo '{"zoom": 1, "theme": "graphite", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
 rm -f "$S/probe.rs"
 
+# --- the trace ---------------------------------------------------------------------------
+step "the trace: every copy's and the engine's lines in one folder, and trace.py reads it"
+TRD="$HERDR_APP_HOME/data/gitview/trace"
+do_ mod.open --name gitview-mark
+expect '[ "$(cat "$TRD"/*.jsonl 2>/dev/null | grep -c "\"kind\":\"mark\"")" -ge 2 ]' "the mark command: a mark with its snapshot, and the list's own part" 10
+python3 "$REPO/herdr-app/tools/trace.py" "$TRD" >"$ART/trace.txt" 2>&1 || fail "trace.py: $(tail -3 "$ART/trace.txt")"
+python3 "$REPO/herdr-app/tools/trace.py" "$TRD" --around mark >"$ART/trace-mark.txt" 2>&1
+grep -q '"panes"' "$ART/trace.txt" && grep -q 'list/.* mark ' "$ART/trace-mark.txt" && ok "trace.py --around mark: the mark and the copies' snapshots" || fail "no mark in trace.py's output"
+grep -Eq '^[0-9:.]+ (list|pane) +(key:|click)' <(sed -n '/== interactions/,$p' "$ART/trace.txt") && ok "the inputs, each with what it led to" || fail "no inputs in trace.py's interactions"
+grep -Eq '^status +n=[0-9]+ .* · +[0-9.]+ +[0-9.]+' "$ART/trace.txt" && ok "the execs: the mods' ms and the engine's ($(grep -E '^status +n=' "$ART/trace.txt"))" || fail "status execs without the engine's ms"
+grep -q ' exec .*sidebar ' "$ART/trace.txt" && grep -q 'cmd=pane.close' "$ART/trace.txt" && grep -q 'edge=' "$ART/trace.txt" \
+  && ok "a diff pane's split (sidebar), a pane.close and the panel's edges" || fail "the split, close or edges are missing"
+BYTES=$(cat "$TRD"/*.jsonl | wc -c | tr -d ' ')
+echo "trace: $BYTES bytes in $(ls "$TRD" | wc -l | tr -d ' ') files after ${SECONDS}s ($(( BYTES * 60 / (SECONDS > 0 ? SECONDS : 1) / 1024 )) KB/min)" | tee -a "$LOG" >"$ART/trace-size.txt"
+cp -R "$TRD" "$ART/trace"
+
 # --- uninstall -------------------------------------------------------------------------
 step "uninstall: our edits go, the layout stays"
 "$REPO/herdr-app/install.sh" --uninstall >>"$LOG" 2>&1 || fail "uninstall"

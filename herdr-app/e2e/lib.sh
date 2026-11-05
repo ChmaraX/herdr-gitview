@@ -46,11 +46,14 @@ mkdir -p "$HERDR_APP_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 # private window starts in the background and never renders, so without it
 # a diff pane would notice the list's writes only on its own commands; a
 # window on screen renders on every change. GITVIEW_DEBUG=0 turns it off.
+# The gitview trace (telemetry.js) is on unless shared gitview.trace is
+# false: GITVIEW_TRACE_E2E=0 turns it off (jank.sh's on/off comparison).
 GITVIEW_DEBUG="${GITVIEW_DEBUG:-1}"
+TRACE_OFF=$([ "${GITVIEW_TRACE_E2E:-1}" = 0 ] && echo ', "gitview.trace": false' || true)
 if [ "$GITVIEW_DEBUG" = 1 ]; then
-  echo '{"frame.welcomed": true, "layout": "main", "gitview.debug": true}' >"$HERDR_APP_HOME/shared.json"
+  echo "{\"frame.welcomed\": true, \"layout\": \"main\", \"gitview.debug\": true$TRACE_OFF}" >"$HERDR_APP_HOME/shared.json"
 else
-  echo '{"frame.welcomed": true, "layout": "main"}' >"$HERDR_APP_HOME/shared.json"
+  echo "{\"frame.welcomed\": true, \"layout\": \"main\"$TRACE_OFF}" >"$HERDR_APP_HOME/shared.json"
 fi
 echo '{"zoom": 1, "theme": "graphite", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
 declare -p HERDR_APP_HOME HC_SESSION XDG_STATE_HOME XDG_CONFIG_HOME XDG_DATA_HOME | sed 's/^declare -x/export/' >"$BASE/env.sh"
