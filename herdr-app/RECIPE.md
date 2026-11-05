@@ -414,6 +414,16 @@ Spaces on other machines work the same way.
   250 ms; a batch inside that waits for the next stamp), and every list
   refreshes when its repo's stamp moves. A refresh never stamps, so
   nothing loops.
+- The list tells the diff pane what to show only through shared
+  `gitview.views` (S1): the app renders every copy after a `setShared`
+  (11–20 ms later, every time in the round-13 probe), the pane's render
+  sees the new seq and wakes its own task (`debounced`), which loads. No
+  timer looks. `props()` is right only in the copy's own turn (init,
+  render, its callbacks, what its own `exec`s and sleeps resume): a task
+  woken by a promise that a render resolved runs in whatever turn drains
+  it, where `props()` was null 3–12% of the time, so the pane's tab was
+  null and it skipped the move (the person's "1 in 6"). Every mod reads
+  `props()` in `init` only and keeps it (placement.js).
 - The e2e runs the person's code: no debug mode. A window started in the
   background (the e2e's `open -g -n`, so the person's app keeps the front)
   renders while some of it shows (herdr-app 0.1.13); entirely covered it

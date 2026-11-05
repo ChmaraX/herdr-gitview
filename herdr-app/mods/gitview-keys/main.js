@@ -12,9 +12,10 @@ import { keycap } from "./chrome.js"; // links to ../gitview (install copies the
 
 export default class GitviewKeys extends View {
   init(_props, cx) {
+    this.given = props() ?? {}; // read here only: later it can be another turn's (placement.js)
     this.handle = cx.focus_handle();
     this.handle.focus();
-    setShared("gitview.keys", { overlay: props()?.overlay ?? null });
+    setShared("gitview.keys", { overlay: this.given?.overlay ?? null });
     // `gitview-keys.key:<k>` for scripts.
     cx.spawn(async (cx) => {
       for (;;) {
@@ -27,17 +28,17 @@ export default class GitviewKeys extends View {
 
   key(k) {
     if (k !== "escape" && k !== "?") return false;
-    closeOverlay(props().overlay);
+    closeOverlay(this.given.overlay);
     return true;
   }
 
   async close() {
-    if (shared("gitview.keys")?.overlay === props()?.overlay) setShared("gitview.keys", null);
+    if (shared("gitview.keys")?.overlay === this.given?.overlay) setShared("gitview.keys", null);
   }
 
   render() {
     const t = theme();
-    const p = props() ?? {};
+    const p = this.given ?? {};
     return v_flex()
       .id("gitview-keys")
       .track_focus(this.handle)

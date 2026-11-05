@@ -12,13 +12,14 @@ import { closeOverlay, exec, nextCommand, notify, props, run, theme } from "herd
 
 export default class GitviewAsk extends View {
   init(_props, cx) {
+    this.given = props() ?? {}; // read here only: later it can be another turn's (placement.js)
     this.handle = cx.focus_handle();
     this.handle.focus();
     this.done = false;
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (c.startsWith("choose:")) this.choose(props().choices.find((x) => x.label === c.slice(7)));
+        if (c.startsWith("choose:")) this.choose(this.given.choices.find((x) => x.label === c.slice(7)));
         else if (c.startsWith("key:")) this.key(c.slice(4));
         cx.notify();
       }
@@ -26,7 +27,7 @@ export default class GitviewAsk extends View {
   }
 
   key(k) {
-    const choices = props()?.choices ?? [];
+    const choices = this.given?.choices ?? [];
     const c = k === "enter" ? choices[0] : choices.find((x) => x.key === k);
     if (!c) return false;
     this.choose(c);
@@ -49,7 +50,7 @@ export default class GitviewAsk extends View {
     if (!c || this.done) return;
     this.done = true;
     this.doSteps(c.steps);
-    closeOverlay(props().overlay);
+    closeOverlay(this.given.overlay);
   }
 
   // Closed without a choice (Esc, a click beside it is ignored: modal):
@@ -57,13 +58,13 @@ export default class GitviewAsk extends View {
   async close() {
     if (this.done) return;
     this.done = true;
-    const choices = props()?.choices ?? [];
+    const choices = this.given?.choices ?? [];
     await this.doSteps(choices[choices.length - 1]?.steps);
   }
 
   render() {
     const t = theme();
-    const p = props() ?? {};
+    const p = this.given ?? {};
     return v_flex()
       .id("gitview-ask")
       .track_focus(this.handle)

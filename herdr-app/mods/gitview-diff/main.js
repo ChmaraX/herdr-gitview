@@ -15,7 +15,7 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
-import { focused, setShared, settings, shared, spaces, theme } from "herdr";
+import { focused, props, setShared, settings, shared, spaces, theme } from "herdr";
 import { Tracer, run } from "./telemetry.js";
 import { gv, message } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
@@ -72,7 +72,7 @@ export default class GitDiff extends View {
       return { tab, space: spaces().find((s) => s.tabs.some((t) => t.id === tab))?.id ?? null };
     }, () => ({ ...this.traceFields(), loads: this.loads.names(), cursor: this.cursor, error: this.diff?.error ?? null }));
     this.tr.start(cx);
-    this.place = panePlacement();
+    this.place = panePlacement(props()); // props(): read here only (placement.js)
     this.handle = cx.focus_handle();
     this.scroll = new Scroller("gitview-diff-rows");
     this.composer = TextareaState.new({ placeholder: "Note for the agent", rows: 3 });

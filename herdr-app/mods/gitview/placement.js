@@ -1,10 +1,13 @@
-// Where a gitview copy lives, decided once from its props: the Changes
+// Where a gitview copy lives, decided once from its props (read in init,
+// kept: `props()` names the copy whose turn the app is in, and a task woken
+// by a promise another callback resolved can run in another copy's turn,
+// where it's null; the diff pane lost 1 move in 8 to that): the Changes
 // panel (the layout's `changes` slot) or cmd-g's tab of its own (the list's
 // props {cwd, on, space, tab, own}, the diff pane's {space, own}).
 // Everything that differs between the two is here, so the mods never ask
 // "am I the panel?". Shared (linked; install copies it).
 
-import { focused, panes, props, spaces } from "herdr";
+import { focused, panes, spaces } from "herdr";
 import { run } from "./telemetry.js";
 import { isOwnTab, ownTab } from "./shared.js";
 import { diffPane, location, onScreen, panelState } from "./layout.js";
@@ -47,13 +50,10 @@ const PANEL = {
 // cmd-g's tab: the repo it was opened for, its own tab's diff pane (opened
 // with it); the app frames it like any pane. It takes the keyboard when it
 // starts.
-const TAB = {
-  context: () => {
-    const p = props() ?? {};
-    return { cwd: p.cwd ?? null, on: p.on ?? null, space: p.space ?? null, tab: p.tab ?? null };
-  },
-  tab: () => props()?.tab ?? null,
-  shown: () => onScreen(props()?.tab),
+const tabList = (p) => ({
+  context: () => ({ cwd: p.cwd ?? null, on: p.on ?? null, space: p.space ?? null, tab: p.tab ?? null }),
+  tab: () => p.tab ?? null,
+  shown: () => onScreen(p.tab),
   opensDiffPane: false,
   closesForHerdrNvim: false,
   takesKeyboard: true,
@@ -62,14 +62,15 @@ const TAB = {
   cycle: () => null,
   // cmd-g's list is a pane: the app's focus onto it, then its handle.
   focusSelf: (list, cx) => {
-    const me = panes().find((p) => p.tab === props()?.tab && p.mod === "gitview");
+    const me = panes().find((x) => x.tab === p.tab && x.mod === "gitview");
     if (me) run("pane.focus", { pane: me.pane });
     list.viaApp = true;
     takeKeyboard(list, cx);
   },
-};
+});
 
-export const listPlacement = () => (props()?.own || props()?.cwd ? TAB : PANEL);
+// `p`: the copy's props, from its init.
+export const listPlacement = (p) => (p?.own || p?.cwd ? tabList(p) : PANEL);
 
 // The panel's show/hide edges, from the last look (`was`: {shown, space})
 // and this one (`now`: {shown, space: the active space's id or null, tabs:
@@ -148,7 +149,8 @@ class PanelCycle {
 
 // Opened by the panel in a tab ({tab}): it has × and gives way to
 // herdr-nvim's nvim. In cmd-g's tab ({space, own}): half the tab, kept.
-const PANEL_PANE = { tab: () => props()?.tab ?? null, closeButton: true, closesForHerdrNvim: true };
-const TAB_PANE = { tab: () => ownTab(props()?.space ?? null), closeButton: false, closesForHerdrNvim: false };
+const panelPane = (p) => ({ tab: () => p.tab ?? null, closeButton: true, closesForHerdrNvim: true });
+const tabPane = (p) => ({ tab: () => ownTab(p.space ?? null), closeButton: false, closesForHerdrNvim: false });
 
-export const panePlacement = () => (props()?.own ? TAB_PANE : PANEL_PANE);
+// `p`: the copy's props, from its init.
+export const panePlacement = (p) => (p?.own ? tabPane(p) : panelPane(p ?? {}));

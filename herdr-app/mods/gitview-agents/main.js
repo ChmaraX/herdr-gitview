@@ -12,6 +12,7 @@ import { removeNotes } from "./shared.js";
 
 export default class SendNotes extends View {
   init(_props, cx) {
+    this.given = props() ?? {}; // read here only: later it can be another turn's (placement.js)
     this.handle = cx.focus_handle();
     this.handle.focus();
     this.cursor = 0;
@@ -28,7 +29,7 @@ export default class SendNotes extends View {
   key(stroke, cx) {
     const shown = this.list();
     const send = /-enter$/.test(stroke); // shift-, ctrl-, cmd-enter
-    if (stroke === "escape") closeOverlay(props().overlay);
+    if (stroke === "escape") closeOverlay(this.given.overlay);
     else if (stroke === "down" || stroke === "j") this.cursor = Math.min(shown.length - 1, this.cursor + 1);
     else if (stroke === "up" || stroke === "k") this.cursor = Math.max(0, this.cursor - 1);
     else if (stroke === "enter" || send) this.choose(shown[this.cursor], send, cx);
@@ -37,7 +38,7 @@ export default class SendNotes extends View {
   }
 
   list() {
-    const space = props()?.space;
+    const space = this.given?.space;
     const all = agents();
     return [...all.filter((a) => a.space === space), ...all.filter((a) => a.space !== space)];
   }
@@ -45,7 +46,7 @@ export default class SendNotes extends View {
   choose(agent, submit, cx) {
     if (!agent || this.busy) return;
     this.busy = true;
-    const { message, overlay, ids, key } = props();
+    const { message, overlay, ids, key } = this.given;
     cx.spawn(async (cx) => {
       try {
         await gv(["send", "--terminal", agent.address, ...(submit ? ["--submit"] : []), "--", message]);
@@ -62,7 +63,7 @@ export default class SendNotes extends View {
 
   render() {
     const t = theme();
-    const p = props() ?? {};
+    const p = this.given ?? {};
     const shown = this.list();
     this.cursor = Math.min(this.cursor, Math.max(0, shown.length - 1));
     return v_flex()

@@ -13,7 +13,7 @@
 
 import { View } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
-import { focused, notify, shared, theme } from "herdr";
+import { focused, notify, props, shared, theme } from "herdr";
 import { Tracer, event, run } from "./telemetry.js";
 import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
@@ -40,7 +40,7 @@ export default class GitList extends View {
   init(_props, cx) {
     this.tr = new Tracer("list", () => ({ tab: this.tab(), space: this.ctx?.space }), () => this.traceState());
     this.tr.start(cx);
-    this.place = listPlacement();
+    this.place = listPlacement(props()); // props(): read here only (placement.js)
     this.cycle = this.place.cycle(); // the panel's show/hide (placement.js)
     this.handle = cx.focus_handle();
     this.scroll = new Scroller("gitview-list");
