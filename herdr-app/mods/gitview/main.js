@@ -23,7 +23,7 @@ import { diffPane, panelDiffPanes, panelState, herdrNvimPanes } from "./layout.j
 import { Flash, Loads, commandLoop, debounced, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
 import { staleWhy } from "./notice.js";
-import { closeEditorOf, editorState, liveEditor, quitEditor, setEditor } from "./editors.js";
+import { closeEditorOf, editorIn, editorState, liveEditor, quitEditor, setEditor } from "./editors.js";
 import { FileList } from "./filelist.js";
 import { History } from "./history.js";
 import { knowEditor, openNvim } from "./nvim.js";
@@ -347,7 +347,8 @@ export default class GitList extends View {
   //   opened (no handoff): left alone, as before (one diff pane at most:
   //   ensurePane).
   // What can go wrong: Enter's open still on its way (waited for, so its
-  // handoff is there to clear); nvim's pane not listed yet (closeNvimOf
+  // handoff is there to clear), or its nvim's terminal not found yet
+  // (waited for, then asked); nvim's pane not listed yet (closeNvimOf
   // also ends herdr-core's labelled terminals); two fast moves (one
   // leave at a time; the pane opens for the selection at the end); the
   // closing pane dropping the pane's open (it opens after nvim's pane went).
@@ -360,11 +361,13 @@ export default class GitList extends View {
     const opening = this.loads.names().includes("nvim");
     const ed = liveEditor(tab);
     const askable = (ed) => Boolean(ed?.terminal && ed.kind === "nvim" && ed.sock);
-    if (!opening && !handoffIn(tab) && !askable(ed)) return true;
+    const starting = Boolean(ed && !ed.terminal && ed.kind === "nvim" && ed.sock); // its terminal not found yet
+    if (!opening && !starting && !handoffIn(tab) && !askable(ed)) return true;
     this.leaving = true;
     cx.spawn(async (cx) => {
       try {
         for (let i = 0; opening && i < 100 && this.loads.names().includes("nvim"); i++) await cx.sleep(100);
+        for (let i = 0; i < 40 && liveEditor(tab) && !liveEditor(tab).terminal; i++) await cx.sleep(100);
         if (handoffIn(tab)) {
           setHandoff(tab, null);
           this.closeNvimOf(tab, cx);
@@ -376,9 +379,12 @@ export default class GitList extends View {
           this.debug({ leave: ed.name, state });
           if (state === "dirty") return notify({ title: "gitview", body: "editor has unsaved changes — stays open", level: "info" });
           if (state === "clean") {
+            // That nvim gone (not a new one Enter in the diff pane started
+            // meanwhile: its record stays).
             await quitEditor(ed, "qa");
-            for (let i = 0; i < 30 && liveEditor(tab); i++) await cx.sleep(100);
-            setEditor(tab, null);
+            const mine = () => editorIn(tab)?.terminal === ed.terminal;
+            for (let i = 0; i < 30 && mine() && liveEditor(tab); i++) await cx.sleep(100);
+            if (mine()) setEditor(tab, null);
           }
         }
         const row = this.list()?.row();
