@@ -123,6 +123,7 @@ impl Machine {
 
     /// `hc exec --on <m> --cwd <cwd> [--timeout N] [-i] -- <argv…>`.
     fn hc_exec(machine: &str, cwd: &Path, run: Run, argv: &[&str]) -> Command {
+        crate::trace::count_exec();
         let mut cmd = Command::new(hc_bin());
         cmd.args(["exec", "--on", machine]).arg("--cwd").arg(cwd);
         let secs = run.timeout.unwrap_or(READ_LIMIT);
@@ -150,6 +151,7 @@ impl Machine {
     /// locks: a poll holding the index lock made the person's own
     /// merge/commit fail ("Unable to write index").
     pub fn git(&self, dir: &Path, args: &[&str], run: Run) -> Command {
+        crate::trace::count_git();
         match self {
             Machine::Local => {
                 let mut cmd = Command::new(git_bin());

@@ -32,6 +32,8 @@
 //!   whole file added or as no change, instead of the error;
 //! - `--root` (the top level status gave) looked up there again anyway, or
 //!   a reply other than without it;
+//! - the trace's count of round trips there other than hc's own (the
+//!   number the lead reads to tell a slow machine from many calls);
 //! - the reload hints (`rev`, `ignored_dirs`, a diff's `hash` and its
 //!   `--unless`) told from this machine's files, or other there than here,
 //!   or the revs costing more than one call per status;
@@ -899,4 +901,27 @@ fn a_root_status_gave_is_not_looked_up_again_there() {
     assert_eq!(n, 0, "status --root: no lookup");
     assert_eq!(trusted, looked_up);
     assert_eq!(trusted["root"], "ROOT");
+}
+
+#[test]
+fn the_trace_counts_each_round_trip_to_the_machine() {
+    let w = world("trace");
+    let trace = w.tmp.join("trace/engine.jsonl");
+    let before = w.shim_log().len();
+    let mut cmd = common::gitview();
+    cmd.args(["json", "status"]).env("GITVIEW_TRACE", &trace);
+    let (ok, reply) = w.run_with(cmd, &[]);
+    assert!(ok, "{reply}");
+    let trips = w.shim_log().len() - before;
+    let text = std::fs::read_to_string(&trace).unwrap();
+    let line: Value = serde_json::from_str(text.trim()).unwrap();
+    assert_eq!(line["op"], "status");
+    assert_eq!(line["remote"], true);
+    assert_eq!(line["args"]["on"], "box");
+    assert_eq!(line["execs"], trips, "{line}");
+    let git = line["git"].as_u64().unwrap() as usize;
+    assert!(
+        git > 0 && git < trips,
+        "git {git} of {trips} trips (scripts too)"
+    );
 }

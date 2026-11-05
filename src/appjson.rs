@@ -29,7 +29,9 @@
 //! (the `herdr-app` binary), `HERDR_APP_HOME` (the app home, else
 //! `$HOME/.config/herdr-app`), `GITVIEW_CONFIG_DIR` (the folder of
 //! `config.toml`, else the TUI plugin's own,
-//! `~/.config/herdr/plugins/config/chmarax.gitview`). For tests only:
+//! `~/.config/herdr/plugins/config/chmarax.gitview`), `GITVIEW_TRACE` (a
+//! file each op appends its one trace line to; see [`crate::trace`]). For
+//! tests only:
 //! `GITVIEW_CALL_LIMIT_MS` (how long a call to `herdr-app` or herdr-core
 //! may take, else 10 s).
 //!
@@ -212,7 +214,16 @@ const MAX_ROWS: usize = 5000;
 const LOG_LIMIT: usize = 200;
 
 pub fn run(args: &[String]) -> Result<()> {
-    match dispatch(args) {
+    let trace = crate::trace::start();
+    let (op, rest) = args
+        .split_first()
+        .map_or(("", &[][..]), |(o, r)| (o.as_str(), r));
+    let a = Args::parse(rest);
+    let result = dispatch(op, &a);
+    if let Some(trace) = trace {
+        trace.end(op, &a.pairs, &a.positional, result.as_ref());
+    }
+    match result {
         Ok(value) => {
             println!("{value}");
             Ok(())
@@ -250,26 +261,25 @@ fn reply(value: impl Serialize) -> Result<Value> {
     Ok(serde_json::to_value(value)?)
 }
 
-fn dispatch(args: &[String]) -> Result<Value> {
-    let (op, rest) = args.split_first().context("json: which op?")?;
-    let a = Args::parse(rest);
-    match op.as_str() {
-        "status" => status(&a),
-        "diff" => diff(&a),
-        "stage" => change_index(&a, IndexOp::Stage),
-        "unstage" => change_index(&a, IndexOp::Unstage),
-        "discard" => discard(&a),
-        "log" => log(&a),
-        "commit-files" => commit_files(&a),
-        "commit" => commit(&a),
-        "file" => file(&a),
+fn dispatch(op: &str, a: &Args) -> Result<Value> {
+    match op {
+        "" => bail!("json: which op?"),
+        "status" => status(a),
+        "diff" => diff(a),
+        "stage" => change_index(a, IndexOp::Stage),
+        "unstage" => change_index(a, IndexOp::Unstage),
+        "discard" => discard(a),
+        "log" => log(a),
+        "commit-files" => commit_files(a),
+        "commit" => commit(a),
+        "file" => file(a),
         "notes" => {
             let message = notes(a.positional.first().context("notes: no JSON")?)?;
             Ok(json!({ "message": message }))
         }
-        "nvim" => nvim(&a),
-        "editor" => editor(&a),
-        "sidebar" => sidebar(&a),
+        "nvim" => nvim(a),
+        "editor" => editor(a),
+        "sidebar" => sidebar(a),
         "send" => {
             let terminal = a.value("terminal").context("send: --terminal")?;
             let text = a.positional.first().context("send: no text")?;

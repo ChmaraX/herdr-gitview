@@ -24,3 +24,4 @@ pub mod preview;
 pub mod remote;
 pub mod term;
 pub mod textarea;
+pub mod trace;
