@@ -7,7 +7,8 @@
 // "mod.open:gitview-sidebar"; draws nothing.
 
 import { View, div } from "gpui-kit";
-import { notify, run, spaces } from "herdr";
+import { notify, spaces } from "herdr";
+import { run } from "./telemetry.js";
 import { appCli } from "./engine.js";
 import { oneShot } from "./modkit.js"; // links to ../gitview (install copies them)
 import { panelDiffPanes, panelState } from "./layout.js";
@@ -35,7 +36,7 @@ export default class GitviewPanel extends View {
       run("layout.show", { id: p.panel });
       await cx.sleep(150); // the list hears commands once it's drawn
       run("gitview.focus:panel");
-    });
+    }, "gitview-sidebar");
   }
 
   render() {

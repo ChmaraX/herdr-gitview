@@ -9,6 +9,7 @@
 
 import { appHome, exec, openOverlay, setShared, shared, spaces, terminals } from "herdr";
 import * as fs from "fs/promises";
+import { event, tracer } from "./telemetry.js";
 
 export function editorIn(tab) {
   return (shared("gitview.editors") ?? {})[tab] ?? null;
@@ -63,7 +64,13 @@ export async function trackEditor(tab, rec, before, cx) {
   }
 }
 
-const ask = (rec, expr) => exec(rec.bin, ["--server", rec.sock, "--remote-expr", expr]);
+// Asking nvim: traced as an exec (op "nvim-ask").
+async function ask(rec, expr) {
+  const t0 = Date.now();
+  const r = await exec(rec.bin, ["--server", rec.sock, "--remote-expr", expr]);
+  tracer().line("exec", { op: "nvim-ask", start: t0, ms: Date.now() - t0, ok: r.code === 0 });
+  return r;
+}
 
 // "clean" (nothing unsaved), "dirty", or "unknown" (it can't be asked: not
 // an nvim, or it doesn't answer).
@@ -82,7 +89,9 @@ export async function editorState(rec) {
 const quitArgv = (rec, how) => ["--server", rec.sock, "--remote-send", `<C-\\><C-N>:${how}<CR>`];
 
 export async function quitEditor(rec, how) {
-  await exec(rec.bin, quitArgv(rec, how));
+  const t0 = Date.now();
+  const r = await exec(rec.bin, quitArgv(rec, how));
+  tracer().line("exec", { op: "nvim-quit", how, start: t0, ms: Date.now() - t0, ok: r.code === 0 });
 }
 
 // The tab's editor closes with gitview: "none" (there's none), "clean"
@@ -92,6 +101,7 @@ export async function closeEditorOf(tab, { cancel = [], after = [] } = {}) {
   const ed = liveEditor(tab);
   if (!ed) return "none";
   const state = await editorState(ed);
+  event("editors", { closing: ed.name, state });
   if (state === "clean") {
     await quitEditor(ed, "qa");
     setEditor(tab, null);

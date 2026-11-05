@@ -53,6 +53,7 @@
 
 import { setShared, shared, spaces } from "herdr";
 import { sameFile } from "./model.js";
+import { tracer } from "./telemetry.js";
 
 export function views() {
   return shared("gitview.views") ?? {};
@@ -101,6 +102,7 @@ export function ask(tab, op, view) {
   const all = onlyLive(shared("gitview.ask"), liveTabs());
   const seq = Math.max(all[tab]?.seq ?? 0, answerIn(tab)?.seq ?? 0) + 1;
   setShared("gitview.ask", { ...all, [tab]: { seq, op, view, at: Date.now() } });
+  tracer().line("state", { ask: op, seq, path: view?.path ?? null });
   return seq;
 }
 
@@ -110,6 +112,7 @@ export function answerIn(tab) {
 
 export function answer(tab, seq, msg = null) {
   setShared("gitview.answer", { ...onlyLive(shared("gitview.answer"), liveTabs()), [tab]: { seq, msg } });
+  tracer().line("state", { answer: seq, msg, for: tab });
   const asks = { ...(shared("gitview.ask") ?? {}) };
   if (asks[tab] && asks[tab].seq <= seq) {
     delete asks[tab];
@@ -207,6 +210,7 @@ export function setHandoff(tab, rec) {
   else if (tab in all) delete all[tab];
   else return;
   setShared("gitview.handoff", all);
+  tracer().line("state", { handoff: rec ? (rec.seen ? "seen" : "set") : "cleared", path: rec?.path ?? null, for: tab });
 }
 
 // ---- notes ------------------------------------------------------------------

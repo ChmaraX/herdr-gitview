@@ -13,7 +13,8 @@
 
 import { View } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
-import { focused, notify, run, shared, theme } from "herdr";
+import { focused, notify, shared, theme } from "herdr";
+import { Tracer, event, run } from "./telemetry.js";
 import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
@@ -37,6 +38,8 @@ const EXEC_LIMIT_MS = 29000;
 
 export default class GitList extends View {
   init(_props, cx) {
+    this.tr = new Tracer("list", () => ({ tab: this.tab(), space: this.ctx?.space }), () => this.traceState());
+    this.tr.start(cx);
     this.place = listPlacement();
     this.cycle = this.place.cycle(); // the panel's show/hide (placement.js)
     this.handle = cx.focus_handle();
@@ -104,7 +107,7 @@ export default class GitList extends View {
     // As a render would: only while it's on screen (a hidden copy isn't
     // drawn; its 300 ms look is all it has then).
     debugLook(cx, () => { if (this.place.shown() && this.stale()) this.kick(); trace("list", () => this.traceFields(), this); });
-    commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview", before: (cx) => this.notice(cx), handle: (c, cx) => runCommand(this, c, cx) });
+    commandLoop(cx, { tr: this.tr, loads: this.loads, flash: this.flash, name: "gitview", before: (cx) => this.notice(cx), handle: (c, cx) => runCommand(this, c, cx) });
     if (this.place.takesKeyboard) this.focusList(cx);
   }
 
@@ -158,7 +161,7 @@ export default class GitList extends View {
     const shown = this.place.shown();
     const rec = shown && this.place.closesForHerdrNvim ? handoffIn(tab) : null;
     const ctx = shown ? this.context() : null;
-    return staleWhy({
+    const why = staleWhy({
       panesMoved: this.loads.panesMoved(),
       cycle: this.cycle && { was: this.cycle.shown, aside: this.cycle.asideStale() },
       shown,
@@ -170,7 +173,13 @@ export default class GitList extends View {
       wasTab: this.ctx?.tab,
       ask: shown ? askIn(tab)?.seq ?? 0 : 0,
       askSeen: this.seen.asks[tab] ?? 0,
-    }) !== null;
+    });
+    // Each new reason once in the trace (render asks this often).
+    if (why !== this.lastWhy) {
+      this.lastWhy = why;
+      if (why) this.tr.line("state", { stale: why });
+    }
+    return why !== null;
   }
 
   // Acts on what stale() looks for (notice.js has the table). Before every
@@ -198,6 +207,7 @@ export default class GitList extends View {
   // The panel's edge (placement.js cycleEdge): a hide closes the unit in
   // the shown space's tabs (the diff panes first), a show opens the file.
   onEdge(edge, cx) {
+    if (edge) event("list", { edge: edge === "shown" ? "shown" : { hidden: [...edge.hidden] } });
     if (edge === "shown") this.openOnShow(cx);
     else if (edge?.hidden) {
       for (const pane of panelDiffPanes()) if (edge.hidden.has(pane.tab)) run("pane.close", { pane: pane.pane });
@@ -384,7 +394,7 @@ export default class GitList extends View {
   }
 
   debug(fields) {
-    if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "list", ...fields })}`);
+    event("list", fields);
   }
 
   // The handoff can still bring its diff back: no other file shown since.
@@ -437,7 +447,7 @@ export default class GitList extends View {
   // `quiet`: the same repo again (a watch batch, a stamp, a poll): no
   // spinner.
   refresh(cx, { poll = false, quiet = poll, why = "" } = {}) {
-    if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "list", refresh: why })}`);
+    event("list", { refresh: why });
     this.ctx = this.context();
     if (!this.ctx.cwd) {
       this.work = null;
@@ -680,7 +690,7 @@ export default class GitList extends View {
   rowAction(op, row, cx) {
     const list = this.work;
     row = row ?? list?.row();
-    if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "list", rowAction: op, row: row?.key ?? null, mode: this.mode, scope: this.scope })}`);
+    event("list", { rowAction: op, row: row?.key ?? null, mode: this.mode, scope: this.scope });
     if (!row || !MODES[this.mode].actsOnWork || this.scope !== "worktree") return;
     const section = row.section.id;
     if (!allowed(op, section)) return this.flash.set(`can't ${op} in ${row.section.title}`);
@@ -733,7 +743,7 @@ export default class GitList extends View {
           }
         }
       } catch (e) {
-        if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "list", opFailed: args[0], error: message(e) })}`);
+        event("list", { opFailed: args[0], error: message(e) });
         notify({ title: "gitview", body: message(e), level: "error" });
         if (asked) answer(asked.tab, asked.seq);
         this.acting = null;
@@ -849,6 +859,7 @@ export default class GitList extends View {
   }
 
   clickRow(row, e, cx) {
+    this.tr.line("input", { click: row.key, count: e.click_count ?? 1, mode: this.mode, scope: this.scope });
     this.focusHere(cx);
     const list = this.list();
     if (!list || row.kind === "header") return;
@@ -889,7 +900,34 @@ export default class GitList extends View {
     };
   }
 
+  // The copy as a snapshot has it (telemetry.js): no commit message.
+  traceState() {
+    const tab = this.tab();
+    const v = viewIn(tab);
+    return {
+      mode: this.mode,
+      scope: this.scope,
+      selected: this.list()?.row()?.key ?? null,
+      view: v ? { path: v.path, section: v.section, seq: v.seq, showing: v.showing, empty: Boolean(v.empty) } : null,
+      shown: this.place.shown(),
+      focused: this.showsFocus(),
+      ctx: this.ctx?.key ?? null,
+      loads: this.loads.names(),
+      opening: this.opening ?? null,
+      committing: this.committing || 0,
+      leaving: Boolean(this.leaving),
+      handoff: handoffIn(tab),
+      editor: liveEditor(tab),
+      diffPane: diffPane(tab)?.pane ?? null,
+      error: this.error ?? null,
+    };
+  }
+
   render(cx) {
+    return this.tr.render(() => this.draw(cx));
+  }
+
+  draw(cx) {
     if (this.stale()) this.kick();
     const t = theme();
     const focused = this.showsFocus();
@@ -910,6 +948,7 @@ export default class GitList extends View {
           if (e.key !== "escape") return;
           this.handle.focus(); // esc leaves the commit message
         } else if (!this.key(e, cx)) return;
+        this.tr.line("input", { key: e.key, mode: this.mode, scope: this.scope, row: this.list()?.row()?.key ?? null });
         this.flash.clear();
         cx.stop_propagation();
         cx.notify();

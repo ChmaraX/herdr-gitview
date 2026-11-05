@@ -15,7 +15,8 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
-import { focused, run, setShared, settings, shared, spaces, theme } from "herdr";
+import { focused, setShared, settings, shared, spaces, theme } from "herdr";
+import { Tracer, run } from "./telemetry.js";
 import { gv, message } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
@@ -66,6 +67,11 @@ const noteSide = (v) => (!v || v.commit || v.section === "branch" ? null : Boole
 
 export default class GitDiff extends View {
   init(_props, cx) {
+    this.tr = new Tracer("pane", () => {
+      const tab = this.tab();
+      return { tab, space: spaces().find((s) => s.tabs.some((t) => t.id === tab))?.id ?? null };
+    }, () => ({ ...this.traceFields(), loads: this.loads.names(), cursor: this.cursor, error: this.diff?.error ?? null }));
+    this.tr.start(cx);
     this.place = panePlacement();
     this.handle = cx.focus_handle();
     this.scroll = new Scroller("gitview-diff-rows");
@@ -93,7 +99,7 @@ export default class GitDiff extends View {
     this.kick = debounced(cx, 0, (cx) => this.sync(cx));
     this.sync(cx);
     debugLook(cx, () => { if (focused()?.tab === this.tab()) this.renderLook(); trace("pane", () => this.traceFields(), this); });
-    commandLoop(cx, { loads: this.loads, flash: this.flash, name: "gitview-diff", before: (cx) => this.sync(cx), handle: (c, cx) => this.command(c, cx) });
+    commandLoop(cx, { tr: this.tr, loads: this.loads, flash: this.flash, name: "gitview-diff", before: (cx) => this.sync(cx), handle: (c, cx) => this.command(c, cx) });
   }
 
   tab() {
@@ -580,6 +586,10 @@ export default class GitDiff extends View {
   }
 
   render(cx) {
+    return this.tr.render(() => this.draw(cx));
+  }
+
+  draw(cx) {
     const t = theme();
     this.renderLook();
     const focused = this.handle.is_focused();
@@ -671,6 +681,7 @@ export default class GitDiff extends View {
       })
       .on_key_down((e, cx) => {
         if (!this.key(e, cx)) return;
+        this.tr.line("input", { key: e.key, shift: Boolean(e.modifiers?.shift), file: this.view?.path ?? null, cursor: this.cursor });
         this.flash.clear();
         cx.stop_propagation();
         cx.notify();

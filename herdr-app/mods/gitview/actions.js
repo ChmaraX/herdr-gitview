@@ -4,6 +4,7 @@
 
 import { agents, openOverlay, setShared, shared } from "herdr";
 import { gv } from "./engine.js";
+import { tracer } from "./telemetry.js";
 import { notesOf } from "./shared.js";
 
 // Where stage, unstage and discard apply (the engine checks it too).
@@ -30,6 +31,7 @@ export function confirmDiscard(mod, what, payload) {
   const now = Date.now();
   const all = Object.fromEntries(Object.entries(shared("gitview.discards") ?? {}).filter(([, r]) => now - r.at < DISCARD_MS));
   setShared("gitview.discards", { ...all, [token]: { mod, at: now, payload } });
+  tracer().line("state", { discardAsk: token, what: String(what).slice(0, 200) });
   console.log(`${mod}: asking to discard ${what} (${mod}.discard:${token})`);
   openOverlay({
     mod: "confirm",
@@ -47,6 +49,7 @@ export function takeDiscard(mod, command) {
   const token = command.slice("discard:".length);
   const all = { ...(shared("gitview.discards") ?? {}) };
   const rec = token ? all[token] : null;
+  tracer().line("state", { discardConfirm: token, found: Boolean(rec && rec.mod === mod) });
   if (!rec || rec.mod !== mod || Date.now() - rec.at > DISCARD_MS) return null;
   delete all[token];
   setShared("gitview.discards", all);

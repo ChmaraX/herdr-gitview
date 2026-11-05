@@ -6,6 +6,7 @@ import { closeOverlay, focused, nextCommand, notify, panes, props, watchFolder }
 import { message } from "./engine.js";
 import { shared } from "herdr";
 import { changedAt, ignoredDirs, stampChanged, stampOf } from "./shared.js";
+import { Tracer, tracer } from "./telemetry.js";
 
 // At most one "gitview.changed" stamp per repo this often.
 const STAMP_MS = 250;
@@ -46,7 +47,7 @@ export class Loads {
     const now = Date.now();
     for (const [id, l] of this.running) {
       if (now - l.at > LOST_MS) {
-        console.warn(`gitview: a load (${l.what}) hasn't finished in ${LOST_MS / 1000} s; not waiting for it`);
+        tracer().warn(`gitview: a load (${l.what}) hasn't finished in ${LOST_MS / 1000} s; not waiting for it`, { lost: [l.what], timeout: true });
         this.running.delete(id);
       }
     }
@@ -123,7 +124,7 @@ export class Loads {
   revive(cx, before = Date.now()) {
     const lost = [...this.running].filter(([, l]) => l.at <= before);
     if (!lost.length) return;
-    console.warn(`gitview: a mod pane closed during ${lost.map(([, l]) => l.what).join(", ")}: not waiting for that, loading again`);
+    tracer().warn(`gitview: a mod pane closed during ${lost.map(([, l]) => l.what).join(", ")}: not waiting for that, loading again`, { lost: lost.map(([, l]) => l.what), revived: true });
     for (const [id] of lost) this.running.delete(id);
     this.onLost?.(cx, lost.map(([, l]) => l.what));
     for (const [what, slot] of this.slots) {
@@ -196,6 +197,7 @@ export function debounced(cx, ms, work) {
         work(cx);
       } catch (e) {
         console.error(`gitview: ${e?.message ?? e}`);
+        tracer().warn(`gitview: ${e?.message ?? e}`, { level: "error" });
       }
     }
   });
@@ -246,6 +248,7 @@ export class Flash {
   set(text) {
     this.text = text;
     this.at = Date.now();
+    if (text) tracer().line("state", { flash: String(text).slice(0, 200) });
   }
 
   clear() {
@@ -325,7 +328,7 @@ export function followStamp(watcher) {
 // commands, so this copy is always waiting for the next one: with two
 // copies on screen (the panel and cmd-g's list), a copy that was busy when
 // a command came stopped getting any (herdr-app 0.1.12).
-export function commandLoop(cx, { loads, before, handle, flash, name }) {
+export function commandLoop(cx, { loads, before, handle, flash, name, tr = tracer() }) {
   const queue = [];
   let wake = null;
   cx.spawn(async () => {
@@ -342,6 +345,7 @@ export function commandLoop(cx, { loads, before, handle, flash, name }) {
       try {
         // Focus doesn't wait for loads: the keys must arrive with it.
         if (command === "focus" || command.startsWith("focus:")) {
+          tr.line("input", { command });
           handle(command, cx);
           cx.notify();
           continue;
@@ -349,16 +353,19 @@ export function commandLoop(cx, { loads, before, handle, flash, name }) {
         before?.(cx);
         if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: name, command, busy: loads.names() })}`);
         const asked = Date.now();
+        const busy = loads.names();
         let said = false;
         await loads.idle(cx, () => {
           if (said || Date.now() - asked < 3000) return;
           said = true;
-          console.warn(`${name}: ${command} is waiting for ${loads.names()}`);
+          tr.warn(`${name}: ${command} is waiting for ${loads.names()}`, { waiting: command });
         });
+        tr.line("input", { command, busy, waited: Date.now() - asked });
         handle(command, cx);
         cx.notify();
       } catch (e) {
         console.error(`${name}: ${command}: ${message(e)}\n${e?.stack ?? ""}`);
+        tr.warn(`${name}: ${command}: ${message(e)}`, { level: "error" });
         flash?.set(message(e));
       }
     }
@@ -381,15 +388,21 @@ export function keyEvent(k) {
 
 // A key's launcher (`mod.open:<mod>`, a 2×2 px frameless window): does
 // `work(cx)` once, says what went wrong, then closes itself.
-export function oneShot(cx, work) {
+export function oneShot(cx, work, name = "launcher") {
   const overlay = props()?.overlay;
+  const tr = new Tracer(name, () => focused() ?? {});
   cx.spawn(async (cx) => {
+    const t0 = Date.now();
+    tr.line("input", { command: name });
     try {
-      await work(cx);
+      await work(cx, tr);
     } catch (e) {
       console.error(`gitview: ${message(e)}`);
+      tr.warn(`gitview: ${message(e)}`, { level: "error" });
       notify({ title: "gitview", body: message(e), level: "error" });
     } finally {
+      tr.line("state", { done: name, ms: Date.now() - t0 });
+      await tr.flush(); // closing ends this copy
       if (overlay) closeOverlay(overlay);
     }
   });

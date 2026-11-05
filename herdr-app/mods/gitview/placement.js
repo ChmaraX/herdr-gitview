@@ -4,7 +4,8 @@
 // Everything that differs between the two is here, so the mods never ask
 // "am I the panel?". Shared (linked; install copies it).
 
-import { focused, panes, props, run, spaces } from "herdr";
+import { focused, panes, props, spaces } from "herdr";
+import { run } from "./telemetry.js";
 import { isOwnTab, ownTab } from "./shared.js";
 import { diffPane, location, onScreen, panelState } from "./layout.js";
 import { takeKeyboard } from "./modkit.js";

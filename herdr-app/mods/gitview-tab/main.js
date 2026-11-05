@@ -5,7 +5,8 @@
 // draws nothing.
 
 import { View, div } from "gpui-kit";
-import { focused, notify, run, spaces } from "herdr";
+import { focused, notify, spaces } from "herdr";
+import { run } from "./telemetry.js";
 import { appCli, gv } from "./engine.js"; // links to ../gitview (install copies them)
 import { location } from "./layout.js";
 import { oneShot } from "./modkit.js";
@@ -69,7 +70,7 @@ export default class GitviewTab extends View {
         }
       }
       run("pane.focus", { pane });
-    });
+    }, "gitview-tab");
   }
 
   render() {
