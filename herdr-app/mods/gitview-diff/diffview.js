@@ -116,8 +116,10 @@ export function renderRow(item, ctx) {
   if (item.cut) return div().h(ROW).flex_none().px(14).text_color(t.dim).child(`diff cut at ${String(item.cut).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} lines`);
   const { row, index } = item;
   const selected = ctx.selection && index >= ctx.selection[0] && index <= ctx.selection[1];
+  const cursor = index === ctx.cursor ? cursorTint(t, ctx.focused) : null;
   return h_flex()
     .id(`d${index}`)
+    .relative()
     .w_full()
     .h(ROW)
     .flex_none()
@@ -125,7 +127,13 @@ export function renderRow(item, ctx) {
     .when(row.k === "fold", (e) => e.cursor_pointer())
     .when(Boolean(row.bg), (e) => e.bg(color(row.bg, t)))
     .when(selected, (e) => e.bg(t.selection))
-    .when(index === ctx.cursor, (e) => e.border_l(2).border_color(ctx.focused ? t.accent : t.dim))
+    // The cursor: a faint wash of the text colour over the whole row (on top
+    // of a green or red row too) and a 2 px bar, both laid over the row so
+    // nothing moves. Painted before the text, so the text stays on top.
+    .when(Boolean(cursor), (e) =>
+      e
+        .child(div().absolute().inset_0().bg(cursor))
+        .child(div().absolute().top_0().bottom_0().left_0().w(2).bg(ctx.focused ? t.accent : t.dim)))
     .on_mouse_down("left", (e, cx) => ctx.onDown(index, e, cx))
     .on_mouse_move((_e, cx) => ctx.onMove(index, cx))
     .children(
@@ -133,11 +141,17 @@ export function renderRow(item, ctx) {
         // A span tinted like its row is painted once: twice would stack the
         // translucent tint (darker boxes behind the text).
         const own = Boolean(bg) && !selected && bg !== row.bg;
-        const behind = [selected ? t.selection : row.bg && color(row.bg, t), own && color(bg, t)].filter(Boolean);
+        const behind = [selected ? t.selection : row.bg && color(row.bg, t), cursor, own && color(bg, t)].filter(Boolean);
         const span = div().flex_none().child(text.replace(/ /g, "\u00a0"));
         return span.when(Boolean(fg), (e) => e.text_color(readable(color(fg, t), behind, t))).when(own, (e) => e.bg(color(bg, t)));
       }),
     );
+}
+
+// The cursor row's wash: the theme's text colour at 10% (6% when the pane
+// isn't focused), lighter on a dark theme and darker on a light one.
+function cursorTint(t, focused) {
+  return `${String(t.foreground).slice(0, 7)}${focused ? "1a" : "0f"}`;
 }
 
 function noteCard(note, ctx) {
