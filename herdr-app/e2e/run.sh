@@ -745,7 +745,7 @@ rm -f "$S/probe.rs"
 step "the trace: every copy's and the engine's lines in one folder, and trace.py reads it"
 TRD="$HERDR_APP_HOME/data/gitview/trace"
 do_ mod.open --name gitview-mark
-expect 'cat "$TRD"/*.jsonl | grep -q "\"mod\":\"gitview-mark\".*\"kind\":\"mark\"" && cat "$TRD"/*.jsonl | grep -q "\"mod\":\"list\".*\"kind\":\"mark\""' "the mark command: a mark with its snapshot, and the list's own part (within its 1 s flush)" 10
+expect 'grep -qh "\"mod\":\"gitview-mark\".*\"kind\":\"mark\"" "$TRD"/*.jsonl && grep -qh "\"mod\":\"list\".*\"kind\":\"mark\"" "$TRD"/*.jsonl' "the mark command: a mark with its snapshot, and the list's own part (within its 1 s flush)" 10
 sleep 1.5 # the other copies' last lines
 python3 "$REPO/herdr-app/tools/trace.py" "$TRD" >"$ART/trace.txt" 2>&1 || fail "trace.py: $(tail -3 "$ART/trace.txt")"
 python3 "$REPO/herdr-app/tools/trace.py" "$TRD" --around mark >"$ART/trace-mark.txt" 2>&1
@@ -754,7 +754,7 @@ grep -Eq '^[0-9:.]+ (list|pane) +(key:|click)' <(sed -n '/== interactions/,$p' "
 grep -Eq '^status +n=[0-9]+ .* · +[0-9.]+ +[0-9.]+' "$ART/trace.txt" && ok "the execs: the mods' ms and the engine's ($(grep -E '^status +n=' "$ART/trace.txt"))" || fail "status execs without the engine's ms"
 grep -q ' exec .*sidebar ' "$ART/trace.txt" && grep -q 'cmd=pane.close' "$ART/trace.txt" && grep -q 'edge=' "$ART/trace.txt" \
   && ok "a diff pane's split (sidebar), a pane.close and the panel's edges" || fail "the split, close or edges are missing"
-BYTES=$(cat "$TRD"/*.jsonl | wc -c | tr -d ' ')
+BYTES=$(cat "$TRD"/*.jsonl | wc -c | tr -d ' ') # (grep -q on a pipe: cat's SIGPIPE fails it under pipefail)
 echo "trace: $BYTES bytes in $(ls "$TRD" | wc -l | tr -d ' ') files after ${SECONDS}s ($(( BYTES * 60 / (SECONDS > 0 ? SECONDS : 1) / 1024 )) KB/min)" | tee -a "$LOG" >"$ART/trace-size.txt"
 cp -R "$TRD" "$ART/trace"
 
