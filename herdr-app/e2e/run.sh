@@ -382,21 +382,35 @@ NVIM=$(terms | awk '$2=="nvim"{print $1}')
 hc get "$NVIM" --json | grep -q '"+5"' && ok "at the cursor's line (+5)" || fail "nvim line: $(hc get "$NVIM" --json | head -c 300)"
 has_diff $TAB && ok "the diff pane stays beside it" || fail "the diff pane went"
 shot 13-nvim 2
+# Browsing with it open (v1): unsaved changes keep it, and Enter on another
+# file goes to that same nvim; clean, a move quits it and the diff shows.
+ed_sock() { shared "s.get('gitview.editors',{}).get('$TAB',{}).get('sock') or ''"; }
+ed_nv() { nvim --headless --server "$(ed_sock)" "$@" 2>/dev/null; }
+nvim_up() { [ -n "$(terms | awk '$2=="nvim"')" ]; }
+diff_count() { mod_panes | grep -c "^$1 .* gitview-diff$"; }
+left() { grep -a 'GVEVENT' "$BASE/app.log" | grep -c "\"leave\":\"nvim\",\"state\":\"$1\""; }
+expect '[ "$(ed_nv --remote-expr 1)" = 1 ]' "gitview can ask it (its socket answers)" 15
+ed_nv --remote-send '<esc>ggOgitview-unsaved<esc>' >/dev/null
+expect '[ "$(ed_nv --remote-expr "&modified")" = 1 ]' "an unsaved change in nvim"
 do_ gitview.click:src/app/a.rs
+expect '[ "$(left dirty)" -ge 1 ]' "unsaved changes, a click on another file: nvim is asked and stays (a toast says so)"
+expect '[ "$(view_of $TAB path)" = src/app/a.rs ]' "the list moves, and the diff pane beside nvim follows"
+[ "$(terms | awk '$2=="nvim"{print $1}')" = "$NVIM" ] && [ "$(diff_count $TAB)" = 1 ] && ok "the same nvim, no second diff pane" || fail "nvim $(terms | awk '$2=="nvim"{print $1}'), $(diff_count $TAB) diff panes"
 do_ gitview.key:enter
 expect 'nvim_buf $NVIM | grep -q "src/app/a.rs$"' "the list's enter on another file goes to that same nvim"
 do_ gitview.dblclick:src/app/b.rs
 expect 'nvim_buf $NVIM | grep -q "src/app/b.rs$"' "a double-click on a file opens it there too"
 [ "$(terms | awk '$2=="nvim"' | wc -l | tr -d ' ')" = 1 ] && ok "no second nvim" || fail "second nvim"
-hc keys "$NVIM" esc shift+z shift+q >/dev/null
-expect '[ -z "$(terms | awk '"'"'$2=="nvim"'"'"')" ]' "ZQ closes nvim and its pane; the diff is back"
+ed_nv --remote-send '<esc>:silent! bufdo e!<cr>' >/dev/null
+expect '[ "$(ed_nv --remote-expr "len(filter(getbufinfo({'"'"'bufloaded'"'"': 1}), '"'"'v:val.changed'"'"'))")" = 0 ]' "(the change dropped: nvim is clean)"
+do_ gitview-diff.key:J
+expect '! nvim_up' "clean, J in the diff pane: nvim quits (v1)" 15
+expect 'has_diff $TAB && [ "$(view_of $TAB path)" != src/app/b.rs ] && [ -n "$(view_of $TAB path)" ]' "and the diff shows the next file ($(view_of $TAB path))"
+[ "$(diff_count $TAB)" = 1 ] && [ "$(left clean)" -ge 1 ] && ok "one diff pane, asked first" || fail "$(diff_count $TAB) diff panes, $(left clean) clean asks"
 
 step "the editor is part of gitview: hiding the panel quits a clean nvim; unsaved changes ask first"
 GVCONF="$XDG_CONFIG_HOME/herdr/plugins/config/chmarax.gitview"
 mkdir -p "$GVCONF" && printf 'editor = ["nvim"]\n' >"$GVCONF/config.toml"
-ed_sock() { shared "s.get('gitview.editors',{}).get('$TAB',{}).get('sock') or ''"; }
-ed_nv() { nvim --headless --server "$(ed_sock)" "$@" 2>/dev/null; }
-nvim_up() { [ -n "$(terms | awk '$2=="nvim"')" ]; }
 editor_open() { # Enter in the diff on src/main.rs: nvim, which gitview keeps with the tab
   do_ gitview.click:src/main.rs
   expect 'pane_on $TAB src/main.rs' "src/main.rs in the diff pane"

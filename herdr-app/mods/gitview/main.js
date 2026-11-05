@@ -22,7 +22,7 @@ import { diffPane, panelDiffPanes, panelState, herdrNvimPanes } from "./layout.j
 import { Flash, Loads, commandLoop, debounced, debugLook, followStamp, stampMoved, trace, watch } from "./modkit.js";
 import { listPlacement } from "./placement.js";
 import { staleWhy } from "./notice.js";
-import { closeEditorOf, liveEditor } from "./editors.js";
+import { closeEditorOf, editorState, liveEditor, quitEditor, setEditor } from "./editors.js";
 import { FileList } from "./filelist.js";
 import { History } from "./history.js";
 import { knowEditor, openNvim } from "./nvim.js";
@@ -324,6 +324,69 @@ export default class GitList extends View {
     });
   }
 
+  // Browsing to another file while the nvim Enter opened is there (v1's
+  // probe on a move; Enter stays the "edit this" path). Returns whether the
+  // diff pane may open now; else it opens once nvim made way.
+  // - handed to herdr-nvim: its pane closes (the daemon keeps the buffers,
+  //   unsaved edits and cursor, so nothing to ask), the handoff goes (no
+  //   :q restore of the old file), and the new file's diff takes the place;
+  // - an nvim gitview started: a clean one quits and the diff takes its
+  //   place; with unsaved changes it stays, no pane opens, and the next
+  //   move asks again;
+  // - another editor (it can't be asked) or a herdr-nvim pane the person
+  //   opened (no handoff): left alone, as before (one diff pane at most:
+  //   ensurePane).
+  // What can go wrong: Enter's open still on its way (waited for, so its
+  // handoff is there to clear); nvim's pane not listed yet (closeNvimOf
+  // also ends herdr-core's labelled terminals); two fast moves (one
+  // leave at a time; the pane opens for the selection at the end); the
+  // closing pane dropping the pane's open (it opens after nvim's pane went).
+  leaveEditor(next, cx) {
+    const tab = this.tab();
+    if (!tab) return true;
+    const was = liveView(viewIn(tab));
+    if (was && sameFile(was, next)) return true;
+    if (this.leaving) return false;
+    const opening = this.loads.names().includes("nvim");
+    const ed = liveEditor(tab);
+    const askable = (ed) => Boolean(ed?.terminal && ed.kind === "nvim" && ed.sock);
+    if (!opening && !handoffIn(tab) && !askable(ed)) return true;
+    this.leaving = true;
+    cx.spawn(async (cx) => {
+      try {
+        for (let i = 0; opening && i < 100 && this.loads.names().includes("nvim"); i++) await cx.sleep(100);
+        if (handoffIn(tab)) {
+          setHandoff(tab, null);
+          this.closeNvimOf(tab, cx);
+          for (let i = 0; i < 30 && herdrNvimPanes(tab).length; i++) await cx.sleep(100);
+          this.debug({ leave: "herdr-nvim" });
+        } else if (askable(liveEditor(tab))) {
+          const ed = liveEditor(tab);
+          const state = await editorState(ed);
+          this.debug({ leave: ed.name, state });
+          if (state === "dirty") return notify({ title: "gitview", body: "editor has unsaved changes — stays open", level: "info" });
+          if (state === "clean") {
+            await quitEditor(ed, "qa");
+            for (let i = 0; i < 30 && liveEditor(tab); i++) await cx.sleep(100);
+            setEditor(tab, null);
+          }
+        }
+        const row = this.list()?.row();
+        if (this.tab() === tab && row?.kind === "file" && this.place.opensDiffPane) this.ensurePane(tab, cx);
+      } catch (e) {
+        this.flash.set(message(e));
+      } finally {
+        this.leaving = false;
+        cx.notify();
+      }
+    });
+    return false;
+  }
+
+  debug(fields) {
+    if (shared("gitview.debug")) console.log(`GVEVENT ${JSON.stringify({ t: Date.now(), mod: "list", ...fields })}`);
+  }
+
   // The handoff can still bring its diff back: no other file shown since.
   restorable(tab, rec) {
     return (viewIn(tab)?.showing ?? 0) === rec.showing;
@@ -438,7 +501,7 @@ export default class GitList extends View {
       // cmd-g's tab: its pane came with it, so its first file shows at once.
       if (this.place.showsFirstFile && this.mode === "files" && !liveView(viewIn(this.tab()))) {
         const first = this.work.shownFile();
-        if (first) this.select(first, cx, { open: false });
+        if (first) this.select(first, cx, { open: false, browse: false });
       }
       // The pane's s/u/x: answered once the status after it is shown.
       if (this.toAnswer && started >= this.toAnswer.after) {
@@ -492,9 +555,16 @@ export default class GitList extends View {
   // Select a row; a file shows in the diff pane (`open`: open the pane when
   // the tab has none: a click or j/k, not a refresh; `line`: a note's).
   // `focusPane`: the diff pane gets the keyboard (coming back from nvim).
-  select(row, cx, { open = true, line = null, focusPane = false } = {}) {
+  // `browse`: the person moved there (not a load picking the first file):
+  // the nvim Enter opened makes way (leaveEditor), and the row handed to
+  // herdr-nvim brings its diff back.
+  select(row, cx, { open = true, line = null, focusPane = false, browse = true } = {}) {
     const list = this.list();
     if (!list || !row) return;
+    if (browse && row.kind === "file") {
+      if (this.handedOff(row)) return this.bringBack(row, cx);
+      if (!this.leaveEditor(list.viewFor(row), cx)) open = false;
+    }
     list.select(row);
     this.reveal(list.index(row), { margin: 28 });
     if (row.kind === "file") this.show(row, { open, cx, line, focusPane });
@@ -593,6 +663,9 @@ export default class GitList extends View {
     const list = this.list();
     const space = this.ctx?.space;
     this.loads.run(cx, "nvim", async (cx) => {
+      // A move's leave and the diff pane it opens first (its nvim quitting
+      // would take this file; the pane would open beside nvim).
+      for (let i = 0; (this.leaving || this.opening) && i < 50; i++) await cx.sleep(100);
       const view = list.viewFor(row);
       const cursor = cursorIn(tab);
       let line = cursor && sameFile(cursor, view) ? cursor.line : null;
@@ -747,7 +820,7 @@ export default class GitList extends View {
     if (!tab || !this.work || !view) return;
     const row = this.work.shownFile();
     if (!row) setView(tab, null);
-    else if (!sameFile(view, this.work.viewFor(row))) this.select(row, cx, { open: false });
+    else if (!sameFile(view, this.work.viewFor(row))) this.select(row, cx, { open: false, browse: false });
   }
 
   // ---- notes ----------------------------------------------------------------

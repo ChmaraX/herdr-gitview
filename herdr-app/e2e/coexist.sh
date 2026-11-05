@@ -236,6 +236,41 @@ do_ tab.close --id "$OTHER" --confirmed true
 do_ gitview.click:src/main.rs
 expect 'has_diff $TAB' "a click opens the diff again"
 
+step "browsing while the file is in herdr-nvim: nvim's pane closes and the next file's diff takes its place (v1)"
+handoff() { shared "s.get('gitview.handoff',{}).get('$TAB') or ''"; }
+diff_count() { mod_panes | grep -c "^$TAB .* gitview-diff$"; }
+printf 'pub fn other() {}\n' >"$S/src/other.rs"
+expect '"$APP" do gitview.file:src/other.rs >/dev/null && [ "$(view_of $TAB path)" = src/other.rs ]' "a second changed file, src/other.rs" 15
+do_ gitview.click:src/main.rs
+expect 'has_diff $TAB && [ "$(view_of $TAB path)" = src/main.rs ]' "src/main.rs in the diff pane"
+do_ gitview-diff.key:enter
+expect '[ -n "$(tab_nvim)" ] && ! has_diff $TAB && [ -n "$(handoff)" ]' "Enter: nvim in the diff's place (handed off)" 30
+do_ gitview.key:j
+expect '[ -z "$(tab_nvim)" ]' "j: nvim's pane closes" 15
+expect '[ "$(diff_count)" = 1 ] && [ "$(view_of $TAB path)" = src/other.rs ]' "one diff pane, on the next file" 15
+[ -z "$(handoff)" ] && ok "the handoff is cleared" || fail "the handoff stays: $(handoff)"
+sleep 2
+[ -z "$(tab_nvim)" ] && [ "$(diff_count)" = 1 ] && [ "$(view_of $TAB path)" = src/other.rs ] && ok "and nothing comes back (no :q restore of src/main.rs)" || fail "after 2 s: nvim '$(tab_nvim)', $(diff_count) diff panes on $(view_of $TAB path)"
+do_ gitview.click:src/main.rs
+expect 'has_diff $TAB && [ "$(view_of $TAB path)" = src/main.rs ]' "src/main.rs again"
+do_ gitview-diff.key:enter
+expect '[ -n "$(tab_nvim)" ] && ! has_diff $TAB' "Enter: nvim again" 30
+expect '[ "$(nv --remote-expr 1)" = 1 ]' "its daemon answers" 15
+nv --remote-send '<esc>ggOgitview-unsaved-3<esc>'
+expect '[ "$(nv --remote-expr "&modified")" = 1 ]' "an unsaved edit in nvim"
+do_ gitview.key:j
+expect '[ -z "$(tab_nvim)" ] && [ "$(diff_count)" = 1 ] && [ "$(view_of $TAB path)" = src/other.rs ]' "unsaved: j closes nvim's pane all the same, the next file's diff in its place (no prompt)" 15
+[ "$(nv --remote-expr 'getbufvar(bufnr("src/main.rs"), "&modified")')" = 1 ] && ok "the daemon still holds src/main.rs, modified" || fail "the daemon lost the edit"
+do_ gitview.click:src/main.rs
+expect 'has_diff $TAB && [ "$(view_of $TAB path)" = src/main.rs ]' "back on src/main.rs: its diff"
+do_ gitview-diff.key:enter
+expect '[ -n "$(tab_nvim)" ] && [ "$(nv --remote-expr "&modified")" = 1 ] && [ "$(nv --remote-expr "getline(1)")" = gitview-unsaved-3 ]' "Enter: nvim shows it, still modified" 30
+nv --remote-send '<esc>u'
+expect '[ "$(nv --remote-expr "&modified")" = 0 ]' "(the edit undone)"
+hc keys "$(tab_nvim)" esc shift+z shift+q >>"$LOG" 2>&1
+expect '[ -z "$(tab_nvim)" ] && has_diff $TAB' "ZQ: the diff back" 15
+rm -f "$S/src/other.rs"
+
 step "uninstall gitview: herdr-nvim's layout and keys come back byte for byte"
 gv_down || fail "gitview uninstall"
 want "main-copy files=herdr-nvim changes=changes" "herdr-nvim's slot stays; no layout switched"
