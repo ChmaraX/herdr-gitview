@@ -126,21 +126,40 @@ mkdir -p "$HOME_DIR/mods"
 for m in "${MODS[@]}"; do
   ours "$HOME_DIR/mods/$m" || die "$HOME_DIR/mods/$m exists and isn't gitview's; not overwriting it"
 done
+# Each mod is put together in a hidden folder (the app doesn't watch those),
+# checked, and swapped in with one rename, only when it differs from the
+# installed one: the app hot-reloads a mod on every file it sees change, and
+# every reload keeps the old build's code for the app's life (herdr-app
+# 0.1.13, app bug #4), so a file-by-file copy (a dozen reloads, most of a
+# half-copied mod) filled a long-running app's JS memory in a day of
+# installs: then every reload failed with Null"null". An unchanged mod
+# isn't touched (no reload at all).
+STAGE="$HOME_DIR/mods/.gitview-install"
+rm -rf "$STAGE" && mkdir -p "$STAGE"
 for m in "${MODS[@]}"; do
-  rm -rf "${HOME_DIR:?}/mods/$m"
-  cp -RL "$ROOT/herdr-app/mods/$m" "$HOME_DIR/mods/$m" # -L: shared files are links in the repo
+  cp -RL "$ROOT/herdr-app/mods/$m" "$STAGE/$m" # -L: shared files are links in the repo
 done
-mkdir -p "$HOME_DIR/mods/gitview/bin"
-install -m 0755 "$BIN_SRC" "$HOME_DIR/mods/gitview/bin/herdr-gitview"
-python3 - "$HOME_DIR/mods/gitview/config.json" "$HOME_DIR/mods/gitview/bin/herdr-gitview" "$APP_BIN" "$HC_BIN" <<'EOF'
+mkdir -p "$STAGE/gitview/bin"
+install -m 0755 "$BIN_SRC" "$STAGE/gitview/bin/herdr-gitview"
+python3 - "$STAGE/gitview/config.json" "$HOME_DIR/mods/gitview/bin/herdr-gitview" "$APP_BIN" "$HC_BIN" <<'EOF'
 import json, sys
 path, bin_, app, hc = sys.argv[1:]
 json.dump({"bin": bin_, "herdr_app": app, "hc": hc}, open(path, "w"), indent=2)
 EOF
-
 for m in "${MODS[@]}"; do
-  "$APP_BIN" check "$HOME_DIR/mods/$m" >/dev/null || die "herdr-app check failed for $m"
+  "$APP_BIN" check "$STAGE/$m" >/dev/null || die "herdr-app check failed for $m"
 done
+CHANGED=()
+for m in "${MODS[@]}"; do
+  # What the app writes into a mod folder (jsconfig.json, .d.ts, hidden
+  # caches) isn't ours to compare.
+  if [ -d "$HOME_DIR/mods/$m" ] && diff -rq -x jsconfig.json -x '*.d.ts' -x '.*' "$STAGE/$m" "$HOME_DIR/mods/$m" >/dev/null 2>&1; then continue; fi
+  CHANGED+=("$m")
+  if [ -d "$HOME_DIR/mods/$m" ]; then mv "$HOME_DIR/mods/$m" "$STAGE/.old-$m"; fi
+  mv "$STAGE/$m" "$HOME_DIR/mods/$m"
+done
+rm -rf "$STAGE"
+say "mods: ${CHANGED[*]:-none changed}"
 
 # --- keys and layout -----------------------------------------------------------------
 "$HOME_DIR/mods/gitview/bin/herdr-gitview" app-setup install \

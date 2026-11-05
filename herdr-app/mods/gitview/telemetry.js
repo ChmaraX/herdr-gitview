@@ -5,8 +5,8 @@
 // with herdr-app/tools/trace.py. Shared (linked; install copies it).
 //
 // Where: <appHome>/data/gitview/trace/. The app's fs has no append, so each
-// copy rewrites its own segment file (at most 512 KB, then a new one) once a
-// second when it has lines, and at once on a warn or a mark; past 40 files
+// copy rewrites its own segment file (at most 128 KB, then a new one) once a
+// second when it has lines, and at once on a warn or a mark; past 160 files
 // the oldest go (about 20 MB). The engine appends its own engine.jsonl
 // there (GITVIEW_TRACE, engine.js).
 //
@@ -17,8 +17,8 @@
 import { appHome, panes, run as appRun, shared } from "herdr";
 import * as fs from "fs/promises";
 
-const SEGMENT = 512 * 1024;
-const FILES = 40;
+const SEGMENT = 128 * 1024;
+const FILES = 160;
 const SNAPSHOT_MS = 10000;
 const SUMMARY_MS = 10000;
 const SLOW_RENDER_MS = 16;
@@ -46,11 +46,15 @@ export function sharedSnapshot(tab) {
   return { sizes, mine };
 }
 
+// The copy shared helpers (gv, run, setHandoff) write through: the last
+// one started in this mod. Held weakly: a hot reload never frees the old
+// build's modules (herdr-app 0.1.13), so whatever module scope holds stays
+// for the app's life; a strong `current` kept each build's last copy (its
+// diff, its trace text) and a day of reloads filled the app's JS memory:
+// every reload then failed with Null"null" (app bug #4).
 let current = null;
 const NONE = { line() {}, warn(text) { console.warn(text); }, flush() {} };
-// The copy shared helpers (gv, run, setHandoff) write through: the last
-// one started in this mod.
-export const tracer = () => current ?? NONE;
+export const tracer = () => current?.deref() ?? NONE;
 
 export class Tracer {
   // where(): {tab, space}; state(): the copy's own state for snapshots.
@@ -66,7 +70,7 @@ export class Tracer {
     this.renders = { n: 0, ms: 0, max: 0, at: Date.now() };
     this.snapAt = 0;
     this.markSeen = shared("gitview.mark")?.id ?? null;
-    current = this;
+    current = new WeakRef(this);
   }
 
   // The copy's task: flushes each second, a render summary each 10 s, and
