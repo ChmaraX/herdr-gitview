@@ -35,19 +35,22 @@ export function liveEditor(tab) {
   return null;
 }
 
-// Where a tab's nvim listens for us: short (a socket path has ~100 bytes).
+// Where a tab's nvim listens for us: short (a socket path has ~100 bytes),
+// and new for each start: an nvim still quitting removes its socket as it
+// exits, which took the next one's when they shared the path. The tab's
+// older ones go (their editor isn't the tab's any more).
 export async function socketFor(tab) {
   let h = 0;
   for (const c of String(tab)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   const dir = `${appHome()}/data/gitview`;
-  const sock = `${dir}/nv-${h.toString(36)}.sock`;
+  const name = `nv-${h.toString(36)}`;
   try {
     await fs.mkdir(dir, { recursive: true });
-    await fs.unlink(sock); // an old one would stop nvim from listening
+    for (const f of await fs.readdir(dir)) if (f === `${name}.sock` || f.startsWith(`${name}-`)) await fs.unlink(`${dir}/${f}`).catch(() => {});
   } catch {
     // none there
   }
-  return sock;
+  return `${dir}/${name}-${(Date.now() % 1e8).toString(36)}.sock`;
 }
 
 // Find the terminal just opened for `rec` in the tab (the app's
