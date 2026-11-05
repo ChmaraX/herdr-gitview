@@ -63,16 +63,18 @@ export function onScreen(tab) {
 
 // The shown space's folder, as the stock Changes panel finds it: the focused
 // pane's live folder, else the space's. `on`: the machine it's on (null:
-// this one). A mod pane (gitview's own diff pane) has no folder, and a
-// dialog over the tab focuses nothing: `keep` (the place before, in the same
-// tab) stays.
+// this one). A mod pane (gitview's own diff pane) has no folder, herdr-nvim's
+// nvim runs in its daemon's folder (not the file's repo), and a dialog over
+// the tab focuses nothing: `keep` (the place before, in the same tab) stays.
 export function location(keep) {
   const f = focused();
   const space = spaces().find((s) => s.active);
   const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
   const on = f?.pane === null ? machineOf(f?.terminal) : space?.machine ?? null;
-  // A mod pane, or nothing in the tab (a dialog over it): the place stays.
-  if (keep && keep.tab === f?.tab && ((pane && !pane.terminal) || (!f?.pane && !f?.terminal))) return keep;
+  // A mod pane, herdr-nvim's nvim, or nothing in the tab (a dialog over
+  // it): the place stays.
+  const nvim = pane?.terminal && herdrNvimPanes(f.tab).some((p) => p.pane === pane.pane);
+  if (keep && keep.tab === f?.tab && ((pane && !pane.terminal) || nvim || (!f?.pane && !f?.terminal))) return keep;
   return {
     cwd: pane?.cwd || f?.cwd || space?.folder || null,
     on,

@@ -367,8 +367,14 @@ export default class GitList extends View {
         for (let i = 0; i < 40 && liveEditor(tab) && !liveEditor(tab).terminal; i++) await cx.sleep(100);
         if (handoffIn(tab)) {
           setHandoff(tab, null);
-          this.closeNvimOf(tab, cx);
-          for (let i = 0; i < 30 && herdrNvimPanes(tab).length; i++) await cx.sleep(100);
+          const nvim = herdrNvimPanes(tab)[0];
+          const row = this.list()?.row();
+          if (nvim && this.tab() === tab && row?.kind === "file" && this.place.opensDiffPane) {
+            this.replaceWithDiff(tab, nvim.pane, () => this.closeNvimOf(tab, cx), cx);
+          } else {
+            this.closeNvimOf(tab, cx);
+            for (let i = 0; i < 30 && herdrNvimPanes(tab).length; i++) await cx.sleep(100);
+          }
           event("list", { leave: "herdr-nvim" });
         } else if (askable(liveEditor(tab))) {
           const ed = liveEditor(tab);
@@ -615,6 +621,25 @@ export default class GitList extends View {
         this.opening = null;
         cx.notify();
       }
+    });
+  }
+
+  // The diff pane in nvim's place, in one turn: split off nvim's pane (the
+  // new pane is in its column, full height), then close it, so the layout
+  // changes once, with no moment where neither shows (the terminals
+  // widening, then narrowing again) or both squeeze. Then the list keeps
+  // the keys, as ensurePane does. A split that didn't take: ensurePane.
+  replaceWithDiff(tab, pane, close, cx) {
+    if (diffPane(tab)) return close();
+    this.opening = { tab, at: Date.now() };
+    run("pane.split", { direction: "right", pane, mod: "gitview-diff", props: { tab } });
+    close();
+    cx.spawn(async (cx) => {
+      for (let i = 0; i < 40 && !diffPane(tab); i++) await cx.sleep(25);
+      this.opening = null;
+      if (diffPane(tab)) this.focusList(cx);
+      else if (this.tab() === tab) this.ensurePane(tab, cx);
+      cx.notify();
     });
   }
 

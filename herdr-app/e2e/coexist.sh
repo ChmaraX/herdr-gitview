@@ -243,12 +243,44 @@ printf 'pub fn other() {}\n' >"$S/src/other.rs"
 expect '"$APP" do gitview.file:src/other.rs >/dev/null && [ "$(view_of $TAB path)" = src/other.rs ]' "a second changed file, src/other.rs" 15
 do_ gitview.click:src/main.rs
 expect 'has_diff $TAB && [ "$(view_of $TAB path)" = src/main.rs ]' "src/main.rs in the diff pane"
+ENTER_AT=$(now_ms)
 do_ gitview-diff.key:enter
 expect '[ -n "$(tab_nvim)" ] && ! has_diff $TAB && [ -n "$(handoff)" ]' "Enter: nvim in the diff's place (handed off)" 30
+nv_pane() { "$APP" ls 2>/dev/null | python3 -c 'import json,sys; t=set(sys.argv[1].split()); print(next((x["pane"] for s in json.load(sys.stdin)["spaces"] for b in s["tabs"] for x in b["terminals"] if x.get("terminal") in t and x.get("pane")), ""))' "$(tab_nvim)"; }
+# As the person sees it: nvim's pane on screen (the app lists it) before j.
+expect '[ -n "$(nv_pane)" ]' "the app shows nvim's pane" 10
+NVPANE=$(nv_pane)
+sleep 0.5
 do_ gitview.key:j
 expect '[ -z "$(tab_nvim)" ]' "j: nvim's pane closes" 15
 expect '[ "$(diff_count)" = 1 ] && [ "$(view_of $TAB path)" = src/other.rs ]' "one diff pane, on the next file" 15
 [ -z "$(handoff)" ] && ok "the handoff is cleared" || fail "the handoff stays: $(handoff)"
+# The swap in one turn (no moment with neither pane, the terminals
+# widening and narrowing again): the split off nvim's pane and its close in
+# the same millisecond; and nvim's focus didn't move the list to its
+# daemon's folder (herdr-nvim's checkout here) between Enter and j.
+sleep 1.5
+python3 - "$TRD" "$NVPANE" "$ENTER_AT" "$S" <<'PY' && ok "j: the diff pane split off nvim's pane and nvim's closed in one turn; the list stayed on the repo" || fail "j's swap or the list's place: see above"
+import glob, json, sys
+d, nv, since, repo = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+lines = []
+for f in glob.glob(d + "/*.jsonl"):
+    for l in open(f, errors="replace"):
+        try: lines.append(json.loads(l))
+        except ValueError: pass
+lines = sorted((l for l in lines if l.get("t", 0) >= since), key=lambda l: l["t"])
+split = [l for l in lines if l.get("kind") == "pane" and l.get("cmd") == "pane.split" and l.get("pane") == nv]
+close = [l for l in lines if l.get("kind") == "pane" and l.get("cmd") == "pane.close" and l.get("pane") == nv]
+moved = [l for l in lines if l.get("kind") == "exec" and l.get("op") == "status" and "--repo " in str(l.get("args", "")) and repo not in str(l.get("args", ""))]
+bad = []
+if not nv: bad.append("nvim's pane id not found")
+if not split: bad.append("no pane.split off nvim's pane %s" % nv)
+if not close: bad.append("no pane.close of nvim's pane %s" % nv)
+if split and close and abs(close[0]["t"] - split[0]["t"]) > 2: bad.append("split and close %d ms apart" % (close[0]["t"] - split[0]["t"]))
+if moved: bad.append("the list loaded another repo: %s" % moved[0].get("args"))
+for b in bad: print("   ", b)
+sys.exit(1 if bad else 0)
+PY
 sleep 2
 [ -z "$(tab_nvim)" ] && [ "$(diff_count)" = 1 ] && [ "$(view_of $TAB path)" = src/other.rs ] && ok "and nothing comes back (no :q restore of src/main.rs)" || fail "after 2 s: nvim '$(tab_nvim)', $(diff_count) diff panes on $(view_of $TAB path)"
 do_ gitview.click:src/main.rs
