@@ -10,17 +10,20 @@
 //    file (the engine finds it; never on another machine).
 // 3. Else the editor the engine picks on the repo's machine (`json editor`:
 //    the config's, $VISUAL, $EDITOR, nvim, vim, vi; here, else the system's
-//    opener), looked up once per repo and machine: a new terminal right of
-//    the diff pane (or of the focused pane), in the repo, `+line` for nvim
-//    and vim kinds; it closes when the editor exits and the diff is back.
+//    opener), looked up once per repo and machine: a new terminal in the
+//    diff pane's place (in cmd-g's tab, right of it), in the repo, `+line`
+//    for nvim and vim kinds; it closes when the editor exits and the diff
+//    comes back.
 //    The system's opener runs without a pane (no line). No editor at all: a
 //    toast with the engine's message, no pane. (The app's `terminal.show`
-//    can't put a terminal in a mod pane, so the diff pane can't become the
-//    editor itself.) In a remote space it runs on that machine.
+//    can't put a terminal in a mod pane, so the editor's terminal opens
+//    right of the diff pane and the diff pane closes, in one turn: it takes
+//    the diff's place, and `:q` brings the diff back.) In a remote space it
+//    runs on that machine.
 
 import { exec, layout, notify, terminals } from "herdr";
 import { event, run } from "./telemetry.js";
-import { setEditor, socketFor, trackEditor } from "./editors.js";
+import { liveEditor, setEditor, socketFor } from "./editors.js";
 import { gv, message, onArgs } from "./engine.js";
 import { setHandoff, viewIn } from "./shared.js";
 import { diffPane } from "./layout.js";
@@ -102,7 +105,6 @@ export async function openNvim(o) {
       if (opened.code !== 0) throw new Error(`${editor.name}: ${(opened.stderr || `exit ${opened.code}`).trim()}`);
       return "system";
     }
-    if (pane) run("pane.focus", { pane: pane.pane });
     const line = editor.kind === "nvim" || editor.kind === "vim" ? [`+${o.line || 1}`] : [];
     // A local nvim also listens where gitview can ask it for unsaved buffers
     // (its own server stays, for the engine to find); the editor is kept with
@@ -112,12 +114,25 @@ export async function openNvim(o) {
     const listen = sock ? ["--cmd", `call serverstart('${sock.replaceAll("'", "''")}')`] : [];
     const before = new Set(terminals().map((t) => t.address));
     event("nvim", { opens: editor.name, tab: o.tab ?? null });
-    run("terminal.open", { argv: [...editor.argv, ...listen, ...line, file], folder: o.root, place: "right" });
-    if (o.tab && o.cx) {
-      const rec = { kind: editor.kind, name: editor.name, bin: editor.argv[0], sock, file, terminal: null };
-      setEditor(o.tab, rec);
-      await trackEditor(o.tab, rec, before, o.cx);
+    // In the diff's place, as herdr-nvim's and as v1's (the diff pane became
+    // nvim): the terminal opens right of the diff pane and the diff pane
+    // closes, in one turn (the layout changes once); quitting the editor
+    // brings the diff back (the handoff, `editor`). Not in cmd-g's tab,
+    // where the diff stays beside it.
+    const replace = Boolean(pane && o.closeDiff && o.view && o.tab);
+    if (replace) {
+      const v = o.view;
+      setHandoff(o.tab, { root: v.root, on: v.on ?? null, path: v.path, section: v.section, commit: v.commit ?? null, line: o.line || 1, showing: viewIn(o.tab)?.showing ?? 0, at: Date.now(), seen: false, editor: true });
     }
+    // Recorded first: closing the diff pane may end the copy running this.
+    // Its terminal: found by liveEditor (the terminals there before aren't it).
+    if (o.tab) setEditor(o.tab, { kind: editor.kind, name: editor.name, bin: editor.argv[0], sock, file, terminal: null, at: Date.now(), before: [...before] });
+    if (pane) run("pane.focus", { pane: pane.pane });
+    run("terminal.open", { argv: [...editor.argv, ...listen, ...line, file], folder: o.root, place: "right" });
+    if (replace) run("pane.close", { pane: pane.pane });
+    // Its terminal, once listed (the list's looks find it too, when this copy
+    // went with the diff pane).
+    for (let i = 0; o.tab && o.cx && i < 30 && !liveEditor(o.tab)?.terminal; i++) await o.cx.sleep(100);
     return "new";
   } catch (e) {
     event("nvim", { failed: message(e) });

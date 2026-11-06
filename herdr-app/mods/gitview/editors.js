@@ -25,13 +25,29 @@ export function setEditor(tab, rec) {
   setShared("gitview.editors", all);
 }
 
-const live = (address) => terminals().some((t) => t.address === address && String(t.state ?? "live").toLowerCase() === "live");
+// Running: "live" (a terminal just started may not say so yet: listed
+// within 3 s of its start counts).
+const live = (address, at = 0) => terminals().some((t) => t.address === address && (String(t.state ?? "live").toLowerCase() === "live" || Date.now() - at < 3000));
 
 // The tab's editor, while its terminal runs (a gone one is forgotten).
+// Its terminal is found here, by whichever copy asks first (the app's
+// terminal.open doesn't say which it started): the diff pane that opened
+// it may be gone by then (the editor took its place).
 export function liveEditor(tab) {
-  const rec = editorIn(tab);
-  if (rec && !rec.terminal) return rec; // not found yet: still starting
-  if (rec && live(rec.terminal)) return rec;
+  let rec = editorIn(tab);
+  if (rec && !rec.terminal) {
+    const t = terminals().find((t) => !(rec.before ?? []).includes(t.address) && (t.argv ?? []).includes(rec.file));
+    if (!t) {
+      if (Date.now() - (rec.at ?? 0) < 10000) return rec; // still starting
+      setEditor(tab, null);
+      return null;
+    }
+    const { before: _, ...found } = rec;
+    rec = { ...found, terminal: t.address };
+    setEditor(tab, rec);
+    return rec; // (just started: maybe not "live" in the list yet)
+  }
+  if (rec && live(rec.terminal, rec.at)) return rec;
   if (rec) setEditor(tab, null);
   return null;
 }
@@ -54,15 +70,6 @@ export async function socketFor(tab) {
   return `${dir}/${name}-${(Date.now() % 1e8).toString(36)}.sock`;
 }
 
-// Find the terminal just opened for `rec` in the tab (the app's
-// terminal.open doesn't say), 3 s at most; then the record is kept.
-export async function trackEditor(tab, rec, before, cx) {
-  for (let i = 0; i < 30; i++) {
-    const t = terminals().find((t) => !before.has(t.address) && (t.argv ?? []).includes(rec.file));
-    if (t) return setEditor(tab, { ...rec, terminal: t.address });
-    await cx.sleep(100);
-  }
-}
 
 // Asking nvim: traced as an exec (op "nvim-ask").
 async function ask(rec, expr) {

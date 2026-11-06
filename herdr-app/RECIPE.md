@@ -96,19 +96,22 @@ of it out and brings back the stock Changes panel.
   (staged or unstaged diffs only); `s`/`u`/`x` act on the shown file; `J`/`K`
   the next or previous file (the list follows); `m` Diff or Preview; `enter`
   the editor at the cursor's line; `esc` clears the selection.
-- **Enter → the editor**:
-  - with herdr-nvim installed, its nvim opens the file at the line and takes
-    the diff pane's place. `:q` brings the diff back on that file with the
-    keys on the list; the file's row shows `in nvim`, and a click on it does
-    the same while nvim keeps the buffer;
-  - moving to another file while nvim is open: herdr-nvim's pane makes way
-    for the new diff (the daemon keeps unsaved edits); an nvim gitview
-    started quits when clean, and stays with "editor has unsaved changes —
-    stays open" when not;
-  - without herdr-nvim: an nvim already in the tab, else the editor
-    configured (`editor` in config.toml, `$VISUAL`, `$EDITOR`, nvim, vim,
-    vi) in a pane right of the diff, else the system's opener; with no editor,
-    a toast says what to install.
+- **Enter → the editor**, which takes the diff pane's place (as v1's diff
+  pane became nvim):
+  - the editor: herdr-nvim's nvim when it's installed; else an nvim already
+    in the tab; else the one configured (`editor` in config.toml, `$VISUAL`,
+    `$EDITOR`, nvim, vim, vi), started in a terminal in the diff's place;
+    else the system's opener, in its own window; with no editor, a toast
+    says what to install;
+  - `:q` brings the diff back on that file with the keys on the list; the
+    file's row shows `in nvim`, and a click on it brings the diff back too
+    (herdr-nvim keeps the buffer; an nvim gitview started quits when clean);
+  - moving to another file: herdr-nvim's pane makes way for the new diff
+    (the daemon keeps unsaved edits); an nvim gitview started quits when
+    clean and its place goes to the new diff, and stays with "editor has
+    unsaved changes — stays open" when not; an editor gitview can't ask
+    (vim) stays, and its diff comes when it quits;
+  - in cmd-g's tab the diff stays, and the editor opens beside it.
 - **Discard** asks first. From Changes it keeps a partly staged file's staged
   part.
 - **Commit** commits what's staged, else everything (`git add -A`); with
@@ -195,10 +198,12 @@ of it out and brings back the stock Changes panel.
     swaps each changed mod in with one rename and leaves unchanged ones
     alone;
   - `pane.go` does nothing in a window that never drew.
-- `terminal.show` can't put a terminal in a mod pane, so the editor opens
-  beside the diff pane, not in it.
-- Swap the diff pane for herdr-nvim's pane in one turn (split off it, then
-  close it), or the terminals widen and narrow again.
+- `terminal.show` can't put a terminal in a mod pane, so the editor's
+  terminal opens right of the diff pane and the diff pane closes, in one
+  turn; the copy that ran Enter may be the closing diff pane, so the
+  editor's record is written first and any copy finds its terminal.
+- Swap panes in one turn (open or split the new one off the old one, then
+  close the old), or the terminals widen and narrow again.
 - herdr-nvim runs in its daemon's folder: don't take its pane's folder as the
   repo.
 - `exec` has a 30s limit and no stdin; every call the engine makes to

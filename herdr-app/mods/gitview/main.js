@@ -13,7 +13,7 @@
 
 import { View } from "gpui-kit";
 import { v_flex, TextareaState } from "gpui-base";
-import { focused, notify, props, shared, theme } from "herdr";
+import { focused, notify, panes, props, shared, theme } from "herdr";
 import { Tracer, event, run } from "./telemetry.js";
 import { endTerminal, gv, labelled, message, onArgs } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
@@ -168,7 +168,7 @@ export default class GitList extends View {
       panesMoved: this.loads.panesMoved(),
       cycle: this.cycle && { was: this.cycle.shown, aside: this.cycle.asideStale() },
       shown,
-      handoff: rec && { seen: rec.seen, nvim: herdrNvimPanes(tab).length > 0, nvimSeen: this.nvimSeen },
+      handoff: rec && { seen: rec.seen, nvim: this.handoffPanes(tab, rec).length > 0, nvimSeen: this.nvimSeen },
       stamp: shown && stampMoved(this.watcher),
       key: ctx?.key,
       wasKey: this.ctx?.key,
@@ -273,8 +273,9 @@ export default class GitList extends View {
     if (!rec) return;
     // Another file shown meanwhile (not the same one written again: a :w
     // there moves its rev, and the view is rewritten): nothing comes back.
-    if (!this.restorable(tab, rec)) return setHandoff(tab, null);
-    const nvim = herdrNvimPanes(tab).length > 0;
+    // An editor gitview started holds the diff's place until it quits.
+    if (!rec.editor && !this.restorable(tab, rec)) return setHandoff(tab, null);
+    const nvim = this.handoffPanes(tab, rec).length > 0;
     this.nvimSeen = nvim;
     if (!rec.seen) {
       if (nvim) setHandoff(tab, { ...rec, seen: true });
@@ -285,6 +286,12 @@ export default class GitList extends View {
     setHandoff(tab, null);
     if (diffPane(tab)) return;
     const list = this.list();
+    // Another file selected while the editor held the diff's place: that
+    // file's diff comes (v1: the preview showed the selection once nvim quit).
+    if (!this.restorable(tab, rec)) {
+      if (list?.row()?.kind === "file" && this.place.opensDiffPane) this.ensurePane(tab, cx);
+      return;
+    }
     const row = list && list.where.root === rec.root && (list.where.commit ?? null) === rec.commit ? list.findFile(rec.path, rec.section) : null;
     // Back on the diff, the keys on the list (v1: :q came back to the list).
     if (row) this.select(row, cx, { line: rec.line });
@@ -305,7 +312,7 @@ export default class GitList extends View {
         // Ours (gitview handed the file over): closed now, its diff shown
         // again when the panel is (followHandoff: nvim's pane is gone).
         setHandoff(tab, { ...rec, seen: true });
-        this.closeNvimOf(tab, cx);
+        if (!rec.editor) this.closeNvimOf(tab, cx); // gitview's editor: closeEditor below
       }
       const ed = liveEditor(tab);
       if (ed) this.closeEditor(tab, ed.name, cx);
@@ -355,23 +362,32 @@ export default class GitList extends View {
   // also ends herdr-core's labelled terminals); two fast moves (one
   // leave at a time; the pane opens for the selection at the end); the
   // closing pane dropping the pane's open (it opens after nvim's pane went).
-  leaveEditor(next, cx) {
+  leaveEditor(next, cx, { force = false } = {}) {
     const tab = this.tab();
     if (!tab) return true;
     const was = liveView(viewIn(tab));
-    if (was && sameFile(was, next)) return true;
+    if (!force && was && sameFile(was, next)) return true;
     if (this.leaving) return false;
     const opening = this.loads.names().includes("nvim");
     const ed = liveEditor(tab);
+    const held = handoffIn(tab);
     const askable = (ed) => Boolean(ed?.terminal && ed.kind === "nvim" && ed.sock);
     const starting = Boolean(ed && !ed.terminal && ed.kind === "nvim" && ed.sock); // its terminal not found yet
-    if (!opening && !starting && !handoffIn(tab) && !askable(ed)) return true;
+    // An editor in the diff's place that can't be asked about unsaved work
+    // (vim, another terminal editor): it stays, and no diff opens beside
+    // it; quitting it brings the selected file's diff (followHandoff).
+    if (held?.editor && ed && !opening && !starting && !askable(ed)) {
+      this.flash.set(`${ed.name} is open: quit it to see the diff`);
+      return false;
+    }
+    if (!opening && !starting && !held && !askable(ed)) return true;
     this.leaving = true;
     cx.spawn(async (cx) => {
       try {
         for (let i = 0; opening && i < 100 && this.loads.names().includes("nvim"); i++) await cx.sleep(100);
         for (let i = 0; i < 40 && liveEditor(tab) && !liveEditor(tab).terminal; i++) await cx.sleep(100);
-        if (handoffIn(tab)) {
+        const rec = handoffIn(tab);
+        if (rec && !rec.editor) {
           setHandoff(tab, null);
           const nvim = herdrNvimPanes(tab)[0];
           const row = this.list()?.row();
@@ -388,9 +404,16 @@ export default class GitList extends View {
           event("list", { leave: ed.name, state });
           if (state === "dirty") return notify({ title: "gitview", body: "editor has unsaved changes — stays open", level: "info" });
           if (state === "clean") {
+            if (rec?.editor) setHandoff(tab, null);
+            await quitEditor(ed, "qa");
+            // In the diff's place: the diff takes it back in one turn.
+            const p = panes().find((p) => p.tab === tab && p.terminal === ed.terminal);
+            const row = this.list()?.row();
+            if (p && this.tab() === tab && row?.kind === "file" && this.place.opensDiffPane) {
+              this.replaceWithDiff(tab, p.pane, () => run("pane.close", { pane: p.pane }), cx);
+            }
             // That nvim gone (not a new one Enter in the diff pane started
             // meanwhile: its record stays).
-            await quitEditor(ed, "qa");
             const mine = () => editorIn(tab)?.terminal === ed.terminal;
             for (let i = 0; i < 30 && mine() && liveEditor(tab); i++) await cx.sleep(100);
             if (mine()) setEditor(tab, null);
@@ -408,6 +431,14 @@ export default class GitList extends View {
     return false;
   }
 
+  // What holds the file the handoff gave away: herdr-nvim's panes, or the
+  // pane of the editor gitview started in the diff's place.
+  handoffPanes(tab, rec) {
+    if (!rec?.editor) return herdrNvimPanes(tab);
+    const t = liveEditor(tab)?.terminal;
+    return t ? panes().filter((p) => p.tab === tab && p.terminal === t) : [];
+  }
+
   // The handoff can still bring its diff back: no other file shown since.
   restorable(tab, rec) {
     return (viewIn(tab)?.showing ?? 0) === rec.showing;
@@ -419,6 +450,9 @@ export default class GitList extends View {
   bringBack(row, cx) {
     const tab = this.tab();
     const rec = handoffIn(tab);
+    // gitview's own editor: it quits when clean (else stays and says so),
+    // and the diff takes its place (leaveEditor).
+    if (rec?.editor) return void this.leaveEditor(this.list().viewFor(row), cx, { force: true });
     setHandoff(tab, null);
     for (const p of herdrNvimPanes(tab)) run("pane.close", { pane: p.pane });
     this.select(row, cx, { line: rec?.line ?? null, focusPane: true });
