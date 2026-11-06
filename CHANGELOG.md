@@ -3,6 +3,13 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0](https://github.com/ChmaraX/herdr-gitview/compare/v0.4.0...v0.5.0) (2026-11-06)
+
+
+### Features
+
+* Herdr desktop app support ([#17](https://github.com/ChmaraX/herdr-gitview/issues/17)) ([9150022](https://github.com/ChmaraX/herdr-gitview/commit/9150022864cf3dd043ae097dd82ffff1f654feb5))
+
 ## [0.4.0](https://github.com/ChmaraX/herdr-gitview/compare/v0.3.1...v0.4.0) (2026-10-20)
 
 
