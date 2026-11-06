@@ -179,7 +179,7 @@ fail() {
     echo "--- shared"; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({k:v for k,v in d.items() if k.startswith("gitview")}, indent=1)[:4000])' "$HERDR_APP_HOME/shared.json"
     for t in $(terms | awk '{print $1}'); do echo "--- screen $t"; screen "$t" | head -40; done
     echo "--- gitview log"; tail -40 "$GV_LOG"; echo "--- app log"; tail -20 "$BASE/app.log"
-    echo "--- the mods' lines in the app log"; grep -a "gitview" "$BASE/app.log" | grep -v "asking to discard" | tail -20
+    echo "--- the mods' lines in the app log"; grep -a "gitview" "$BASE/app.log" | tail -20
   } >>"$LOG" 2>&1 || true
   shot FAIL || true
   [ -z "${E2E_KEEP:-}" ] || { echo "kept: source $BASE/env.sh" | tee -a "$LOG"; trap - EXIT; }
@@ -353,13 +353,14 @@ if [ -z "${GITVIEW_BIN:-}" ]; then
 fi
 
 # The discard confirm runs `<mod>.discard:<one-time token>`, and the mod
-# logs the token when it asks: run what the dialog's Confirm runs ($1: the
+# keeps the token in shared gitview.discards when it asks: run what the dialog's Confirm runs ($1: the
 # mod), then close the dialog.
 LAST_CONFIRM=
-last_confirm() { grep -a -o "$1\.discard:[a-z0-9]*" "$BASE/app.log" | tail -1; }
+last_confirm() { shared "next(('$1.discard:'+k for k, r in sorted(s.get('gitview.discards', {}).items(), key=lambda kr: -kr[1]['at']) if r['mod'] == '$1'), '')"; }
 confirm_discard() {
-  until_ '[ -n "$(last_confirm $1)" ] && [ "$(last_confirm $1)" != "$LAST_CONFIRM" ]' 5 || fail "no discard confirm from $1"
-  LAST_CONFIRM=$(last_confirm "$1")
+  local mod=$1 # until_ evals its condition, where $1 is the condition itself
+  until_ '[ -n "$(last_confirm $mod)" ] && [ "$(last_confirm $mod)" != "$LAST_CONFIRM" ]' 5 || fail "no discard confirm from $mod"
+  LAST_CONFIRM=$(last_confirm "$mod")
   do_ "$LAST_CONFIRM"
   do_ overlay.close
 }

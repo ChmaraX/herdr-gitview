@@ -89,6 +89,12 @@ export default class GitList extends View {
     // drawn, but its timers run.
     this.kick = debounced(cx, 0, (cx) => this.notice(cx));
     cx.timer.every(300, (cx) => {
+      const r = this.reviveAt;
+      if (r && Date.now() >= r.due) {
+        this.reviveAt = null;
+        this.loads.revive(cx, r.before);
+        cx.notify();
+      }
       if (!this.stale()) return;
       this.notice(cx);
       cx.notify();
@@ -229,7 +235,7 @@ export default class GitList extends View {
     }
     if (!["stage", "unstage", "discard"].includes(a.op) || !v || v.commit) return answer(tab, a.seq);
     this.act([a.op, "--section", v.section, "--", v.path], { root: v.root, on: v.on }, cx, { tab, seq: a.seq });
-    if (a.op === "discard") this.confirmClosing(cx); // the pane's confirm
+    if (a.op === "discard") this.confirmClosing(); // the pane's confirm
   }
 
   // ---- the handoff to herdr-nvim ----------------------------------------------
@@ -736,20 +742,17 @@ export default class GitList extends View {
     const p = takeDiscard("gitview", command);
     if (!p) return;
     this.act(["discard", "--section", p.section, "--", ...p.paths], p.where, cx);
-    this.confirmClosing(cx);
+    this.confirmClosing();
   }
 
   // The confirm dialog (a mod) closes right after its command: app bug #1
   // can drop the discard's exec then, though no pane closed. A discard
   // still running 1.5 s on is taken as lost (Loads.revive), and the repo
-  // shown as it is (onLost).
-  confirmClosing(cx) {
+  // shown as it is (onLost). From the 300 ms timer, not a task's sleep: a
+  // sleep resumed after that drop was seen never to come back.
+  confirmClosing() {
     const at = Date.now();
-    cx.spawn(async (cx) => {
-      await cx.sleep(1500);
-      this.loads.revive(cx, at + 1000);
-      cx.notify();
-    });
+    this.reviveAt = { due: at + 1500, before: at + 1000 };
   }
 
   // One op on the repo the list came from, then a refresh.

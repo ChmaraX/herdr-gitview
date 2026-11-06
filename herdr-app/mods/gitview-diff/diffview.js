@@ -91,7 +91,7 @@ function contrast(a, b) {
 const hex = (c) => `#${c.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, "0")).join("")}`;
 
 // `fg` as drawn on the layers in `behind` (bottom first, over t.background).
-export function readable(fg, behind, t) {
+function readable(fg, behind, t) {
   const key = `${fg}|${behind.join(",")}|${t.background}|${t.foreground}`;
   if (legible.has(key)) return legible.get(key);
   let out = fg;

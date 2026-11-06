@@ -32,7 +32,7 @@ const round = (ms) => Math.round(ms * 10) / 10;
 // (views, handoff, editor, ask and answer hold paths, not text). Notes:
 // a count. The commit message is never in shared.
 const KEYS = ["views", "ask", "answer", "handoff", "editors", "cursor", "discards", "notes", "origins", "own", "changed", "ignored", "keys", "tree", "mark", "trace"];
-export function sharedSnapshot(tab) {
+function sharedSnapshot(tab) {
   const sizes = {};
   const mine = {};
   for (const k of KEYS) {

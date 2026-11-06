@@ -32,7 +32,6 @@ export function confirmDiscard(mod, what, payload) {
   const all = Object.fromEntries(Object.entries(shared("gitview.discards") ?? {}).filter(([, r]) => now - r.at < DISCARD_MS));
   setShared("gitview.discards", { ...all, [token]: { mod, at: now, payload } });
   tracer().line("state", { discardAsk: token, what: String(what).slice(0, 200) });
-  console.log(`${mod}: asking to discard ${what} (${mod}.discard:${token})`);
   openOverlay({
     mod: "confirm",
     kind: "dialog",

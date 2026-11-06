@@ -189,7 +189,7 @@ export function debounced(cx, ms, work) {
 
 // Whether a mod pane went since the last look (any mod's: the app's drop
 // of in-flight execs isn't limited to ours); `changed()` only peeks.
-export class ModPanes {
+class ModPanes {
   constructor() {
     this.ids = new Set(this.now());
   }

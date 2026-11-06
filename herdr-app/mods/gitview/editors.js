@@ -113,7 +113,7 @@ export async function closeEditorOf(tab, { cancel = [], after = [] } = {}) {
 // Save / Discard / Cancel and does it itself (the list may be hidden, and
 // hidden copies get no commands). `cancel`: steps run on Cancel (show the
 // panel again); `after`: steps after Save or Discard (close cmd-g's tab).
-export function askToClose(rec, cancel, after = []) {
+function askToClose(rec, cancel, after = []) {
   const quit = (how) => [{ exec: [rec.bin, quitArgv(rec, how)] }, ...after];
   openOverlay({
     mod: "gitview-ask",

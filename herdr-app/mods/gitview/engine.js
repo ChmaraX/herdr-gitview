@@ -9,7 +9,7 @@ import { shortArgs, traceDir, tracer, tracing } from "./telemetry.js";
 let config = null;
 
 // Written by install: { bin, herdr_app, hc }.
-export async function loadConfig() {
+async function loadConfig() {
   if (config) return config;
   const text = await readTextFile(`${appHome()}/mods/gitview/config.json`);
   if (!text) throw new Error("gitview isn't installed: run herdr-app/install.sh from the herdr-gitview repo");
@@ -18,7 +18,7 @@ export async function loadConfig() {
 }
 
 // The environment the binary needs under the app (it can't see appHome()).
-export function hostEnv(cfg) {
+function hostEnv(cfg) {
   const env = ["GITVIEW_HOST=app", `HERDR_APP_HOME=${appHome()}`];
   if (cfg.herdr_app) env.push(`GITVIEW_HERDR_APP=${cfg.herdr_app}`);
   if (cfg.hc) env.push(`GITVIEW_HC=${cfg.hc}`);

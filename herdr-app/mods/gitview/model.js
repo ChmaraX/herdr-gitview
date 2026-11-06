@@ -76,7 +76,7 @@ export function parentDirs(row) {
 }
 
 // The pane header's scope tag.
-export function scopeLabel(entry, where) {
+function scopeLabel(entry, where) {
   if (where.commit) return `commit ${where.short}`;
   if (entry.section === "branch") return `vs ${where.base?.label ?? "base"}`;
   return entry.cached ? "staged" : "uncommitted";

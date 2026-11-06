@@ -9,7 +9,7 @@ import { opsFor } from "./actions.js";
 import { icon, iconButton, letter, lineCounts, pathLabel } from "./chrome.js";
 
 export const ROW = 28;
-export const HEADER = 28;
+const HEADER = 28;
 const INDENT = 16;
 
 export const rowSize = (row) => (row.kind === "header" ? HEADER : ROW);

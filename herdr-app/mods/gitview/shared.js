@@ -221,7 +221,7 @@ export function notesOf(key) {
   return (shared("gitview.notes") ?? {})[key] ?? [];
 }
 
-export function setNotes(key, list) {
+function setNotes(key, list) {
   const all = { ...(shared("gitview.notes") ?? {}) };
   if (list.length) all[key] = list;
   else delete all[key];

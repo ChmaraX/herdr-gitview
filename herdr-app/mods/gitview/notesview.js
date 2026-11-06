@@ -22,7 +22,7 @@ export function deleteNote(v, note) {
 }
 
 // The section a note was written in (notes from before `section`: by side).
-export const noteSection = (note) => note.section ?? (note.cached ? "staged" : "changes");
+const noteSection = (note) => note.section ?? (note.cached ? "staged" : "changes");
 
 // The note's file in the diff pane, its cursor on the note: the side it was
 // written on, else (staged or unstaged since) wherever the file is now.

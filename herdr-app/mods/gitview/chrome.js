@@ -9,7 +9,7 @@ import { LETTER_COLOR } from "./model.js";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ICONS = "mods/gitview/icons";
-export const HEADER_H = 42;
+const HEADER_H = 42;
 
 // A square icon button (default 22 px) with a tooltip. `onPress(cx)`.
 export function iconButton(t, id, icon, tip, onPress, { size = 22 } = {}) {
@@ -227,7 +227,7 @@ const SYMBOL = {
   enter: "⏎", escape: "esc", tab: "⇥", up: "↑", down: "↓", left: "←", right: "→",
   space: "␣", pageup: "PgUp", pagedown: "PgDn", home: "Home", end: "End",
 };
-export const capText = (k) => SYMBOL[k] ?? k;
+const capText = (k) => SYMBOL[k] ?? k;
 const MONO = "JetBrains Mono";
 // Letters in the mono font; the symbols (⏎ ↑ ←) read better in the UI's.
 const symbolic = (k) => k.length > 1 && capText(k).length === 1;
@@ -253,7 +253,7 @@ export function keycap(t, k, { size = 10.5 } = {}) {
 }
 
 // A key table entry's keycaps then its label.
-export function keyChip(t, entry) {
+function keyChip(t, entry) {
   return h_flex()
     .flex_none()
     .gap(4)

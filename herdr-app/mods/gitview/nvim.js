@@ -37,7 +37,7 @@ function layoutTerminals(node, out = []) {
 const editors = new Map();
 const editorKey = (root, on) => `${on ?? ""}:${root}`;
 
-export async function editorFor(root, on) {
+async function editorFor(root, on) {
   const hit = editors.get(editorKey(root, on));
   if (hit && (hit.editor || Date.now() - hit.at < 30000)) return hit;
   const r = await gv(["editor", "--repo", root, ...onArgs(on)]);
