@@ -764,18 +764,8 @@ export default class GitList extends View {
     this.acting = asked;
     this.loads.run(cx, args[0], async (cx) => {
       try {
-        const op = [args[0], "--repo", where.root, "--root", ...onArgs(where.on), ...args.slice(1)];
-        // Another git briefly holding the index (a shell prompt's or the
-        // app's own git status): tried again twice, a moment apart.
-        for (let i = 0; ; i++) {
-          try {
-            await gv(op);
-            break;
-          } catch (e) {
-            if (i >= 2 || !/index\.lock': File exists/.test(message(e))) throw e;
-            await cx.sleep(250);
-          }
-        }
+        // (Another git briefly holding the index: the engine tries again.)
+        await gv([args[0], "--repo", where.root, "--root", ...onArgs(where.on), ...args.slice(1)]);
       } catch (e) {
         event("list", { opFailed: args[0], error: message(e) });
         notify({ title: "gitview", body: message(e), level: "error" });

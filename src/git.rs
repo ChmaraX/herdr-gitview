@@ -164,9 +164,20 @@ impl Repo {
 
     // ---- command wrappers -------------------------------------------------
 
-    /// Run git, error on non-zero exit with stderr in the message.
+    /// Run git, error on non-zero exit with stderr in the message. A write
+    /// that finds another git holding the index (a shell prompt's status, an
+    /// agent's git) is tried again a moment later, up to 4 times: here, in
+    /// the one process, so a caller that stops waiting (the app can drop an
+    /// exec's reply) still gets the write done.
     fn git(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let out = self.git_lenient(args)?;
+        let mut out = self.git_lenient(args)?;
+        for _ in 0..4 {
+            if out.status.success() || !index_locked(&out.stderr) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            out = self.git_lenient(args)?;
+        }
         if !out.status.success() {
             bail!(
                 "git {args:?} failed: {}",
@@ -1280,6 +1291,13 @@ fn kind_from_xy(xy: &str) -> ChangeKind {
         'R' => ChangeKind::Renamed,
         _ => ChangeKind::Modified,
     }
+}
+
+/// git's stderr when another git holds the index: `Unable to create
+/// '…/.git/index.lock': File exists.`
+fn index_locked(stderr: &[u8]) -> bool {
+    let s = String::from_utf8_lossy(stderr);
+    s.contains("index.lock") && s.contains("File exists")
 }
 
 fn stage_from_xy(xy: &str) -> StageState {

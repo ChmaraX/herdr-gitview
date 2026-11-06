@@ -849,3 +849,21 @@ fn polling_never_rewrites_the_index() {
     assert!(worktree.is_empty(), "{worktree:?}");
     assert!(branch.is_empty(), "touched but unchanged: {branch:?}");
 }
+
+/// Another git holding the index (a shell prompt's status, an agent's git)
+/// for a moment doesn't fail a stage: the engine tries again. Without the
+/// retry, `git add` fails at once with "index.lock: File exists".
+#[test]
+fn a_write_waits_out_another_gits_index_lock() {
+    let t = fixture("index-lock");
+    write(&t.dir, "base.txt", "one\ntwo\nmore\n");
+    let lock = t.dir.join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let held = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        std::fs::remove_file(lock).unwrap();
+    });
+    t.repo.stage(Path::new("base.txt")).unwrap();
+    held.join().unwrap();
+    assert_eq!(t.repo.staged_count().unwrap(), 1);
+}
