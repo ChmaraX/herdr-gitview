@@ -16,7 +16,7 @@ line you're on. You never leave Herdr.
 > [!TIP]
 > Using the **herdr TUI** (terminal)? Its guide is [TUI.md](TUI.md).
 
-https://github.com/user-attachments/assets/b737f785-00ef-426b-9e1b-e3c21b694762
+<img width="2560" height="1600" alt="image" src="https://github.com/user-attachments/assets/5dd57c9c-fad9-41af-8959-dda3fabc750c" />
 
 ## Features
 
