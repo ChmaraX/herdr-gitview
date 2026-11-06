@@ -46,6 +46,10 @@ jobs:
           cp "target/${{ matrix.target }}/release/herdr-gitview" dist/
           tar -czf "${asset}.tar.gz" -C dist herdr-gitview
           shasum -a 256 "${asset}.tar.gz" > "${asset}.tar.gz.sha256"
+      # The Herdr app's bundle (the binary and the mods), for the root install.sh;
+      # unversioned so releases/latest/download/<name> finds it.
+      - name: app bundle
+        run: herdr-app/bundle.sh "target/${{ matrix.target }}/release/herdr-gitview" "${{ matrix.target }}" .
       - name: upload to release
         uses: softprops/action-gh-release@v2
         with:

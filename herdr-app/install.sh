@@ -5,11 +5,16 @@
 #                                     put gitview in the Changes panel
 #   herdr-app/install.sh --uninstall  undo all of it (the stock Changes panel
 #                                     comes back)
+#   --binary PATH                     a prebuilt herdr-gitview instead of a
+#                                     build (the release bundle's; the root
+#                                     install.sh passes it)
 #
+# Running it again upgrades in place.
 # The Herdr app must be running for the install (it may clone its layout and
 # checks the mods); the uninstall doesn't need it.
 # What it does, in <app home> ($HERDR_APP_HOME, else ~/.config/herdr-app):
-#   - builds herdr-gitview (cargo build --release; or uses $GITVIEW_BIN) and
+#   - builds herdr-gitview (cargo build --release; or uses --binary, else
+#     $GITVIEW_BIN) and
 #     copies it to mods/gitview/bin/herdr-gitview
 #   - copies every mod folder in herdr-app/mods: gitview (the file list, in
 #     the Changes panel and in cmd-g's tab), gitview-diff (the diff pane),
@@ -44,6 +49,17 @@ HOME_DIR="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 
 say() { printf 'gitview: %s\n' "$*"; }
 die() { printf 'gitview: %s\n' "$*" >&2; exit 1; }
+
+UNINSTALL=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --uninstall) UNINSTALL=1 ;;
+    --binary) [ $# -ge 2 ] || die "--binary needs a path"; GITVIEW_BIN=$2; shift ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    *) die "unknown argument $1" ;;
+  esac
+  shift
+done
 
 [ -d "$HOME_DIR" ] || die "no Herdr app home at $HOME_DIR (start the app once, or set HERDR_APP_HOME)"
 
@@ -93,7 +109,7 @@ build() {
   [ -x "$BIN_SRC" ] || die "no binary at $BIN_SRC"
 }
 
-if [ "${1:-}" = "--uninstall" ]; then
+if [ -n "$UNINSTALL" ]; then
   for m in "${MODS[@]}"; do
     ours "$HOME_DIR/mods/$m" || die "$HOME_DIR/mods/$m isn't gitview's; leaving it"
   done
@@ -115,6 +131,7 @@ if [ "${1:-}" = "--uninstall" ]; then
   exit 0
 fi
 
+command -v git >/dev/null 2>&1 || die "git not found: gitview needs git (on macOS: xcode-select --install)"
 build
 find_app_or_die
 HC_BIN="$(command -v hc 2>/dev/null || true)"
@@ -141,11 +158,9 @@ for m in "${MODS[@]}"; do
 done
 mkdir -p "$STAGE/gitview/bin"
 install -m 0755 "$BIN_SRC" "$STAGE/gitview/bin/herdr-gitview"
-python3 - "$STAGE/gitview/config.json" "$HOME_DIR/mods/gitview/bin/herdr-gitview" "$APP_BIN" "$HC_BIN" <<'EOF'
-import json, sys
-path, bin_, app, hc = sys.argv[1:]
-json.dump({"bin": bin_, "herdr_app": app, "hc": hc}, open(path, "w"), indent=2)
-EOF
+json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+printf '{\n  "bin": %s,\n  "herdr_app": %s,\n  "hc": %s\n}\n' \
+  "$(json_str "$HOME_DIR/mods/gitview/bin/herdr-gitview")" "$(json_str "$APP_BIN")" "$(json_str "$HC_BIN")" >"$STAGE/gitview/config.json"
 for m in "${MODS[@]}"; do
   "$APP_BIN" check "$STAGE/$m" >/dev/null || die "herdr-app check failed for $m"
 done
