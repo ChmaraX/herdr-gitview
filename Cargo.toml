@@ -13,9 +13,16 @@ publish = false
 [dependencies]
 anyhow = "1.0.104"
 crossterm = "0.29.0"
+# `deadline`: a program past its deadline is killed with its process group.
+libc = "0.2"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.150"
+# preserve_order: `app-setup` rewrites the person's Herdr layout and keys
+# files; keeping their key order is what makes install + uninstall give the
+# file back byte for byte (and the JSON replies keep their field order).
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
+# `json file`: an image is cached under its content hash.
+sha2 = "0.10.9"
 similar = "3.1.1"
 syntect = { version = "5.3.0", default-features = false, features = ["default-onig"] }
 toml = "1.1.3"

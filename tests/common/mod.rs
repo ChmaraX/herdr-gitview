@@ -6,6 +6,17 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The gitview binary, with its debug log kept out of the person's own
+/// state folder.
+pub fn gitview() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_herdr-gitview"));
+    cmd.env(
+        "HERDR_PLUGIN_STATE_DIR",
+        std::env::temp_dir().join(format!("gitview-test-state-{}", std::process::id())),
+    );
+    cmd
+}
+
 /// A throwaway git repo, removed on drop.
 pub struct TempRepo {
     pub dir: PathBuf,

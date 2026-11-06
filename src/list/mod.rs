@@ -56,7 +56,12 @@ pub fn run() -> Result<()> {
     let mut session = Session::new(app, env, tx.clone(), popup_supported);
 
     if poll_ms > 0 {
-        spawn_poll_thread(tx.clone(), session.shared_handle(), Repo { root }, poll_ms);
+        spawn_poll_thread(
+            tx.clone(),
+            session.shared_handle(),
+            Repo::local(root),
+            poll_ms,
+        );
     }
     // Connect to the preview in the background so a slow/absent preview
     // never blanks or blocks the list UI; the Conn arrives as an event.

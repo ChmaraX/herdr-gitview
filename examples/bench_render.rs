@@ -72,7 +72,7 @@ fn main() {
         // The whole file as one added side: no folds, every line on screen.
         let mut app = PreviewApp::new(
             Config::default(),
-            Repo { root: ".".into() },
+            Repo::local(".".into()),
             Keymap::build(&Default::default()).unwrap(),
         );
         let req = ShowReq {

@@ -1,0 +1,1 @@
+../gitview/nvim.js

@@ -1,20 +1,64 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// debug.log is rotated once it crosses this size, so a long-lived herdr
 /// session (list + preview + repeated toggles, all appending) doesn't grow
 /// without bound.
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
+/// What this process is, as its log lines say (`list`, `json status`);
+/// unset (no line written) until [`init`].
+static MODE: OnceLock<String> = OnceLock::new();
+
+/// Start logging, as `mode`: the binary does, once, first thing. Library
+/// code run without it (the tests, in process) logs nothing, so it never
+/// writes into the person's own log.
+pub fn init(mode: &str) {
+    let _ = MODE.set(mode.to_string());
+}
+
+/// Whether this process is one of the app's (`json`, `app-setup`).
+pub fn is_app() -> bool {
+    MODE.get()
+        .is_some_and(|m| m.starts_with("json") || m.starts_with("app-setup"))
+}
+
 /// Append a line to the debug log. Never fails: a TUI has no stdout to
 /// complain on, so logging is strictly best-effort.
 pub fn log(msg: impl AsRef<str>) {
+    let Some(mode) = MODE.get() else {
+        return;
+    };
     let path = state_dir().join("debug.log");
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    append_with_rotation(&path, MAX_LOG_BYTES, msg.as_ref());
+    append_with_rotation(
+        &path,
+        MAX_LOG_BYTES,
+        &format!("[{mode} {}] {}", std::process::id(), msg.as_ref()),
+    );
+}
+
+/// At most this much of a program's reply goes in a log line.
+const CLIP_BYTES: usize = 300;
+
+/// `s` for a log line: on one line (each newline as `⏎`), and at most
+/// [`CLIP_BYTES`] bytes of it, cut on a char boundary, saying how much
+/// was dropped.
+pub fn clip(s: &str) -> String {
+    let s = s.trim();
+    let mut end = s.len().min(CLIP_BYTES);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = s[..end].replace('\n', "⏎");
+    if end < s.len() {
+        out.push_str(&format!("…(+{} bytes)", s.len() - end));
+    }
+    out
 }
 
 /// Rotate `path` to `path.1` (clobbering any previous one) if it has grown
@@ -25,8 +69,8 @@ pub fn log(msg: impl AsRef<str>) {
 fn append_with_rotation(path: &Path, cap: u64, line: &str) {
     rotate_if_needed(path, cap);
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let mode = std::env::args().nth(1).unwrap_or_else(|| "?".into());
-        let _ = writeln!(file, "[{mode} {}] {}", std::process::id(), line);
+        // One write: lines from processes appending at once never mix.
+        let _ = file.write_all(format!("{line}\n").as_bytes());
     }
 }
 
@@ -106,6 +150,17 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&rotated);
+    }
+
+    #[test]
+    fn a_clipped_reply_is_one_line_and_short_strings_stay_as_they_are() {
+        assert_eq!(clip("ok"), "ok");
+        assert_eq!(clip("{\n  \"a\": 1\n}\n"), "{⏎  \"a\": 1⏎}");
+        // A multibyte char straddling the cut: cut before it, never in it.
+        let padding = "a".repeat(CLIP_BYTES - 1);
+        let out = clip(&format!("{padding}éééééééééé"));
+        assert!(out.starts_with(&padding));
+        assert!(out.ends_with("…(+20 bytes)"), "{out}");
     }
 
     #[test]

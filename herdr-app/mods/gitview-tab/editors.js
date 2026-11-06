@@ -1,0 +1,1 @@
+../gitview/editors.js

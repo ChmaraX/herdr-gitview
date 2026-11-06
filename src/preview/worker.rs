@@ -374,6 +374,36 @@ fn sources(req: &ShowReq) -> Result<(Source, Source), String> {
     })
 }
 
+/// The native app panel's route (`herdr-gitview json diff`), with no cache
+/// or worker: the two sides of `req`'s diff, old and new text, then
+/// [`build_doc`].
+pub fn load_sides(repo: &Repo, req: &ShowReq) -> Result<(String, String), String> {
+    fetch(repo, req).map(|f| (f.old, f.new))
+}
+
+/// The diff made of the sides [`load_sides`] read; nothing else
+/// goes in (with `cfg`'s theme, context lines and tab width). Syntax colors
+/// for the first `rows` rows only: the app sends no more.
+pub fn build_doc(
+    cfg: &Config,
+    req: &ShowReq,
+    old: &str,
+    new: &str,
+    rows: usize,
+) -> render::DiffDoc {
+    let hl = crate::preview::highlight::Highlighter::new(cfg.theme);
+    render::build_within(
+        &req.file,
+        old,
+        new,
+        &hl,
+        cfg.theme,
+        cfg.context_lines,
+        cfg.tab_width,
+        rows,
+    )
+}
+
 /// Read both sides of `req` — every git side in a single `cat-file` call —
 /// stamping each for the cache.
 fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
@@ -390,13 +420,21 @@ fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
     } else {
         match repo.read_blobs(&specs) {
             Ok(blobs) => blobs,
-            // Unsendable path: read each side the slow way, uncached.
+            // Unsendable path: read each side the slow way, uncached. On
+            // another machine only for that: a failed read there (it
+            // dropped) is the diff's error, never a side read as absent.
+            Err(err)
+                if repo.machine != crate::remote::Machine::Local
+                    && !specs.iter().any(|s| s.contains('\n')) =>
+            {
+                return Err(first_line(&format!("{err:#}")));
+            }
             Err(_) => return fetch_uncached(repo, &old_src, &new_src),
         }
     };
     let mut blobs = blobs.into_iter();
-    let mut side = |src: &Source| -> (String, Stamp) {
-        match src {
+    let mut side = |src: &Source| -> Result<(String, Stamp), String> {
+        Ok(match src {
             Source::Rev(revs) => {
                 // Consume this side's answers in full, first present wins.
                 let answers: Vec<_> = blobs.by_ref().take(revs.len()).collect();
@@ -406,11 +444,11 @@ fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
                     None => (String::new(), Stamp::Absent),
                 }
             }
-            Source::Worktree(path) => worktree_side(repo, path),
-        }
+            Source::Worktree(path) => worktree_side(repo, path)?,
+        })
     };
-    let (old, old_stamp) = side(&old_src);
-    let (new, new_stamp) = side(&new_src);
+    let (old, old_stamp) = side(&old_src)?;
+    let (new, new_stamp) = side(&new_src)?;
     Ok(Fetched {
         old,
         new,
@@ -421,16 +459,23 @@ fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
 /// A worktree file, stamped by a hash of the content read: it is in hand
 /// anyway, and unlike mtime+size it can't miss a same-size edit landing
 /// within one timestamp tick.
-fn worktree_side(repo: &Repo, path: &std::path::Path) -> (String, Stamp) {
+fn worktree_side(repo: &Repo, path: &std::path::Path) -> Result<(String, Stamp), String> {
     use std::hash::{Hash, Hasher};
-    match repo.file_in_worktree(path) {
+    Ok(match worktree_file(repo, path)? {
         Some(content) => {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             content.hash(&mut h);
             (content, Stamp::File(h.finish()))
         }
         None => (String::new(), Stamp::Absent),
-    }
+    })
+}
+
+/// A worktree file's text; a read that failed (on another machine) is an
+/// error, never an empty file.
+fn worktree_file(repo: &Repo, path: &std::path::Path) -> Result<Option<String>, String> {
+    repo.file_in_worktree(path)
+        .map_err(|e| first_line(&format!("{e:#}")))
 }
 
 /// The per-side `git show` route, for paths `cat-file --batch` can't take.
@@ -448,7 +493,7 @@ fn fetch_uncached(repo: &Repo, old: &Source, new: &Source) -> Result<Fetched, St
                 }
                 Ok(String::new())
             }
-            Source::Worktree(path) => Ok(repo.file_in_worktree(path).unwrap_or_default()),
+            Source::Worktree(path) => Ok(worktree_file(repo, path)?.unwrap_or_default()),
         }
     };
     Ok(Fetched {

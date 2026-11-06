@@ -16,7 +16,6 @@ use super::app::{self, PreviewApp, ShowReq};
 use super::render;
 use super::telemetry::Telemetry;
 use super::worker::Worker;
-use crate::git::Repo;
 use crate::git::first_line;
 use crate::hostenv::HostEnv;
 use crate::ipc::{Conn, ToList, ToPreview};
@@ -75,13 +74,7 @@ impl Session {
     /// Builds the session and spawns the latest-wins diff worker (real git,
     /// real highlighting — also under test).
     pub fn new(app: PreviewApp, env: HostEnv, tx: Sender<Event>) -> Session {
-        let worker = Worker::spawn(
-            tx.clone(),
-            Repo {
-                root: app.repo.root.clone(),
-            },
-            app.cfg.clone(),
-        );
+        let worker = Worker::spawn(tx.clone(), app.repo.clone(), app.cfg.clone());
         Session {
             app,
             env,
@@ -393,7 +386,7 @@ impl Session {
 
     /// Does the user have an editor configured for git itself?
     fn has_core_editor(&self) -> bool {
-        std::process::Command::new("git")
+        std::process::Command::new(crate::remote::git_bin())
             .arg("-C")
             .arg(&self.app.repo.root)
             .args(["config", "--get", "core.editor"])
@@ -405,28 +398,7 @@ impl Session {
     /// Compose the batched notes and type them into the agent pane's input
     /// (submit optionally presses enter). Returns the agent name on success.
     fn deliver_notes(&self, pane: &str, submit: bool) -> Result<String> {
-        let mut msg = String::new();
-        for note in &self.app.notes {
-            // Multi-line notes keep their line breaks, but continuation
-            // lines are indented so the anchor stays readable in the batch.
-            let text = indent_continuations(&note.text);
-            if note.end == 0 {
-                msg.push_str(&format!("{} — {text}\n", note.file.display()));
-            } else {
-                msg.push_str(&format!(
-                    "{}:{}-{} — {text}\n",
-                    note.file.display(),
-                    note.start,
-                    note.end,
-                ));
-            }
-            if !note.snippet.is_empty() {
-                msg.push_str("```diff\n");
-                msg.push_str(&note.snippet);
-                msg.push_str("```\n");
-            }
-        }
-
+        let msg = notes_message(&self.app.notes);
         let out = std::process::Command::new(&self.env.herdr_bin)
             .args(["pane", "send-text", pane, &msg])
             .output()?;
@@ -454,6 +426,34 @@ impl Session {
             self.conn = None;
         }
     }
+}
+
+/// The message an agent gets for a batch of review notes: each note's
+/// anchor and text, then the diff lines it was written against.
+pub fn notes_message(notes: &[app::Note]) -> String {
+    let mut msg = String::new();
+    for note in notes {
+        // Multi-line notes keep their line breaks, but continuation
+        // lines are indented so the anchor stays readable in the batch.
+        let text = indent_continuations(&note.text);
+        if note.end == 0 {
+            msg.push_str(&format!("{} — {text}\n", note.file.display()));
+        } else {
+            msg.push_str(&format!(
+                "{}:{}-{} — {text}\n",
+                note.file.display(),
+                note.start,
+                note.end,
+            ));
+        }
+        if !note.snippet.is_empty() {
+            msg.push_str("```diff\n");
+            msg.push_str(&note.snippet);
+            msg.push_str("```\n");
+        }
+    }
+
+    msg
 }
 
 /// Keep a note's line breaks but indent everything after the first line, so

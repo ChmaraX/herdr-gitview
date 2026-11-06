@@ -22,9 +22,7 @@ const H: u16 = 12;
 fn app() -> PreviewApp {
     let cfg = Config::default();
     let keys = Keymap::build(&HashMap::new()).unwrap();
-    let repo = Repo {
-        root: PathBuf::from("."),
-    };
+    let repo = Repo::local(PathBuf::from("."));
     PreviewApp::new(cfg, repo, keys)
 }
 

@@ -174,6 +174,13 @@ impl DiffDoc {
         true
     }
 
+    /// `text` with the palette's tints as their roles' tags ([`Tint::of`]
+    /// reads them back): the same lines and spans, for a host to paint in
+    /// its own theme.
+    pub fn tagged_text(&self) -> Text<'static> {
+        to_text(&self.rows, &Palette::tagged(), self.default_fg).0
+    }
+
     fn rebuild(&mut self) {
         let (text, line_rows) = to_text(&self.rows, &Palette::new(self.theme), self.default_fg);
         self.text = text;
@@ -181,41 +188,117 @@ impl DiffDoc {
     }
 }
 
-/// Colors for the diff chrome, themed light or dark to match the syntax theme.
+/// The diff chrome's tints by role, for hosts that paint diffs in their own
+/// theme's colors (the Herdr app's native panel) instead of the palette's:
+/// [`DiffDoc::tagged_text`] carries [`Tint::tag`] where the palette's colors
+/// would be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tint {
+    Ins,
+    Del,
+    InsEmph,
+    DelEmph,
+    Gutter,
+    Fold,
+    FoldFg,
+}
+
+impl Tint {
+    const ALL: [Tint; 7] = [
+        Tint::Ins,
+        Tint::Del,
+        Tint::InsEmph,
+        Tint::DelEmph,
+        Tint::Gutter,
+        Tint::Fold,
+        Tint::FoldFg,
+    ];
+
+    /// The color standing for this tint in a tagged text: an indexed color,
+    /// which nothing else in a diff is (syntax colors are RGB, the change
+    /// bars red and green), so none is ever mistaken for one.
+    fn tag(self) -> Color {
+        Color::Indexed(self as u8)
+    }
+
+    /// The tint a tagged text's color stands for.
+    pub fn of(color: Color) -> Option<Tint> {
+        match color {
+            Color::Indexed(n) => Tint::ALL.get(usize::from(n)).copied(),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Tint::Ins => "ins",
+            Tint::Del => "del",
+            Tint::InsEmph => "ins_emph",
+            Tint::DelEmph => "del_emph",
+            Tint::Gutter => "gutter",
+            Tint::Fold => "fold",
+            Tint::FoldFg => "fold_fg",
+        }
+    }
+}
+
+/// Colors for the diff chrome, themed light or dark to match the syntax
+/// theme, or tagged by role ([`Palette::tagged`]).
 struct Palette {
-    ins_bg: Rgb,
-    del_bg: Rgb,
-    ins_emph_bg: Rgb,
-    del_emph_bg: Rgb,
-    gutter: Rgb,
-    fold_fg: Rgb,
-    fold_bg: Rgb,
+    ins_bg: Color,
+    del_bg: Color,
+    ins_emph_bg: Color,
+    del_emph_bg: Color,
+    gutter: Color,
+    fold_fg: Color,
+    fold_bg: Color,
 }
 
 impl Palette {
     fn new(theme: crate::config::Theme) -> Palette {
-        if theme.is_light() {
-            // GitHub-web-like tints.
-            Palette {
-                ins_bg: (0xe6, 0xff, 0xec),
-                del_bg: (0xff, 0xeb, 0xe9),
-                ins_emph_bg: (0xab, 0xf2, 0xbc),
-                del_emph_bg: (0xff, 0xc0, 0xc0),
-                gutter: (0x9a, 0xa0, 0xa6),
-                fold_fg: (0x7a, 0x80, 0x89),
-                fold_bg: (0xdf, 0xe3, 0xea),
-            }
-        } else {
-            // Catppuccin-ish tints for dark terminals.
-            Palette {
-                ins_bg: (0x1f, 0x3a, 0x2a),
-                del_bg: (0x45, 0x23, 0x2f),
-                ins_emph_bg: (0x30, 0x55, 0x3f),
-                del_emph_bg: (0x6e, 0x34, 0x46),
-                gutter: (0x6c, 0x70, 0x86),
-                fold_fg: (0x8a, 0x8e, 0xa3),
-                fold_bg: (0x2a, 0x2b, 0x3c),
-            }
+        let rgb = |t: Tint| -> Color {
+            let (r, g, b) = if theme.is_light() {
+                // GitHub-web-like tints.
+                match t {
+                    Tint::Ins => (0xe6, 0xff, 0xec),
+                    Tint::Del => (0xff, 0xeb, 0xe9),
+                    Tint::InsEmph => (0xab, 0xf2, 0xbc),
+                    Tint::DelEmph => (0xff, 0xc0, 0xc0),
+                    Tint::Gutter => (0x9a, 0xa0, 0xa6),
+                    Tint::FoldFg => (0x7a, 0x80, 0x89),
+                    Tint::Fold => (0xdf, 0xe3, 0xea),
+                }
+            } else {
+                // Catppuccin-ish tints for dark terminals.
+                match t {
+                    Tint::Ins => (0x1f, 0x3a, 0x2a),
+                    Tint::Del => (0x45, 0x23, 0x2f),
+                    Tint::InsEmph => (0x30, 0x55, 0x3f),
+                    Tint::DelEmph => (0x6e, 0x34, 0x46),
+                    Tint::Gutter => (0x6c, 0x70, 0x86),
+                    Tint::FoldFg => (0x8a, 0x8e, 0xa3),
+                    Tint::Fold => (0x2a, 0x2b, 0x3c),
+                }
+            };
+            Color::Rgb(r, g, b)
+        };
+        Palette::of(rgb)
+    }
+
+    /// Every tint as its role's tag.
+    fn tagged() -> Palette {
+        Palette::of(Tint::tag)
+    }
+
+    fn of(color: impl Fn(Tint) -> Color) -> Palette {
+        Palette {
+            ins_bg: color(Tint::Ins),
+            del_bg: color(Tint::Del),
+            ins_emph_bg: color(Tint::InsEmph),
+            del_emph_bg: color(Tint::DelEmph),
+            gutter: color(Tint::Gutter),
+            fold_fg: color(Tint::FoldFg),
+            fold_bg: color(Tint::Fold),
         }
     }
 }
@@ -263,9 +346,34 @@ pub fn build(
     context_lines: usize,
     tab_width: usize,
 ) -> DiffDoc {
+    build_within(
+        path,
+        old,
+        new,
+        hl,
+        theme,
+        context_lines,
+        tab_width,
+        usize::MAX,
+    )
+}
+
+/// [`build`], with syntax colors for the first `rows` rows only (the rest
+/// stay plain): for a caller that shows no more than those.
+#[allow(clippy::too_many_arguments)]
+pub fn build_within(
+    path: &Path,
+    old: &str,
+    new: &str,
+    hl: &Highlighter,
+    theme: crate::config::Theme,
+    context_lines: usize,
+    tab_width: usize,
+    rows: usize,
+) -> DiffDoc {
     let mut doc = build_plain(path, old, new, hl, theme, context_lines, tab_width);
     if let Some(h) = doc
-        .highlight_job()
+        .highlight_job_within(rows)
         .and_then(|job| job.run(hl, &mut || true))
     {
         doc.apply_highlights(&h);
@@ -709,8 +817,8 @@ const GUTTER_CHARS: u32 = 6;
 /// `old new marker` gutter, tinted backgrounds on change lines, stronger tint
 /// on emphasized ranges.
 fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> (Text<'static>, Vec<usize>) {
-    let gutter_style = Style::new().fg(rgb(p.gutter));
-    let fold_style = Style::new().fg(rgb(p.fold_fg));
+    let gutter_style = Style::new().fg(p.gutter);
+    let fold_style = Style::new().fg(p.fold_fg);
     let mut lines = Vec::with_capacity(rows.len());
     let mut line_rows = Vec::with_capacity(rows.len());
     for (row_idx, row) in rows.iter().enumerate() {
@@ -719,7 +827,7 @@ fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> (Text<'static>, Vec<us
                 format!("  ▸ ⋯ {} unchanged lines — click to expand", hidden.len()),
                 fold_style,
             ))
-            .style(Style::new().bg(rgb(p.fold_bg))),
+            .style(Style::new().bg(p.fold_bg)),
             Row::Context {
                 old_no: _,
                 new_no,
@@ -730,7 +838,7 @@ fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> (Text<'static>, Vec<us
                 Line::from(spans)
             }
             Row::Deletion { old_no, code, .. } => {
-                let bar_style = Style::new().fg(Color::Red).bg(rgb(p.del_bg));
+                let bar_style = Style::new().fg(Color::Red).bg(p.del_bg);
                 let mut spans = vec![
                     Span::styled("▌".to_string(), bar_style),
                     Span::styled(format!("{old_no:>4} "), gutter_style),
@@ -739,7 +847,7 @@ fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> (Text<'static>, Vec<us
                 line_with_bg(spans, p.del_bg)
             }
             Row::Insertion { new_no, code, .. } => {
-                let bar_style = Style::new().fg(Color::Green).bg(rgb(p.ins_bg));
+                let bar_style = Style::new().fg(Color::Green).bg(p.ins_bg);
                 let mut spans = vec![
                     Span::styled("▌".to_string(), bar_style),
                     Span::styled(format!("{new_no:>4} "), gutter_style),
@@ -765,11 +873,11 @@ fn to_text(rows: &[Row], p: &Palette, default_fg: Rgb) -> (Text<'static>, Vec<us
 
 /// A line's syntax runs → spans (one default-color span while it has
 /// none), with an optional background tint.
-fn paint(code: &Code, bg: Option<Rgb>, default_fg: Rgb) -> Vec<Span<'static>> {
+fn paint(code: &Code, bg: Option<Color>, default_fg: Rgb) -> Vec<Span<'static>> {
     let span = |text: &str, color: Rgb| {
         let mut style = Style::new().fg(rgb(color));
         if let Some(bg) = bg {
-            style = style.bg(rgb(bg));
+            style = style.bg(bg);
         }
         Span::styled(text.to_string(), style)
     };
@@ -780,8 +888,8 @@ fn paint(code: &Code, bg: Option<Rgb>, default_fg: Rgb) -> Vec<Span<'static>> {
 }
 
 /// Extend a change line's background across the full width by styling the line.
-fn line_with_bg(spans: Vec<Span<'static>>, bg: Rgb) -> Line<'static> {
-    Line::from(spans).style(Style::new().bg(rgb(bg)))
+fn line_with_bg(spans: Vec<Span<'static>>, bg: Color) -> Line<'static> {
+    Line::from(spans).style(Style::new().bg(bg))
 }
 
 /// Re-style the emphasized char ranges of a change line with a stronger
@@ -790,9 +898,8 @@ fn repaint_emphasis(
     line: Line<'static>,
     prefix: u32,
     ranges: &[CharRange],
-    emph_bg: Rgb,
+    bg: Color,
 ) -> Line<'static> {
-    let bg = rgb(emph_bg);
     let style = line.style;
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut pos: u32 = 0; // char position across the whole line
@@ -853,6 +960,39 @@ mod tests {
             3,
             4,
         )
+    }
+
+    #[test]
+    fn a_syntax_color_equal_to_a_tint_stays_a_color_in_the_tagged_text() {
+        let mut d = doc("a\n", "b\n");
+        let del = Palette::new(crate::config::Theme::Dark).del_bg;
+        let Color::Rgb(r, g, b) = del else {
+            panic!("the palette is RGB")
+        };
+        for row in &mut d.rows {
+            if let Some((_, _, code)) = row.code_mut() {
+                code.runs = Some(vec![Run {
+                    text: code.text.clone(),
+                    color: (r, g, b),
+                }]);
+            }
+        }
+        let text = d.tagged_text();
+        assert_eq!(d.marker_text_of_line(0).as_deref(), Some("-a"));
+        let line = &text.lines[0];
+        assert_eq!(line.style.bg.and_then(Tint::of), Some(Tint::Del));
+        let code = line.spans.last().unwrap();
+        assert_eq!(code.content, "a");
+        assert_eq!(code.style.fg, Some(del), "the syntax color, as RGB");
+        assert_eq!(code.style.bg.and_then(Tint::of), Some(Tint::Del));
+        // Same lines and text as what the TUI draws.
+        let words = |t: &Text| -> Vec<String> {
+            t.lines
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+                .collect()
+        };
+        assert_eq!(words(&text), words(&d.text));
     }
 
     #[test]

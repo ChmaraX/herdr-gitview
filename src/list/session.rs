@@ -87,6 +87,7 @@ pub struct Session {
 impl Session {
     pub fn new(mut app: App, env: HostEnv, tx: Sender<Event>, popup_supported: bool) -> Session {
         app.nvim_server = env.nvim_server();
+        app.in_herdr = env.in_herdr();
         let shared = Arc::new(Mutex::new(Shared {
             scope: app.scope,
             merge_base: app.merge_base.clone(),
@@ -650,9 +651,7 @@ impl Session {
         };
         self.app.base_job = app::BaseJob::Running { then, since };
         let tx = self.tx.clone();
-        let repo = crate::git::Repo {
-            root: self.app.repo.root.clone(),
-        };
+        let repo = self.app.repo.clone();
         let cfg_base = self.app.cfg.base.clone();
         thread::spawn(move || {
             let result = app::resolve_base(&repo, &cfg_base);

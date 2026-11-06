@@ -5,229 +5,146 @@
 [![License](https://img.shields.io/github/license/ChmaraX/herdr-gitview)](LICENSE)
 
 <p align="center">
-  <a href="#features">features</a> · <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#configuration">configuration</a> · <a href="#limitations">limitations</a> · <a href="CHANGELOG.md">changelog</a>
+  <a href="#features">features</a> · <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#keys">keys</a> · <a href="#configuration">configuration</a> · <a href="#limitations">limitations</a> · <a href="CHANGELOG.md">changelog</a>
 </p>
 
-A git view for [herdr](https://herdr.dev). Changed files on one side, a
-syntax-highlighted diff on the other. Press `Enter` and the diff pane
-*becomes* your real nvim - opened at the first changed line. You never leave
-the terminal.
+A git view for the [Herdr](https://herdr.dev) app. Review what your agent
+changed: the changed files in the Changes panel, a syntax-highlighted diff
+beside them. Press `Enter` and the diff pane *becomes* your real nvim, at the
+line you're on. You never leave Herdr.
 
-https://github.com/user-attachments/assets/793f2e82-17cc-484f-b7e1-75a32e6ee9de
+> Using the **herdr TUI** (terminal)? Its guide is [TUI.md](TUI.md).
+
+<!-- video: the Herdr app film goes here -->
 
 ## Features
 
+- **Takes over the Changes panel** - the tab bar's **Changes** button (or
+  `cmd-shift-g`) shows gitview's file list for the space you're in, and a
+  click opens the file's diff in a full-height pane right beside it. Moving
+  through the list, the diff follows.
 - **Grouped changes** - conflicts, staged, and unstaged changes in separate
-  sections. `s` moves a file between staged and unstaged.
-  <img width="1541" height="780" alt="image" src="https://github.com/user-attachments/assets/bf0bbe92-817f-4db2-b023-04cd35fe90f8" />
-
-- **Readable diffs** - syntax highlighting, word-level emphasis on edited
-  lines, and collapsible context folds you expand with a click.
-- **Edit in real nvim** - `Enter` turns the diff pane into your actual nvim:
-  full LSP, plugins, colors. Edit the file right there at the changed line,
-  `:wq`, and the diff refreshes. No embedded-terminal emulation - it runs on
-  the pane's own PTY.
-  <img width="1546" height="779" alt="image" src="https://github.com/user-attachments/assets/b6f05932-38b0-470d-9541-c5c24246987f" />
-
-- **Stage, discard, commit inline** - the commit message opens in nvim too;
-  discards confirm first. `s`/`u`/`x` work on a directory row too, applying to
-  every file under it in that section.
-- **Commit history** - `l` opens a `git log` view; pick a commit to browse its
-  files and per-commit diffs. `w` filters it to just the commits your branch
-  added on top of its base (and opening the log from branch scope starts
-  there).
+  sections, flat or as a folder tree, with `+ added −deleted` counts per file
+  and in total.
+- **Stage, discard, commit inline** - `s`/`u`/`x` or the `+` `−` `↺` buttons
+  on a file, a folder or a whole section; discards confirm first. Write the
+  commit message right in the panel (`shift+enter` for more lines) and
+  commit what's staged, or everything when nothing is.
+- **Readable diffs** - syntax highlighting (dark or light, to match your
+  app theme), added and removed lines tinted in the theme's colors,
+  word-level emphasis on edited lines, and collapsible context folds.
+- **Preview** - markdown renders, images show, and a changed image shows
+  before and after side by side. One click switches back to the diff.
+- **Edit in real nvim** - `Enter` turns the diff pane into your nvim, at the
+  line ([herdr-nvim](https://github.com/ChmaraX/herdr-nvim)'s when it's
+  installed). `:q` brings the diff back. Moving to another file swaps nvim
+  for that file's diff again; with unsaved changes nvim stays.
+- **Commit history** - `l` opens the log; pick a commit to browse its files
+  and diffs. `w` filters it to the commits your branch added.
 - **Knows what your branch was cut from** - branch scope diffs against the
-  branch you actually branched off, so a branch stacked on another feature
-  branch shows only its own work instead of both.
-- **Review notes to any agent** - select diff lines, annotate, and send the
-  batch into the input of any agent pane you pick in the workspace. It types;
-  you decide when to press enter. You write a note inline in the diff, in a
-  box under the lines it comments on, and it stays there as a card once
-  saved. The composer is a wrapping text area: `shift+enter` (or `ctrl+j`)
-  for a new line, arrows/`home`/`end` to move around, `ctrl+w` to drop a
-  word, `esc` to cancel.
-  <img width="1539" height="778" alt="image" src="https://github.com/user-attachments/assets/23ee0639-4a6e-42c5-a003-6e71ab619c43" />
-  <img width="1544" height="777" alt="image" src="https://github.com/user-attachments/assets/9b615b5b-3202-4ad4-8967-3bab03050e6c" />
-
-- **Always says which diff you are looking at** - the header names the
-  comparison first, before the branch: `uncommitted · feat/x` or
-  `vs origin/next · feat/x · 3 commits`. The diff pane says the same thing,
-  and the footer's `w` hint names the view it switches to. On a narrow pane
-  the file counts go before the comparison does.
-- **Mouse support** - click to select, double-click to open, drag-select diff
-  lines, wheel to scroll, click folds to expand.
+  branch you actually branched off ([Branch scope](TUI.md#branch-scope)).
+- **Review notes to any agent** - select diff lines, write a note under them,
+  and send the batch into the input of any agent in Herdr. It types, without
+  the clipboard; you decide when to press enter.
+- **A tab of its own** - `cmd-g` opens gitview in a tab for the repo you're
+  in: the diff on the left, the list on the right.
+- **Remote spaces** - in a space on another machine, git runs there.
+- **Mouse support** - click, double-click to open, drag-select diff lines,
+  hover buttons.
 
 ## Requirements
 
-- **herdr ≥ 0.7.0** (≥ **0.7.4** for the native floating dialogs; older
-  versions fall back to in-pane overlays).
+- The **Herdr desktop app** (herdr-app ≥ 0.1.12).
 - **git** on `PATH`.
-- **nvim** for the editor loop (any editor works via config; the
-  remote-control niceties - file switching, save/discard prompts - are
-  nvim-only).
-- A truecolor terminal. Pick the `theme` matching its background
-  ([Theme](#theme)).
-- macOS or Linux.
+- An editor for `Enter`: [herdr-nvim](https://github.com/ChmaraX/herdr-nvim),
+  else nvim, vim, `$VISUAL`/`$EDITOR`, or the system's default app.
+- macOS. Linux should work but is untested; Windows isn't supported.
 
 ## Install
 
-Prebuilt binaries, no Rust toolchain needed:
+With the Herdr app open:
 
 ```bash
-herdr plugin install ChmaraX/herdr-gitview
+curl -fsSL https://raw.githubusercontent.com/ChmaraX/herdr-gitview/main/install.sh | sh -s -- --app
 ```
 
-Bind a key in `~/.config/herdr/config.toml` (`cmd+g` is free of herdr's
-defaults; any key works):
+It downloads the prebuilt gitview for your machine, checks it, adds its
+mods, adds `cmd-shift-g` and `cmd-g` where they're free, and puts gitview in
+the Changes panel. No git clone, no Rust. Or ask the agent in your Herdr
+window to "add the mod at github.com/ChmaraX/herdr-gitview".
 
-```toml
-[[keys.command]]
-key = "cmd+shift+g"
-type = "plugin_action"
-command = "chmarax.gitview.toggle"   # sidebar in the current tab
-description = "git view sidebar"
-
-[[keys.command]]
-key = "cmd+g"
-type = "plugin_action"
-command = "chmarax.gitview.toggle-tab"   # dedicated gitview tab
-description = "git view tab"
-```
-
-`toggle` opens a sidebar in the tab you're in (each tab can have its own);
-press again in that tab to close. `toggle-tab` opens one dedicated tab per
-repo and jumps to it if it's already open.
-
-**To update**, reinstall - your config survives:
-
-```bash
-herdr plugin uninstall chmarax.gitview && herdr plugin install ChmaraX/herdr-gitview
-```
-
-**Without herdr**, the file list runs as a plain terminal app in any repo -
-browse, stage, unstage, discard:
-
-```bash
-herdr-gitview list
-```
-
-Editing, commits, history diffs, and notes need the second pane, i.e. herdr.
+- **Update:** run the same command again.
+- **Uninstall:** the same command with `--uninstall`; the stock Changes
+  panel comes back.
 
 ## Quick start
 
-1. **Open it.** `cmd+g` in any repo. Changed files on the right, the
-   selected file's diff on the left.
-2. **Browse.** `j`/`k` (or the wheel) - the diff follows your cursor.
-   `Tab`-free: selecting a file under *staged changes* shows its staged diff,
-   under *changes* the unstaged one.
-3. **Edit.** `Enter` - nvim opens in the diff pane at the first changed line.
-   `:wq`, and you're back on the refreshed diff, focus on the list.
-4. **Stage & commit.** `s` to stage (the file moves up), `x` to discard
-   (asks first), `c` to commit - write the message in nvim, `:wq` commits,
-   `:q!` aborts. On a directory row the same keys apply to the whole folder.
-5. **See what your branch did.** `w` switches the file list to "vs the base
-   branch"; `l` then opens the log already filtered to your branch's commits
-   (`w` toggles that filter in the log view too).
-6. **Review for your agent.** Focus the diff pane, `v` + `j`/`k` (or drag) to
-   select lines, `a` to annotate - a box opens right under the selection,
-   type and `enter`. Notes stay as cards under the code. `p` → pick an agent
-   → the batch lands in its input.
+1. **Open it.** Press **Changes** in the tab bar, or `cmd-shift-g`. The
+   space's changed files show in the panel.
+2. **Browse.** Click a file, or `j`/`k`: its diff opens in a full-height pane
+   beside the panel and follows your selection.
+3. **Edit.** `Enter` turns the diff pane into nvim at the line. `:q`, and
+   you're back on the diff.
+4. **Stage & commit.** `s` to stage (the file moves up), `x` to discard (asks
+   first), `c` to write the commit message, `enter` to commit.
+5. **See what your branch did.** `w` switches to "vs the base branch"; `l`
+   opens the log filtered to your branch's commits.
+6. **Review for your agent.** In the diff, drag over lines (or `v` +
+   `j`/`k`), `a` to write a note, `enter` to save it. `p` → pick an agent →
+   the notes land in its input.
 
-The footer in each pane shows only the keys that currently work, so you learn
-it by using it.
+The footer shows the keys that work right now; `?` lists them all.
 
-## Branch scope
+## Keys
 
-`w` switches the file list from the working tree to "everything this branch
-changed". The base it compares against is **the branch this one was created
-from**, not a fixed trunk: a branch cut from `develop` diffs against
-`develop`, and a branch stacked on another feature branch diffs against that
-branch. The header names it, e.g. `nv-2-ui  vs nv-1-api`.
-
-It works by ancestry, not by naming: every other branch is ranked by how
-recently your branch diverged from it, and the nearest one wins. Ties between
-siblings cut from the same commit go to the trunk. On a trunk itself there is
-nothing to be cut from, so the usual `origin/HEAD` → `origin/main` →
-`origin/master` → `main` → `master` chain applies.
-
-One case it can get wrong: a branch created *from yours* also has a recent
-divergence point. Branches containing all of your commits are ignored, which
-covers the usual shape, but if the guess is ever wrong, pin it:
-
-```toml
-base = "origin/main"
-```
+| Key | Where | What |
+| --- | --- | --- |
+| `cmd-shift-g` | anywhere | Show or hide the Changes panel with gitview (Linux: `ctrl-alt-shift-g`) |
+| `cmd-g` | anywhere | gitview in a tab of its own; again to go back (Linux: `ctrl-alt-g`) |
+| `j` / `k`, arrows | list, diff | Move; in the list the diff follows |
+| `enter` | list, diff | Open the file in the editor at the line |
+| `s` / `u` / `x` | list, diff | Stage, unstage, discard |
+| `c` | list | Write the commit message (`enter` commits, `shift+enter` new line) |
+| `t` | list | Flat or tree |
+| `w` | list | Uncommitted or vs the base branch |
+| `l` / `n` | list | History / notes |
+| `J` / `K` | diff | Next / previous file |
+| `v`, `a` | diff | Select lines, write a note |
+| `p` | list, diff | Send the notes to an agent |
+| `m` | diff | Diff or Preview |
+| `?` | list, diff | All keys |
 
 ## Configuration
 
-`$HERDR_PLUGIN_CONFIG_DIR/config.toml`, usually
-`~/.config/herdr/plugins/config/chmarax.gitview/config.toml`. Every key is
-optional; [assets/example-config.toml](assets/example-config.toml) shows all
-defaults, commented.
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `theme` | `"dark"` | `"dark"` or `"light"` - syntax theme + all UI tints |
-| `editor` | `["nvim"]` | Editor argv; the file (and `+<line>`) is appended |
-| `base` | `""` | Branch-scope base ref; `""` detects the branch this one was cut from (see [Branch scope](#branch-scope)) |
-| `list_side` | `"right"` | `"right"` or `"left"` |
-| `view_width_percent` | `50` | Sidebar mode: how much of the tab gitview takes; your existing panes get the rest (20–80) |
-| `list_width_percent` | `29` | How much of the gitview area the file list takes (10–80) |
-| `default_scope` | `"worktree"` | `"worktree"` or `"branch"` - which scope the view opens in |
-| `context_lines` | `3` | Unchanged lines kept around each change before folding (0–20) |
-| `poll_ms` | `2000` | Auto-refresh interval in ms; `0` disables, non-zero floored at 250 |
-| `show_untracked` | `true` | Include untracked files |
-
-### Theme
-
-`theme = "dark"` pairs a dark syntax palette with dark red/green diff tints;
-`"light"` is GitHub-web-flavored. Match your terminal's background - diff
-tints are painted as real background colors.
-
-### Keybindings
-
-`[keybindings]` maps action names to keys. An override replaces all default
-keys for that action; binding a key another action owns is reported at
-startup and the table is ignored until fixed.
-
-```toml
-[keybindings]
-stage = "space"
-discard = "ctrl+x"
-```
-
-Grammar: `[ctrl+][alt+][shift+]<key>` where `<key>` is a single character or
-`enter`, `esc`, `tab`, `space`, `up`, `down`, `left`, `right`, `pgup`,
-`pgdn`, `home`, `end`. Action names: `down up top bottom edit stage unstage
-discard commit log annotate select send_notes notes_view delete toggle_scope
-refresh help quit half_page_down half_page_up diff_top diff_bottom
-scroll_down scroll_up`.
+gitview reads the same `config.toml` as the TUI plugin,
+`~/.config/herdr/plugins/config/chmarax.gitview/config.toml`. In the app
+these apply: `editor`, `base`, `context_lines`, `show_untracked` and
+`view_width_percent` (the diff pane's width). See
+[TUI.md](TUI.md#configuration) for each key. Colors follow the app's theme.
 
 ## Limitations
 
-- **Editing needs herdr** - standalone `herdr-gitview list` covers browsing
-  and staging only.
-- **Remote editor tricks need nvim** (`--listen`/`--server`). Other editors
-  work for plain editing; you close them yourself.
-- **Notes live in memory** - closing the view discards unsent notes.
+- **nvim is the editor gitview knows** - with herdr-nvim's nvim or your own
+  nvim, gitview checks for unsaved changes and closes it for you. Other
+  editors open the file too; you close them yourself.
 - **Notes attach to working-tree changes** - you can't annotate historical
   commits.
-- Native floating dialogs need herdr ≥ 0.7.4; older versions get in-pane
-  overlays.
+- **herdr-nvim on remote spaces** - in a space on another machine, Enter
+  starts a plain editor there instead.
 
-## Building from source
+## Development
 
 ```bash
 git clone https://github.com/ChmaraX/herdr-gitview
 cd herdr-gitview
-cargo build --release
-herdr plugin link "$PWD"
+herdr-app/install.sh               # builds from source and installs into the running app
+herdr-app/install.sh --uninstall
 ```
 
-`cargo test` runs the full suite - parser units, fixture git repos, and
-ratatui render tests. `just release-dry` mirrors CI (fmt, clippy, tests,
-release build). A debug log is always written to `debug.log` in the plugin
-state dir; it rotates to `debug.log.1` at 5 MB.
+`cargo test` runs the engine's tests and `node --test herdr-app/test/*.test.mjs`
+the mods'. The e2e suites in `herdr-app/e2e/` (`run.sh`, `coexist.sh`,
+`follow.sh`, `jank.sh`, `reload.sh`, `package.sh`) drive a private app in the
+background. How the mods are built: [herdr-app/RECIPE.md](herdr-app/RECIPE.md).
 
 ## Attribution
 

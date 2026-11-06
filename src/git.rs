@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
+
+use crate::remote::{Contents, FileFacts, Machine, Run};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +22,10 @@ pub struct CommitInfo {
     pub author: String,
     pub date: String,
     pub subject: String,
+    /// The author date relative to now (`3 days ago`).
+    pub relative: String,
+    /// Branch and tag names pointing at it (`HEAD -> main`, `tag: v1`).
+    pub refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,8 +61,32 @@ pub struct FileEntry {
     pub dels: Option<u32>,
 }
 
+/// A status for the app's list: the entries, a rev for each path, and the
+/// ignored folders.
+#[derive(Debug, Clone)]
+pub struct AppStatus {
+    /// HEAD's commit (`None` before the first) and branch (`None` when
+    /// detached); in worktree scope only (`None` in branch scope).
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    /// git status ran with `--ignore-submodules=dirty`: asked to, or it
+    /// failed without it (a submodule path that's a symlink, as some
+    /// worktree setups have). Worktree scope only.
+    pub skipped_submodules: bool,
+    pub entries: Vec<FileEntry>,
+    /// Per path: changes when what the index or HEAD say about it changes,
+    /// or the worktree file does.
+    pub revs: HashMap<PathBuf, String>,
+    /// The outermost ignored folders, each ending in `/`.
+    pub ignored_dirs: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Repo {
     pub root: PathBuf,
+    /// Where the repo lives: here, or another machine whose git commands
+    /// and file reads all run there (`root` is a path on it).
+    pub machine: Machine,
 }
 
 /// A git object read by [`Repo::read_blobs`].
@@ -102,25 +132,52 @@ fn parse_batch(out: &[u8], count: usize) -> Result<Vec<Option<Blob>>> {
 }
 
 impl Repo {
+    /// A repo on this machine whose top level is `root`.
+    pub fn local(root: PathBuf) -> Repo {
+        Repo {
+            root,
+            machine: Machine::Local,
+        }
+    }
+
     pub fn discover(dir: &Path) -> Result<Repo> {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["rev-parse", "--show-toplevel"])
-            .output()
-            .context("spawning git")?;
+        Repo::discover_on(dir, Machine::Local)
+    }
+
+    /// The repo holding `dir` on `machine`.
+    pub fn discover_on(dir: &Path, machine: Machine) -> Result<Repo> {
+        let cmd = machine.git(dir, &["rev-parse", "--show-toplevel"], Run::default());
+        let out = machine.output(cmd, "git")?;
         if !out.status.success() {
-            bail!("{} is not inside a git repository", dir.display());
+            match machine.name() {
+                None => bail!("{} is not inside a git repository", dir.display()),
+                Some(m) => bail!(
+                    "{} on {m}: {}",
+                    dir.display(),
+                    crate::remote::remote_error(&String::from_utf8_lossy(&out.stderr))
+                ),
+            }
         }
         let root = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-        Ok(Repo { root })
+        Ok(Repo { root, machine })
     }
 
     // ---- command wrappers -------------------------------------------------
 
-    /// Run git, error on non-zero exit with stderr in the message.
+    /// Run git, error on non-zero exit with stderr in the message. A write
+    /// that finds another git holding the index (a shell prompt's status, an
+    /// agent's git) is tried again a moment later, up to 4 times: here, in
+    /// the one process, so a caller that stops waiting (the app can drop an
+    /// exec's reply) still gets the write done.
     fn git(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let out = self.git_lenient(args)?;
+        let mut out = self.git_lenient(args)?;
+        for _ in 0..4 {
+            if out.status.success() || !index_locked(&out.stderr) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            out = self.git_lenient(args)?;
+        }
         if !out.status.success() {
             bail!(
                 "git {args:?} failed: {}",
@@ -132,19 +189,64 @@ impl Repo {
 
     /// Run git, return the raw Output regardless of exit code.
     fn git_lenient(&self, args: &[&str]) -> Result<Output> {
-        Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
-            // Reads never take the index lock to refresh stat info: a poll
-            // holding it made the user's own merge/commit fail ("Unable to
-            // write index"). Status honors GIT_OPTIONAL_LOCKS; diff ignores
-            // it and needs its auto-refresh off instead (see branch_changes
-            // for what that costs). Writes (add, restore) still lock.
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .args(["-c", "diff.autoRefreshIndex=false"])
-            .args(args)
+        self.git_command(args, Run::default())
             .output()
             .with_context(|| format!("spawning git {args:?}"))
+    }
+
+    /// `git <args>` in this repo, on its machine. Diff ignores the optional
+    /// locks being off and needs its index auto-refresh off too (see
+    /// branch_changes for what that costs). Writes (add, restore) still lock.
+    fn git_command(&self, args: &[&str], run: Run) -> Command {
+        let mut argv = vec!["-c", "diff.autoRefreshIndex=false"];
+        argv.extend(args);
+        self.machine.git(&self.root, &argv, run)
+    }
+
+    /// Commit what the person means, decided now rather than from a list
+    /// that may be stale: with unmerged paths, refuse and change nothing (an
+    /// `add` would mark the conflict markers resolved); with something
+    /// staged, commit just that; with nothing staged, stage every change
+    /// first (`add -A`, or `add -u` when untracked files are hidden, so
+    /// none the person can't see go in). Returns whether it staged
+    /// everything. Hooks may take a while, so a remote commit gets hc's
+    /// longest timeout.
+    pub fn commit(&self, message: &str, show_untracked: bool) -> Result<bool> {
+        let run = |args: &[&str]| -> Result<()> {
+            let out = self
+                .git_command(
+                    args,
+                    Run {
+                        timeout: Some(600),
+                        ..Run::default()
+                    },
+                )
+                .output()
+                .with_context(|| format!("spawning git {args:?}"))?;
+            if !out.status.success() {
+                bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+            }
+            Ok(())
+        };
+        if !self.git(&["ls-files", "--unmerged", "-z"])?.is_empty() {
+            bail!("resolve the merge conflicts first");
+        }
+        let all = self.staged_count()? == 0;
+        if all {
+            run(&["add", if show_untracked { "-A" } else { "-u" }])?;
+        }
+        run(&["commit", "-m", message])?;
+        Ok(all)
+    }
+
+    /// `(adds, dels)` for untracked files: every line is an add; none for
+    /// binaries and files over 1 MiB (see [`untracked_stats`]).
+    fn untracked_stats_many(&self, paths: &[&Path]) -> Vec<(Option<u32>, Option<u32>)> {
+        self.machine
+            .measure(&self.root, paths)
+            .into_iter()
+            .map(untracked_stats)
+            .collect()
     }
 
     // ---- branch / base ----------------------------------------------------
@@ -188,7 +290,7 @@ impl Repo {
     /// Known limitation: a branch created *from this one* also has a recent
     /// divergence point. Candidates containing all of HEAD are skipped, which
     /// covers the common shape; set `base` in the config to pin it otherwise.
-    pub fn detect_fork_base(&self) -> Option<String> {
+    fn detect_fork_base(&self) -> Option<String> {
         let head = self.head_sha()?;
         let branch = self.head_branch();
         // A trunk is not cut *from* anything: every branch ever merged into
@@ -393,48 +495,231 @@ impl Repo {
     /// answer, still listing the submodule path itself as changed; only its
     /// internal dirtiness is hidden. Without this the whole pane had nothing
     /// to show and died.
-    fn status_raw(&self, show_untracked: bool) -> Result<Vec<u8>> {
+    ///
+    /// `app`: the app's status, with the ignored paths too
+    /// (`--ignored=matching`: an ignored folder as one `folder/` record; it
+    /// needs `show_untracked`) and the branch headers (`--branch`: HEAD's
+    /// commit and branch, so the app asks no one else).
+    ///
+    /// `skip_submodules`: start with `--ignore-submodules=dirty` (the caller
+    /// knows this repo needs it). Also says whether that flag was used.
+    fn status_raw_with(
+        &self,
+        show_untracked: bool,
+        app: bool,
+        skip_submodules: bool,
+    ) -> Result<(Vec<u8>, bool)> {
         let untracked = if show_untracked {
             "--untracked-files=all"
         } else {
             "--untracked-files=no"
         };
-        let args = ["status", "--porcelain=v2", "-z", untracked];
+        let mut args = vec!["status", "--porcelain=v2", "-z", untracked];
+        if app {
+            args.extend(["--branch", "--no-ahead-behind"]);
+            if show_untracked {
+                args.push("--ignored=matching");
+            }
+        }
+        let skip = [&args[..], &["--ignore-submodules=dirty"][..]].concat();
+        if skip_submodules {
+            let out = self.git_lenient(&skip)?;
+            if out.status.success() {
+                return Ok((out.stdout, true));
+            }
+            bail!(
+                "git status failed: {}",
+                first_line(&String::from_utf8_lossy(&out.stderr))
+            );
+        }
         let out = self.git_lenient(&args)?;
         if out.status.success() {
-            return Ok(out.stdout);
+            return Ok((out.stdout, false));
         }
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let retry = self.git_lenient(&[&args[..], &["--ignore-submodules=dirty"][..]].concat())?;
+        let retry = self.git_lenient(&skip)?;
         if retry.status.success() {
-            crate::logx::log(format!(
-                "git status failed ({stderr}); retried ignoring submodule contents"
-            ));
-            return Ok(retry.stdout);
+            // The app's status says so in its reply instead (one line per
+            // status would fill the log in such a repo).
+            if !crate::logx::is_app() {
+                crate::logx::log(format!(
+                    "git status failed ({stderr}); retried ignoring submodule contents"
+                ));
+            }
+            return Ok((retry.stdout, true));
         }
         bail!("git status failed: {}", first_line(&stderr));
     }
 
+    /// [`Repo::status_raw_with`] the plain way: its bytes.
+    fn status_raw(&self, show_untracked: bool, app: bool) -> Result<Vec<u8>> {
+        Ok(self.status_raw_with(show_untracked, app, false)?.0)
+    }
+
     pub fn worktree_status(&self, show_untracked: bool) -> Result<Vec<FileEntry>> {
-        let raw = self.status_raw(show_untracked)?;
-        let mut entries = parse_porcelain_v2(&raw)?;
+        let numstats = self.start_numstats();
+        let raw = self.status_raw(show_untracked, false);
+        // Status's own failure is the one to tell (the numstats fail too).
+        let numstats = finish_numstats(numstats);
+        self.worktree_entries(&raw?, &numstats?)
+    }
+
+    /// [`Repo::worktree_status`]'s entries without their line counts (no
+    /// numstat, no untracked file read): one git call, for what only needs
+    /// the paths, kinds and stages.
+    pub fn status_entries(&self, show_untracked: bool) -> Result<Vec<FileEntry>> {
+        let mut entries = parse_porcelain_v2(&self.status_raw(show_untracked, false)?)?;
+        sort_entries(&mut entries);
+        Ok(entries)
+    }
+
+    /// The unstaged and the staged `diff --numstat`, started now so they run
+    /// beside the status; see [`finish_numstats`].
+    fn start_numstats(
+        &self,
+    ) -> [(
+        &'static [&'static str],
+        std::io::Result<std::process::Child>,
+    ); 2] {
+        use std::process::Stdio;
+        NUMSTATS.map(|args| {
+            let child = self
+                .git_command(args, Run::default())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn();
+            (args, child)
+        })
+    }
+
+    /// [`Repo::worktree_status`] with what the app's list needs on top: a
+    /// rev per file and the ignored folders (see [`AppStatus`]).
+    /// `skip_submodules`: what the last reply's
+    /// [`AppStatus::skipped_submodules`] said for this repo.
+    pub fn app_worktree_status(
+        &self,
+        show_untracked: bool,
+        skip_submodules: bool,
+    ) -> Result<AppStatus> {
+        let numstats = self.start_numstats();
+        let raw = self.status_raw_with(show_untracked, true, skip_submodules);
+        let numstats = finish_numstats(numstats);
+        let ((raw, skipped_submodules), numstats) = (raw?, numstats?);
+        let entries = self.worktree_entries(&raw, &numstats)?;
+        let records = porcelain_records(&raw);
+        let (head, branch) = branch_headers(&raw);
+        let dirty: Vec<&Path> = records
+            .iter()
+            .filter(|r| r.worktree_dirty)
+            .map(|r| r.path.as_path())
+            .collect();
+        let mut prints = self.machine.fingerprints(&self.root, &dirty).into_iter();
+        let mut revs = HashMap::new();
+        let mut ignored = Vec::new();
+        for r in &records {
+            if r.ignored {
+                if r.path.as_os_str().to_string_lossy().ends_with('/') {
+                    ignored.push(r.path.clone());
+                }
+                continue;
+            }
+            let print = if r.worktree_dirty {
+                prints.next().unwrap_or_default()
+            } else {
+                String::new()
+            };
+            revs.insert(
+                r.path.clone(),
+                rev_of(&[r.fields.as_bytes(), print.as_bytes()]),
+            );
+        }
+        let ignored_dirs = if show_untracked {
+            ignored
+        } else {
+            self.ignored_dirs()?
+        };
+        Ok(AppStatus {
+            head,
+            branch,
+            skipped_submodules,
+            entries,
+            revs,
+            ignored_dirs: cap(ignored_dirs),
+        })
+    }
+
+    /// [`Repo::branch_changes`] with a rev per file and the ignored folders.
+    pub fn app_branch_status(&self, merge_base: &str, show_untracked: bool) -> Result<AppStatus> {
+        let entries = self.branch_changes(merge_base, show_untracked)?;
+        let present: Vec<&Path> = entries
+            .iter()
+            .filter(|e| e.kind != ChangeKind::Deleted)
+            .map(|e| e.path.as_path())
+            .collect();
+        let mut prints = self.machine.fingerprints(&self.root, &present).into_iter();
+        let mut revs = HashMap::new();
+        for e in &entries {
+            let print = if e.kind == ChangeKind::Deleted {
+                String::new()
+            } else {
+                prints.next().unwrap_or_default()
+            };
+            revs.insert(
+                e.path.clone(),
+                rev_of(&[b"branch", merge_base.as_bytes(), print.as_bytes()]),
+            );
+        }
+        Ok(AppStatus {
+            head: None,
+            branch: None,
+            skipped_submodules: false,
+            entries,
+            revs,
+            ignored_dirs: cap(self.ignored_dirs()?),
+        })
+    }
+
+    /// The outermost ignored folders (`git ls-files -o -i --exclude-standard
+    /// --directory`), each ending in `/`.
+    fn ignored_dirs(&self) -> Result<Vec<PathBuf>> {
+        let raw = self.git(&[
+            "ls-files",
+            "-o",
+            "-i",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ])?;
+        Ok(String::from_utf8_lossy(&raw)
+            .split('\0')
+            .filter(|s| s.ends_with('/'))
+            .map(PathBuf::from)
+            .collect())
+    }
+
+    /// `git status`'s porcelain v2 `raw` as the list's entries, with their
+    /// line counts, sorted.
+    fn worktree_entries(&self, raw: &[u8], numstats: &[Vec<u8>; 2]) -> Result<Vec<FileEntry>> {
+        let mut entries = parse_porcelain_v2(raw)?;
 
         // Merge line stats from numstat (unstaged + staged, summed per path).
         let mut stats: HashMap<PathBuf, Option<(u32, u32)>> = HashMap::new();
-        for args in [
-            &["diff", "--numstat", "-z", "-M"][..],
-            &["diff", "--numstat", "-z", "-M", "--cached"][..],
-        ] {
-            for (path, stat) in parse_numstat(&self.git(args)?) {
+        for numstat in numstats {
+            for (path, stat) in parse_numstat(numstat) {
                 merge_stat(&mut stats, path, stat);
             }
         }
+        let untracked: Vec<&Path> = entries
+            .iter()
+            .filter(|e| e.kind == ChangeKind::Untracked)
+            .map(|e| e.path.as_path())
+            .collect();
+        let mut untracked = self.untracked_stats_many(&untracked).into_iter();
         for entry in &mut entries {
             match entry.kind {
                 ChangeKind::Untracked => {
-                    let (adds, dels) = untracked_stats(&self.root.join(&entry.path));
-                    entry.adds = adds;
-                    entry.dels = dels;
+                    (entry.adds, entry.dels) = untracked.next().unwrap_or((None, None));
                 }
                 _ => {
                     if let Some(stat) = stats.get(&entry.path) {
@@ -481,15 +766,15 @@ impl Repo {
             let seen: std::collections::HashSet<PathBuf> =
                 entries.iter().map(|e| e.path.clone()).collect();
             let raw = self.git(&["ls-files", "--others", "--exclude-standard", "-z"])?;
-            for path in String::from_utf8_lossy(&raw)
+            let paths: Vec<PathBuf> = String::from_utf8_lossy(&raw)
                 .split('\0')
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from)
-            {
-                if seen.contains(&path) {
-                    continue;
-                }
-                let (adds, dels) = untracked_stats(&self.root.join(&path));
+                .filter(|p| !seen.contains(p))
+                .collect();
+            let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+            let stats = self.untracked_stats_many(&refs);
+            for (path, (adds, dels)) in paths.into_iter().zip(stats) {
                 entries.push(FileEntry {
                     path,
                     orig_path: None,
@@ -515,6 +800,11 @@ impl Repo {
         let spec = format!("{rev}:{}", path.to_string_lossy());
         let out = self.git_lenient(&["show", &spec])?;
         if !out.status.success() {
+            // hc's own failure (the machine dropped) answers in JSON.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if self.machine != Machine::Local && crate::remote::hc_failure(&stderr).is_some() {
+                bail!("git show: {}", crate::remote::remote_error(&stderr));
+            }
             return Ok(None); // path absent at that rev (add/delete/rename)
         }
         Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
@@ -524,44 +814,78 @@ impl Repo {
     /// call, each with its object id. `None` = absent at that rev (or not a
     /// file). Paths containing a newline can't be sent this way: error.
     pub fn read_blobs(&self, specs: &[String]) -> Result<Vec<Option<Blob>>> {
-        use std::io::{Read, Write};
-        use std::process::Stdio;
         if specs.iter().any(|s| s.contains('\n')) {
             bail!("path contains a newline");
         }
-        let mut child = Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
-            .args(["cat-file", "--batch"])
-            .env("GIT_OPTIONAL_LOCKS", "0")
+        let out = self.cat_file("--batch", &specs.join("\n"))?;
+        parse_batch(&out, specs.len())
+    }
+
+    /// The bytes of the blob `spec` (`rev:path`, `:path` = the index),
+    /// exact, unless it's over `max` bytes. Missing: no such path at that
+    /// rev, or not a file there (a folder, a submodule). Two git calls: the
+    /// size first, so a big blob is never read.
+    pub fn read_object(&self, spec: &str, max: u64) -> Result<Contents> {
+        if spec.contains('\n') {
+            bail!("path contains a newline");
+        }
+        let out = self.cat_file("--batch-check", spec)?;
+        // `<oid> <type> <size>`, or `<spec> missing` (exit 0 either way).
+        let header = String::from_utf8_lossy(&out);
+        let (oid, size) = match header.trim_end().rsplitn(3, ' ').collect::<Vec<_>>()[..] {
+            [size, "blob", oid] => (oid.to_string(), size.parse::<u64>().ok()),
+            _ => return Ok(Contents::Missing),
+        };
+        let size = size.context("git cat-file: a blob without a size")?;
+        if size > max {
+            return Ok(Contents::TooBig(size));
+        }
+        Ok(Contents::Bytes(self.git(&["cat-file", "blob", &oid])?))
+    }
+
+    /// `git cat-file <mode>` (`--batch`, `--batch-check`) answering the
+    /// specs in `lines` (one per line): its output. Its failure (on another
+    /// machine, hc's: it dropped) is an error that says so.
+    fn cat_file(&self, mode: &str, lines: &str) -> Result<Vec<u8>> {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = self
+            .git_command(
+                &["cat-file", mode],
+                Run {
+                    stdin: true,
+                    ..Run::default()
+                },
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .context("spawning git cat-file")?;
         // A few short lines fit the pipe buffer, so writing them all before
         // reading can't deadlock against git's output.
-        let mut input = specs.join("\n");
-        input.push('\n');
         child
             .stdin
             .take()
             .context("git cat-file stdin")?
-            .write_all(input.as_bytes())?;
-        let mut out = Vec::new();
-        child
-            .stdout
-            .take()
-            .context("git cat-file stdout")?
-            .read_to_end(&mut out)?;
-        child.wait()?;
-        parse_batch(&out, specs.len())
+            .write_all(format!("{lines}\n").as_bytes())?;
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            bail!(
+                "git cat-file: {}",
+                crate::remote::remote_error(&String::from_utf8_lossy(&out.stderr))
+            );
+        }
+        Ok(out.stdout)
     }
 
-    /// The working-tree content of a repo-relative path; `None` when missing.
-    pub fn file_in_worktree(&self, path: &Path) -> Option<String> {
-        let bytes = std::fs::read(self.root.join(path)).ok()?;
-        Some(String::from_utf8_lossy(&bytes).into_owned())
+    /// The working-tree content of a repo-relative path; `None` when
+    /// missing. A remote read that fails is an error, not a missing file.
+    pub fn file_in_worktree(&self, path: &Path) -> Result<Option<String>> {
+        Ok(self
+            .machine
+            .read(&self.root, path)?
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
     }
 
     // ---- history ----------------------------------------------------------
@@ -579,11 +903,11 @@ impl Repo {
 
     /// `git log [range]`, newest first. `range` is any revision range
     /// (`<base>..HEAD`); `None` walks all of HEAD's history.
-    pub fn log_range(&self, range: Option<&str>, limit: usize) -> Result<Vec<CommitInfo>> {
+    fn log_range(&self, range: Option<&str>, limit: usize) -> Result<Vec<CommitInfo>> {
         let n = limit.to_string();
         let mut args = vec![
             "log",
-            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00",
+            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00%ar%x00%D%x00",
             "--date=short",
             "-n",
             &n,
@@ -593,25 +917,25 @@ impl Repo {
         }
         let raw = self.git(&args)?;
         let text = String::from_utf8_lossy(&raw);
-        let mut fields = text.split('\0');
+        let fields: Vec<&str> = text.split('\0').collect();
         let mut commits = Vec::new();
-        while let (Some(sha), Some(short), Some(author), Some(date), Some(subject)) = (
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-        ) {
-            let sha = sha.trim_start(); // leading \n from the previous record
+        for record in fields.as_chunks::<7>().0 {
+            let sha = record[0].trim_start(); // leading \n from the previous record
             if sha.is_empty() {
                 break;
             }
             commits.push(CommitInfo {
                 sha: sha.to_string(),
-                short: short.to_string(),
-                author: author.to_string(),
-                date: date.to_string(),
-                subject: subject.to_string(),
+                short: record[1].to_string(),
+                author: record[2].to_string(),
+                date: record[3].to_string(),
+                subject: record[4].to_string(),
+                relative: record[5].to_string(),
+                refs: record[6]
+                    .split(", ")
+                    .filter(|r| !r.is_empty())
+                    .map(str::to_string)
+                    .collect(),
             });
         }
         Ok(commits)
@@ -659,6 +983,13 @@ impl Repo {
         let mut args = vec!["add", "--"];
         args.extend(owned.iter().map(String::as_str));
         self.git(&args)?;
+        Ok(())
+    }
+
+    /// Throw away a path's worktree changes, keeping what's staged
+    /// (`git restore -- <path>`).
+    pub fn restore_worktree(&self, p: &Path) -> Result<()> {
+        self.git(&["restore", "--", &p.to_string_lossy()])?;
         Ok(())
     }
 
@@ -736,7 +1067,7 @@ impl Repo {
     pub fn fingerprint(&self, show_untracked: bool) -> u64 {
         // Same fallback as `worktree_status`, or auto-refresh would go blind
         // in exactly the repositories that need the fallback.
-        let raw = self.status_raw(show_untracked).unwrap_or_default();
+        let raw = self.status_raw(show_untracked, false).unwrap_or_default();
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in &raw {
             hash ^= u64::from(*byte);
@@ -826,6 +1157,113 @@ fn parse_porcelain_v2(raw: &[u8]) -> Result<Vec<FileEntry>> {
 
 /// Split an ordinary/rename/unmerged record: field 1 is XY, the path is
 /// everything from field index `path_field` on (paths may contain spaces).
+/// The two `diff --numstat` calls of a worktree status: unstaged, staged.
+const NUMSTATS: [&[&str]; 2] = [
+    &["diff", "--numstat", "-z", "-M"],
+    &["diff", "--numstat", "-z", "-M", "--cached"],
+];
+
+/// The outputs of [`Repo::start_numstats`]'s calls; a call that failed is
+/// an error, as [`Repo::git`] has it.
+fn finish_numstats(
+    started: [(
+        &'static [&'static str],
+        std::io::Result<std::process::Child>,
+    ); 2],
+) -> Result<[Vec<u8>; 2]> {
+    let [unstaged, staged] = started.map(|(args, child)| -> Result<Vec<u8>> {
+        let out = child
+            .with_context(|| format!("spawning git {args:?}"))?
+            .wait_with_output()?;
+        if !out.status.success() {
+            bail!(
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(out.stdout)
+    });
+    Ok([unstaged?, staged?])
+}
+
+/// `--branch`'s headers in a porcelain v2 status: HEAD's commit (`None`
+/// before the first) and its branch (`None` when detached).
+fn branch_headers(raw: &[u8]) -> (Option<String>, Option<String>) {
+    let text = String::from_utf8_lossy(raw);
+    let (mut head, mut branch) = (None, None);
+    for record in text.split('\0') {
+        if let Some(oid) = record.strip_prefix("# branch.oid ") {
+            head = (oid != "(initial)").then(|| oid.to_string());
+        } else if let Some(name) = record.strip_prefix("# branch.head ") {
+            branch = (name != "(detached)").then(|| name.to_string());
+        }
+    }
+    (head, branch)
+}
+
+/// What a status record says about one path, for its rev.
+struct Record {
+    path: PathBuf,
+    /// Everything but the path: XY, the modes and the HEAD and index object
+    /// ids (and for a rename, its score and old path). `?` for untracked.
+    fields: String,
+    /// The worktree's file may differ from the index (`Y` isn't `.`, an
+    /// untracked or conflicted file): its own fingerprint counts.
+    worktree_dirty: bool,
+    /// A `!` record: an ignored path (a folder ends in `/`).
+    ignored: bool,
+}
+
+fn porcelain_records(raw: &[u8]) -> Vec<Record> {
+    let text = String::from_utf8_lossy(raw);
+    let mut fields = text.split('\0');
+    let mut out = Vec::new();
+    while let Some(record) = fields.next() {
+        let path_field = match record.chars().next() {
+            Some('1') => 8,
+            Some('2') => 9,
+            Some('u') => 10,
+            Some(c @ ('?' | '!')) if record.len() > 2 => {
+                out.push(Record {
+                    path: PathBuf::from(&record[2..]),
+                    fields: c.to_string(),
+                    worktree_dirty: c == '?',
+                    ignored: c == '!',
+                });
+                continue;
+            }
+            _ => continue,
+        };
+        let Ok((xy, path)) = split_ordinary(record, path_field) else {
+            continue;
+        };
+        let mut head = record[..record.len() - path.len()].to_string();
+        if record.starts_with('2') {
+            head.push_str(fields.next().unwrap_or_default());
+        }
+        out.push(Record {
+            path: PathBuf::from(path),
+            worktree_dirty: record.starts_with('u') || xy.chars().nth(1) != Some('.'),
+            fields: head,
+            ignored: false,
+        });
+    }
+    out
+}
+
+/// A rev: a hash of `parts`, 16 hex digits.
+fn rev_of(parts: &[&[u8]]) -> String {
+    crate::appfile::digest(parts)[..16].to_string()
+}
+
+/// At most this many ignored folders go in a reply.
+const IGNORED_DIRS_MAX: usize = 200;
+
+fn cap(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    dirs.truncate(IGNORED_DIRS_MAX);
+    dirs
+}
+
 fn split_ordinary(record: &str, path_field: usize) -> Result<(&str, &str)> {
     let xy = record
         .split(' ')
@@ -853,6 +1291,13 @@ fn kind_from_xy(xy: &str) -> ChangeKind {
         'R' => ChangeKind::Renamed,
         _ => ChangeKind::Modified,
     }
+}
+
+/// git's stderr when another git holds the index: `Unable to create
+/// '…/.git/index.lock': File exists.`
+fn index_locked(stderr: &[u8]) -> bool {
+    let s = String::from_utf8_lossy(stderr);
+    s.contains("index.lock") && s.contains("File exists")
 }
 
 fn stage_from_xy(xy: &str) -> StageState {
@@ -981,25 +1426,14 @@ fn merge_stat(
     };
 }
 
-/// Untracked file "stats": every line is an add. Skip binaries (NUL byte in
-/// the first chunk) and files > 1 MiB.
-fn untracked_stats(path: &Path) -> (Option<u32>, Option<u32>) {
-    const MAX: u64 = 1024 * 1024;
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.len() <= MAX => {}
-        _ => return (None, None),
+/// Untracked file "stats": every line is an add. None for an unreadable
+/// file, a binary (NUL byte in the first chunk) and one over 1 MiB, however
+/// the machine measured it.
+fn untracked_stats(facts: Option<FileFacts>) -> (Option<u32>, Option<u32>) {
+    match facts.and_then(|f| f.lines) {
+        Some(lines) => (Some(lines), Some(0)),
+        None => (None, None),
     }
-    let Ok(bytes) = std::fs::read(path) else {
-        return (None, None);
-    };
-    if bytes.iter().take(8192).any(|b| *b == 0) {
-        return (None, None); // binary
-    }
-    let mut lines = bytes.iter().filter(|b| **b == b'\n').count() as u32;
-    if !bytes.is_empty() && bytes.last() != Some(&b'\n') {
-        lines += 1; // unterminated last line still counts
-    }
-    (Some(lines), Some(0))
 }
 
 /// Conflicted first, then directory-grouped lexicographic by path.

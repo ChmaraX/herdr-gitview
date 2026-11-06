@@ -1,6 +1,11 @@
 fn main() -> anyhow::Result<()> {
     herdr_gitview::logx::init_panic_hook();
     let mode = std::env::args().nth(1);
+    let op = std::env::args().nth(2);
+    herdr_gitview::logx::init(&match (mode.as_deref(), op.as_deref()) {
+        (Some("json"), Some(op)) => format!("json {op}"),
+        (mode, _) => mode.unwrap_or("?").to_string(),
+    });
     match mode.as_deref() {
         Some("list") => herdr_gitview::list::run(),
         Some("preview") => herdr_gitview::preview::run(),
@@ -10,9 +15,17 @@ fn main() -> anyhow::Result<()> {
         Some("close") => herdr_gitview::orchestrate::close(),
         Some("ask") => herdr_gitview::ask::run(),
         Some("pick-agent") => herdr_gitview::annotate::run_pick_agent(),
+        Some("json") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            herdr_gitview::appjson::run(&args)
+        }
+        Some("app-setup") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            herdr_gitview::appsetup::run(&args)
+        }
         Some(other) => {
             anyhow::bail!(
-                "unknown mode: {other} (expected list|preview|toggle|toggle-tab|open|close|ask|annotate|pick-agent)"
+                "unknown mode: {other} (expected list|preview|toggle|toggle-tab|open|close|ask|pick-agent|json|app-setup)"
             )
         }
     }

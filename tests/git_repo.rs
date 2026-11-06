@@ -262,7 +262,10 @@ fn file_at_reads_index_head_and_commits() {
         Some("staged version\n")
     );
     assert_eq!(
-        t.repo.file_in_worktree(Path::new("base.txt")).as_deref(),
+        t.repo
+            .file_in_worktree(Path::new("base.txt"))
+            .unwrap()
+            .as_deref(),
         Some("worktree version\n")
     );
     // missing path at a rev → None, not an error
@@ -802,7 +805,7 @@ fn the_file_list_starts_even_when_git_status_cannot_run() {
     let dir = std::env::temp_dir().join(format!("gitview-not-a-repo-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let repo = Repo { root: dir.clone() };
+    let repo = Repo::local(dir.clone());
     let app = herdr_gitview::list::App::new(
         repo,
         herdr_gitview::config::Config::default(),
@@ -845,4 +848,22 @@ fn polling_never_rewrites_the_index() {
     // ...and the stale stat info doesn't pass for a change either.
     assert!(worktree.is_empty(), "{worktree:?}");
     assert!(branch.is_empty(), "touched but unchanged: {branch:?}");
+}
+
+/// Another git holding the index (a shell prompt's status, an agent's git)
+/// for a moment doesn't fail a stage: the engine tries again. Without the
+/// retry, `git add` fails at once with "index.lock: File exists".
+#[test]
+fn a_write_waits_out_another_gits_index_lock() {
+    let t = fixture("index-lock");
+    write(&t.dir, "base.txt", "one\ntwo\nmore\n");
+    let lock = t.dir.join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let held = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        std::fs::remove_file(lock).unwrap();
+    });
+    t.repo.stage(Path::new("base.txt")).unwrap();
+    held.join().unwrap();
+    assert_eq!(t.repo.staged_count().unwrap(), 1);
 }

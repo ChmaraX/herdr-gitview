@@ -199,6 +199,9 @@ pub struct App {
     pub delete_note_request: Option<u64>,
     /// The nvim remote socket (injected by the session; None standalone).
     pub nvim_server: Option<std::path::PathBuf>,
+    /// Whether we run as a herdr pane (set from the host env by the session,
+    /// so nothing here reads the process env).
+    pub in_herdr: bool,
 }
 
 impl App {
@@ -273,6 +276,7 @@ impl App {
             edit_note_request: None,
             delete_note_request: None,
             nvim_server: None,
+            in_herdr: false,
         };
         app.rebuild_rows();
         app
@@ -423,7 +427,7 @@ impl App {
             // needs no link.
             Action::Edit if self.toggle_selected_dir() => {}
             Action::Edit | Action::Commit => {
-                if std::env::var_os("HERDR_PANE_ID").is_none() {
+                if !self.in_herdr {
                     self.set_status("editing needs the preview pane (run inside herdr)")
                 } else {
                     self.set_status("preview not connected — press r to reconnect")

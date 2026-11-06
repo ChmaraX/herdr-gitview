@@ -45,6 +45,10 @@ pub struct Config {
     /// or the herdr-nvim sidebar), Enter opens the file there instead of
     /// starting an editor on the gitview diff pane.
     pub reuse_tab_nvim: bool,
+    /// Whether the file set `editor` (the default is `nvim`); the app tries
+    /// `$VISUAL`/`$EDITOR` before the default, never before a chosen one.
+    #[serde(skip)]
+    pub editor_set: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -92,16 +96,22 @@ impl Default for Config {
             view_width_percent: 50,
             list_width_percent: 29,
             reuse_tab_nvim: true,
+            editor_set: false,
         }
     }
 }
 
 impl Config {
     pub fn load() -> Config {
-        let Some(path) = config_path() else {
+        Config::load_from(config_path().as_deref())
+    }
+
+    /// The config in `path` (`None` or a missing file: the defaults).
+    pub fn load_from(path: Option<&std::path::Path>) -> Config {
+        let Some(path) = path else {
             return Config::default();
         };
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(raw) => Config::parse(&raw),
             Err(_) => Config::default(), // missing file is the normal case
         }
@@ -117,6 +127,7 @@ impl Config {
                 Config::default()
             }
         };
+        cfg.editor_set = toml::from_str::<toml::Table>(raw).is_ok_and(|t| t.contains_key("editor"));
         cfg.context_lines = cfg.context_lines.min(20);
         cfg.tab_width = cfg.tab_width.clamp(1, 16);
         cfg.view_width_percent = cfg.view_width_percent.clamp(20, 80);
@@ -170,33 +181,33 @@ mod tests {
     }
 
     #[test]
-    fn poll_ms_has_a_sane_floor_but_zero_disables() {
-        assert_eq!(Config::parse("poll_ms = 5").poll_ms, 250);
-        assert_eq!(Config::parse("poll_ms = 0").poll_ms, 0); // disabled
-        assert_eq!(Config::parse("poll_ms = 1000").poll_ms, 1000);
+    fn numbers_take_their_defaults_and_are_clamped_into_range() {
+        type Field = fn(&Config) -> u64;
+        let poll: Field = |c| c.poll_ms;
+        let view: Field = |c| c.view_width_percent.into();
+        let list: Field = |c| c.list_width_percent.into();
+        let tab: Field = |c| c.tab_width as u64;
+        let context: Field = |c| c.context_lines as u64;
+        for (toml, field, want) in [
+            ("poll_ms = 5", poll, 250),
+            ("poll_ms = 0", poll, 0), // disabled, not clamped
+            ("poll_ms = 1000", poll, 1000),
+            ("", view, 50),
+            ("view_width_percent = 5", view, 20),
+            ("", list, 29),
+            ("list_width_percent = 99", list, 80),
+            ("", tab, 4),
+            ("tab_width = 0", tab, 1),
+            ("tab_width = 99", tab, 16),
+            ("tab_width = 8", tab, 8),
+            ("context_lines = 99", context, 20),
+        ] {
+            assert_eq!(field(&Config::parse(toml)), want, "{toml:?}");
+        }
     }
 
     #[test]
-    fn width_percents_default_and_clamp() {
-        let cfg = Config::parse("");
-        assert_eq!(cfg.view_width_percent, 50);
-        assert_eq!(cfg.list_width_percent, 29);
-        let cfg = Config::parse("view_width_percent = 5\nlist_width_percent = 99");
-        assert_eq!(cfg.view_width_percent, 20);
-        assert_eq!(cfg.list_width_percent, 80);
-    }
-
-    #[test]
-    fn tab_width_defaults_and_clamps() {
-        assert_eq!(Config::parse("").tab_width, 4);
-        assert_eq!(Config::parse("tab_width = 0").tab_width, 1);
-        assert_eq!(Config::parse("tab_width = 99").tab_width, 16);
-        assert_eq!(Config::parse("tab_width = 8").tab_width, 8);
-    }
-
-    #[test]
-    fn context_lines_clamped_and_scope_parses() {
-        assert_eq!(Config::parse("context_lines = 99").context_lines, 20);
+    fn default_scope_parses() {
         assert_eq!(
             Config::parse(r#"default_scope = "branch""#).default_scope,
             ScopePref::Branch
