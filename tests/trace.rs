@@ -129,7 +129,7 @@ fn each_op_appends_one_line_saying_what_it_did() {
         assert_eq!(l["remote"], false);
         assert_eq!(l["execs"], 0, "{l}");
         assert!(l["t"].as_u64().unwrap() > 1_600_000_000_000, "{l}");
-        assert!(l["ms"].as_f64().unwrap() > 0.0, "{l}");
+        assert!(l["ms"].as_f64().unwrap() >= 0.0, "{l}"); // a fast op rounds to 0.0
         assert!(l["pid"].as_u64().is_some(), "{l}");
     }
     assert_eq!(status["ok"], true);
