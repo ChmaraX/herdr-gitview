@@ -919,7 +919,7 @@ impl Repo {
         let text = String::from_utf8_lossy(&raw);
         let fields: Vec<&str> = text.split('\0').collect();
         let mut commits = Vec::new();
-        for record in fields.chunks_exact(7) {
+        for record in fields.as_chunks::<7>().0 {
             let sha = record[0].trim_start(); // leading \n from the previous record
             if sha.is_empty() {
                 break;
