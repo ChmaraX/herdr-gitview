@@ -13,6 +13,7 @@ changed: the changed files in the Changes panel, a syntax-highlighted diff
 beside them. Press `Enter` and the diff pane *becomes* your real nvim, at the
 line you're on. You never leave Herdr.
 
+> [!TIP]
 > Using the **herdr TUI** (terminal)? Its guide is [TUI.md](TUI.md).
 
 https://github.com/user-attachments/assets/b737f785-00ef-426b-9e1b-e3c21b694762
