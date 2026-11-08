@@ -1,0 +1,6 @@
+{
+  "global": {
+    "ctrl-shift-g": "mod.open:gitview-sidebar",
+    "alt-shift-g": "mod.open:gitview-tab"
+  }
+}

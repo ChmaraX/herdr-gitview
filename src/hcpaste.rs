@@ -5,7 +5,6 @@
 //! `src/app/rpc.rs` `paste()`; no clipboard is involved.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -164,12 +163,13 @@ pub fn paste(terminal: &str, text: &str) -> Result<()> {
     let rows = facts.get("rows").and_then(Value::as_u64).unwrap_or(24);
 
     let bin = crate::apphost::hc_bin();
-    let mut child = Command::new(&bin)
-        .arg("connect")
+    let mut cmd = Command::new(&bin);
+    cmd.arg("connect")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0)
+        .stderr(Stdio::null());
+    crate::deadline::new_group(&mut cmd);
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning {} connect", bin.to_string_lossy()))?;
     let result = (|| -> Result<()> {

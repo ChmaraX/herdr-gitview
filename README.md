@@ -59,7 +59,8 @@ line you're on. You never leave Herdr.
 - **git** on `PATH`.
 - An editor for `Enter`: [herdr-nvim](https://github.com/ChmaraX/herdr-nvim),
   else nvim, vim, `$VISUAL`/`$EDITOR`, or the system's default app.
-- macOS. Linux should work but is untested; Windows isn't supported.
+- macOS. Linux should work but is untested. Windows: the app version, built
+  from source (below); the TUI plugin isn't supported there.
 
 ## Install
 
@@ -77,6 +78,20 @@ window to "add the mod at github.com/ChmaraX/herdr-gitview".
 - **Update:** run the same command again.
 - **Uninstall:** the same command with `--uninstall`; the stock Changes
   panel comes back.
+
+### Windows
+
+No release bundle yet: build it with Rust and run the Windows installer
+(Python 3) with the Herdr app open:
+
+```powershell
+git clone https://github.com/ChmaraX/herdr-gitview
+cd herdr-gitview
+python -I herdr-app/install-windows.py             # --uninstall to remove
+```
+
+Keys: `ctrl-shift-g` (the panel) and `alt-shift-g` (gitview's tab);
+Linux's `ctrl-alt-…` keys are AltGr on Windows.
 
 ## Quick start
 
