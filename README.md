@@ -18,6 +18,10 @@ line you're on. You never leave Herdr.
 
 <img width="2560" height="1600" alt="image" src="https://github.com/user-attachments/assets/5dd57c9c-fad9-41af-8959-dda3fabc750c" />
 
+> **Pairs well with**
+> - [herdr-nvim](https://github.com/ChmaraX/herdr-nvim): a persistent nvim sidebar, one key away
+> - [herdr-chat](https://github.com/ChmaraX/herdr-chat): a native chat for Pi, Claude Code and Codex
+
 ## Features
 
 - **Takes over the Changes panel** - the tab bar's **Changes** button (or
