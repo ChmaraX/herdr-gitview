@@ -94,6 +94,7 @@ pub fn state_dir() -> PathBuf {
     match std::env::var_os("HERDR_PLUGIN_STATE_DIR") {
         Some(dir) => PathBuf::from(dir),
         None => std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join(".local/state/herdr-gitview"),

@@ -447,13 +447,31 @@ fn fetch(repo: &Repo, req: &ShowReq) -> Result<Fetched, String> {
             Source::Worktree(path) => worktree_side(repo, path)?,
         })
     };
-    let (old, old_stamp) = side(&old_src)?;
-    let (new, new_stamp) = side(&new_src)?;
+    let (mut old, old_stamp) = side(&old_src)?;
+    let (mut new, new_stamp) = side(&new_src)?;
+    git_line_endings(&old_src, &mut old, &new_src, &mut new);
     Ok(Fetched {
         old,
         new,
         stamps: Some((old_stamp, new_stamp)),
     })
+}
+
+/// A worktree side checked out with CRLF (`core.autocrlf`, `text=auto`)
+/// against a git side with no CR at all: compare it as git stores it, LF,
+/// as `git diff` does; else every line differs. A file committed with CRs
+/// keeps them, so a real line-ending change still shows.
+fn git_line_endings(old_src: &Source, old: &mut String, new_src: &Source, new: &mut String) {
+    let fix = |work: &mut String, git: &str| {
+        if !git.contains('\r') && work.contains("\r\n") {
+            *work = work.replace("\r\n", "\n");
+        }
+    };
+    match (old_src, new_src) {
+        (Source::Rev(_), Source::Worktree(_)) => fix(new, old),
+        (Source::Worktree(_), Source::Rev(_)) => fix(old, new),
+        _ => {}
+    }
 }
 
 /// A worktree file, stamped by a hash of the content read: it is in hand
@@ -496,9 +514,34 @@ fn fetch_uncached(repo: &Repo, old: &Source, new: &Source) -> Result<Fetched, St
             Source::Worktree(path) => Ok(worktree_file(repo, path)?.unwrap_or_default()),
         }
     };
+    let (mut old_text, mut new_text) = (read(old)?, read(new)?);
+    git_line_endings(old, &mut old_text, new, &mut new_text);
     Ok(Fetched {
-        old: read(old)?,
-        new: read(new)?,
+        old: old_text,
+        new: new_text,
         stamps: None,
     })
+}
+
+#[cfg(test)]
+mod line_ending_tests {
+    use super::*;
+
+    fn run(git: &str, work: &str) -> String {
+        let (mut old, mut new) = (git.to_string(), work.to_string());
+        let rev = Source::Rev(vec![(":0".into(), "f".into())]);
+        let wt = Source::Worktree("f".into());
+        git_line_endings(&rev, &mut old, &wt, &mut new);
+        new
+    }
+
+    #[test]
+    fn a_crlf_checkout_of_an_lf_file_compares_as_lf() {
+        assert_eq!(run("a\nb\n", "a\r\nb\r\nc\r\n"), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn a_file_committed_with_crlf_keeps_its_crs() {
+        assert_eq!(run("a\r\nb\r\n", "a\r\nb\r\n"), "a\r\nb\r\n");
+    }
 }
