@@ -117,35 +117,52 @@ do_ gitview.click:config.toml
 expect '[ "$(view_of $TAB path)" = config.toml ]' "(config.toml in the pane again)"
 
 step "long lines: l / → scroll the diff sideways, so the tail of a clipped line comes into view (#26)"
-# A file with one line far wider than the pane (all glyphs, a tail token) and
-# a short control line, both added (the whole line is green insert tint).
+# Two files each with one line far wider than the pane (a tail token) and a
+# short control line, both added (the whole line is green insert tint). The
+# second, equally wide, is for the file-switch reset (its range is as big, so
+# the old offset would still be valid under a clamp: only a reset zeroes it).
 LONGLINE='{"a":"0000000000","b":"1111111111","c":"2222222222","d":"3333333333","e":"4444444444","f":"5555555555","g":"6666666666","h":"7777777777","i":"8888888888","j":"9999999999","TAILZZZEND":1}'
 printf '%s\n{"short":1}\n' "$LONGLINE" >"$S/wide.json"
+printf '%s\n{"short":2}\n' "$LONGLINE" >"$S/wide2.json"
 do_ gitview.key:r
 expect '"$APP" do gitview.click:wide.json >/dev/null && pane_on $TAB wide.json' "wide.json in the diff pane" 15
 do_ gitview-diff.key:g # the top, where the long line is
-# The keys always run (the handler is the same path a keypress takes); the
-# pixels can only be compared when the window is drawing frames.
+# The sideways offset and range the pane drew are in its trace (traceFields),
+# so the behaviour can be checked without hashing frames. The offset only
+# moves while the window draws (a covered window gets no input); so when no
+# frames, skip (don't record a passing no-op).
 if [ -n "${E2E_FOREGROUND:-}" ] && until_ drawn 5; then
   shot 02c-wide-clipped 1.2
-  BEFORE=$(shasum "$ART/02c-wide-clipped.png" | cut -c1-40)
-  for _ in 1 2 3 4 5 6 7 8 9 10; do do_ gitview-diff.key:l; done
+  until_ '[ "$(diff_drew offsetX $TAB)" = 0 ]' 3
+  START=$(diff_drew offsetX $TAB)
+  [ "$START" = 0 ] && ok "the long line starts flush left (offsetX 0)" || fail "offsetX not 0 at the start: $START"
+  do_ gitview-diff.key:l
+  until_ '[ "$(diff_drew offsetX $TAB)" -gt 0 ]' 3 \
+    && ok "l raises the sideways offset" || fail "l did not raise the offset: $(diff_drew offsetX $TAB)"
+  for _ in $(seq 1 60); do do_ gitview-diff.key:l; done # far past the end: clamps
+  sleep 1.2
   shot 02c-wide-scrolled 1.2
-  SCROLLED=$(shasum "$ART/02c-wide-scrolled.png" | cut -c1-40)
-  [ "$BEFORE" != "$SCROLLED" ] && ok "l scrolls the long line sideways: the diff pane changed (the tail is reachable)" \
-    || fail "l did not move the long line (the diff pane is byte-identical): $BEFORE"
-  for _ in 1 2 3 4 5 6 7 8 9 10; do do_ gitview-diff.key:h; done
+  OFF=$(diff_drew offsetX $TAB); RANGE=$(diff_drew rangeX $TAB); VW=$(diff_drew viewW $TAB)
+  MAX=$((RANGE - VW))
+  [ -n "$OFF" ] && [ "$OFF" = "$MAX" ] \
+    && ok "enough l stops with the tail at the right edge (offset $OFF = range $RANGE - width $VW)" \
+    || fail "l did not clamp at the tail: offset $OFF, range-width $MAX (range $RANGE, width $VW)"
+  for _ in $(seq 1 60); do do_ gitview-diff.key:h; done
+  until_ '[ "$(diff_drew offsetX $TAB)" = 0 ]' 3 \
+    && ok "h returns the offset to 0" || fail "h did not return to 0: $(diff_drew offsetX $TAB)"
   shot 02c-wide-back 1.2
-  BACK=$(shasum "$ART/02c-wide-back.png" | cut -c1-40)
-  [ "$BACK" != "$SCROLLED" ] && ok "h scrolls back: the diff pane changed again" || fail "h did not scroll back"
-  [ "$BACK" = "$BEFORE" ] && ok "h all the way back lands on the same view as the start" || echo "note: back view differs slightly from start ($BACK vs $BEFORE)" | tee -a "$LOG"
+  # Scroll right again, then switch files: a different file resets to 0 (a
+  # clamp alone would keep the offset, since wide2's range is as large).
+  for _ in $(seq 1 60); do do_ gitview-diff.key:l; done
+  until_ '[ "$(diff_drew offsetX $TAB)" -gt 0 ]' 3 || fail "could not re-scroll before the file switch"
+  expect '"$APP" do gitview.click:wide2.json >/dev/null && pane_on $TAB wide2.json' "wide2.json in the diff pane" 15
+  do_ gitview-diff.key:g
+  until_ '[ "$(diff_drew offsetX $TAB)" = 0 ]' 3 \
+    && ok "another file resets the sideways offset to 0" || fail "the offset did not reset on another file: $(diff_drew offsetX $TAB)"
 else
-  skip "the sideways scroll pixels (no frames: E2E_FOREGROUND=1 and a drawing window)"
-  for _ in 1 2 3 4; do do_ gitview-diff.key:l; done # still exercise the handler (do_ fails on an error)
-  do_ gitview-diff.key:h
-  ok "l / h ran without error (the diff pane's key table binds them)"
+  skip "the sideways scroll trace (no frames: needs E2E_FOREGROUND=1 and a drawing window)"
 fi
-rm -f "$S/wide.json"
+rm -f "$S/wide.json" "$S/wide2.json"
 do_ gitview.key:r
 do_ gitview.click:config.toml
 expect '[ "$(view_of $TAB path)" = config.toml ]' "(config.toml in the pane again)"
