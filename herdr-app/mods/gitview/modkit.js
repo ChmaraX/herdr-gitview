@@ -5,7 +5,7 @@
 import { closeOverlay, focused, nextCommand, notify, panes, props, watchFolder } from "herdr";
 import { message } from "./engine.js";
 import { changedAt, ignoredDirs, stampChanged, stampOf } from "./shared.js";
-import { shortCommand, Tracer, tracer } from "./telemetry.js";
+import { tracedCommand, Tracer, tracer } from "./telemetry.js";
 
 // At most one "gitview.changed" stamp per repo this often.
 const STAMP_MS = 250;
@@ -322,9 +322,9 @@ export function commandLoop(cx, { loads, before, handle, flash, name, tr = trace
       if (!queue.length) await new Promise((resolve) => (wake = resolve));
       wake = null;
       const command = queue.shift();
-      // What the trace may hold: commit messages and note bodies are dropped
-      // (shortCommand); the handler below still gets the original `command`.
-      const safe = shortCommand(command);
+      // The trace gets `safe` (no message or note text); the handler gets
+      // `command`.
+      const safe = tracedCommand(command);
       try {
         // Focus doesn't wait for loads: the keys must arrive with it.
         if (command === "focus" || command.startsWith("focus:")) {

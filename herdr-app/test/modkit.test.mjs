@@ -44,7 +44,7 @@ test("commandLoop input line: the handler gets the original command, the trace d
   await tick();
   assert.equal(handled, CANARY); // original reaches the handler
   const input = tr.lines.find((l) => l.kind === "input");
-  assert.equal(input.command, "commit:<redacted>");
+  assert.equal(input.command, "commit:…");
   assert.ok(!JSON.stringify(tr.lines).includes("CANARY"));
 });
 
@@ -66,8 +66,8 @@ test("commandLoop waiting warn: neither its text nor its field exposes the paylo
   }
   const warn = tr.warns.find((w) => w.waiting !== undefined);
   assert.ok(warn, "the waiting warn fired");
-  assert.equal(warn.waiting, "commit:<redacted>"); // the field
-  assert.ok(warn.text.includes("commit:<redacted>")); // the text
+  assert.equal(warn.waiting, "commit:…"); // the field
+  assert.ok(warn.text.includes("commit:…")); // the text
   assert.ok(!JSON.stringify(tr.warns).includes("CANARY"));
 });
 
@@ -86,14 +86,13 @@ test("commandLoop error path: a throwing handler cannot leak the payload via con
   }
   assert.ok(errors.length, "the handler threw and was logged");
   assert.ok(!errors.join("\n").includes("CANARY"));
-  assert.ok(errors.join("\n").includes("commit:<redacted>"));
+  assert.ok(errors.join("\n").includes("commit:…"));
   const warn = tr.warns.find((w) => w.level === "error");
-  assert.ok(warn.text.includes("commit:<redacted>"));
+  assert.ok(warn.text.includes("commit:…"));
   assert.ok(!warn.text.includes("CANARY"));
 });
 
-// The focus fast path keeps its own args (they are safe) but still routes
-// through the redactor, so a future focus: variant cannot reopen the hole.
+// The focus fast path skips the loads but is traced like any command.
 test("commandLoop focus fast path: traced and handled, args intact", async () => {
   reset();
   feed("focus:panel");

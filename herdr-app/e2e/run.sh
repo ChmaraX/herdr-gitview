@@ -755,6 +755,11 @@ step "the trace: every copy's and the engine's lines in one folder, and trace.py
 do_ mod.open --name gitview-mark
 expect 'grep -qh "\"mod\":\"gitview-mark\".*\"kind\":\"mark\"" "$TRD"/*.jsonl && grep -qh "\"mod\":\"list\".*\"kind\":\"mark\"" "$TRD"/*.jsonl' "the mark command: a mark with its snapshot, and the list's own part (within its 1 s flush)" 10
 sleep 1.5 # the other copies' last lines
+# The commit (its body line) and the notes went in as gitview.commit: and
+# gitview-diff.note: commands: their text must not be in the trace.
+cat "$TRD"/*.jsonl >"$ART/trace-all.jsonl"
+grep -qF -e 'with a body line' -e 'please name x something meaningful' -e 'the message has several lines' "$ART/trace-all.jsonl" \
+  && fail "a commit message or a note body is in the trace" || ok "no commit message or note body in the trace"
 python3 "$REPO/herdr-app/tools/trace.py" "$TRD" >"$ART/trace.txt" 2>&1 || fail "trace.py: $(tail -3 "$ART/trace.txt")"
 python3 "$REPO/herdr-app/tools/trace.py" "$TRD" --around mark >"$ART/trace-mark.txt" 2>&1
 grep -q '"panes"' "$ART/trace.txt" && grep -q 'list/.* mark ' "$ART/trace-mark.txt" && ok "trace.py --around mark: the mark and the copies' snapshots" || fail "no mark in trace.py's output"

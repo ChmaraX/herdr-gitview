@@ -217,18 +217,13 @@ export function shortArgs(args) {
   return s.length > 300 ? `${s.slice(0, 300)}…` : s;
 }
 
-// A `<mod>.<command>` string as traced (modkit.js's commandLoop). The
-// colon-delimited commands whose payload is text — a commit message
-// (commit:<message>, keys.js), a note body (note:<body>, gitview-diff) —
-// keep the op name but drop everything after the first colon, so the trace
-// never holds that text (the header's rule). Everything else is paths,
-// keys, counts and targets: traced whole, since that is what the trace is
-// for. The original string still reaches the handler; only the logged
-// representation is redacted.
-const TEXT_COMMANDS = new Set(["commit", "note"]);
-export function shortCommand(command) {
-  if (typeof command !== "string") return command;
+// A `<mod>.<command>` string as commandLoop traces it. Only commands whose
+// argument is a path, key, target or line range keep it; any other (a
+// commit message, a note body, a command added later) keeps just its name,
+// so text can't reach the trace by default.
+const PLAIN_ARGS = new Set(["focus", "hidden", "discard", "key", "file", "click", "dblclick", "button", "drag"]);
+export function tracedCommand(command) {
   const colon = command.indexOf(":");
-  if (colon < 0) return command;
-  return TEXT_COMMANDS.has(command.slice(0, colon)) ? `${command.slice(0, colon)}:<redacted>` : command;
+  const what = colon < 0 ? command : command.slice(0, colon);
+  return colon < 0 || PLAIN_ARGS.has(what) ? command : `${what}:…`;
 }
