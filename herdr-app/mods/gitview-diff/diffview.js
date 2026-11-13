@@ -106,9 +106,17 @@ function readable(fg, behind, t) {
   return out;
 }
 
+// An invisible probe: ten "0"s in the diff's font (inherited here). Its
+// measured width over ten is one column's width; `report(px)` gets the host
+// width, which re-measures itself on a font, size or zoom change.
+export function columnProbe(report) {
+  return div().absolute().top_0().left_0().opacity(0).flex_none().child("0".repeat(10)).on_size_change((size) => report(size.width));
+}
+
 // ctx: {t, cursor, selection: [a, b] | null, focused, composer (TextareaState),
-// pending (the note being written), onDown(index, event, cx), onMove(index, cx),
-// onDeleteNote(note, cx)}
+// pending (the note being written), scrollX (sideways offset px), contentW
+// (how wide the rows paint), onWidth(px, cx) (a row's natural width),
+// onDown(index, event, cx), onMove(index, cx), onDeleteNote(note, cx)}
 export function renderRow(item, ctx) {
   const { t } = ctx;
   if (item.note) return noteCard(item.note, ctx);
@@ -117,6 +125,43 @@ export function renderRow(item, ctx) {
   const { row, index } = item;
   const selected = ctx.selection && index >= ctx.selection[0] && index <= ctx.selection[1];
   const cursor = index === ctx.cursor ? cursorTint(t, ctx.focused) : null;
+  const sx = ctx.scrollX ?? 0;
+  // The row clips to the pane; its content sits in a layer as wide as the
+  // measured range, pushed left by the sideways offset, so the tints paint
+  // across the whole line and the tail comes into view when scrolled. The
+  // text wrapper reports its natural width (the range is measured, not
+  // estimated). The cursor bar stays at the pane's left edge (left = sx in
+  // the layer's own coordinates), while the row's note cards and composer
+  // keep the pane's width (they aren't in this layer).
+  const content = h_flex()
+    .absolute()
+    .top_0()
+    .bottom_0()
+    .left(-sx)
+    .w(ctx.contentW)
+    .items_center()
+    .when(Boolean(row.bg), (e) => e.bg(color(row.bg, t)))
+    .when(selected, (e) => e.bg(t.selection))
+    .when(Boolean(cursor), (e) =>
+      e
+        .child(div().absolute().inset_0().bg(cursor))
+        .child(div().absolute().top_0().bottom_0().left(sx).w(2).bg(ctx.focused ? t.accent : t.dim)))
+    .child(
+      h_flex()
+        .flex_none()
+        .items_center()
+        .on_size_change((size, cx) => ctx.onWidth?.(size.width, cx))
+        .children(
+          row.s.map(([text, fg, bg]) => {
+            // A span tinted like its row is painted once: twice would stack the
+            // translucent tint (darker boxes behind the text).
+            const own = Boolean(bg) && !selected && bg !== row.bg;
+            const behind = [selected ? t.selection : row.bg && color(row.bg, t), cursor, own && color(bg, t)].filter(Boolean);
+            const span = div().flex_none().child(text.replace(/ /g, "\u00a0"));
+            return span.when(Boolean(fg), (e) => e.text_color(readable(color(fg, t), behind, t))).when(own, (e) => e.bg(color(bg, t)));
+          }),
+        ),
+    );
   return h_flex()
     .id(`d${index}`)
     .relative()
@@ -125,27 +170,9 @@ export function renderRow(item, ctx) {
     .flex_none()
     .overflow_hidden()
     .when(row.k === "fold", (e) => e.cursor_pointer())
-    .when(Boolean(row.bg), (e) => e.bg(color(row.bg, t)))
-    .when(selected, (e) => e.bg(t.selection))
-    // The cursor: a faint wash of the text colour over the whole row (on top
-    // of a green or red row too) and a 2 px bar, both laid over the row so
-    // nothing moves. Painted before the text, so the text stays on top.
-    .when(Boolean(cursor), (e) =>
-      e
-        .child(div().absolute().inset_0().bg(cursor))
-        .child(div().absolute().top_0().bottom_0().left_0().w(2).bg(ctx.focused ? t.accent : t.dim)))
     .on_mouse_down("left", (e, cx) => ctx.onDown(index, e, cx))
     .on_mouse_move((_e, cx) => ctx.onMove(index, cx))
-    .children(
-      row.s.map(([text, fg, bg]) => {
-        // A span tinted like its row is painted once: twice would stack the
-        // translucent tint (darker boxes behind the text).
-        const own = Boolean(bg) && !selected && bg !== row.bg;
-        const behind = [selected ? t.selection : row.bg && color(row.bg, t), cursor, own && color(bg, t)].filter(Boolean);
-        const span = div().flex_none().child(text.replace(/ /g, "\u00a0"));
-        return span.when(Boolean(fg), (e) => e.text_color(readable(color(fg, t), behind, t))).when(own, (e) => e.bg(color(bg, t)));
-      }),
-    );
+    .child(content);
 }
 
 // The cursor row's wash: the theme's text colour at 10% (6% when the pane

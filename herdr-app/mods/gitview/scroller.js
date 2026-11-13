@@ -11,13 +11,66 @@ import { unzoom } from "./zoom.js";
 const BAR = 6;
 
 export class Scroller {
-  constructor(id) {
+  // `horizontal`: opt-in sideways scrolling (the diff pane; the file list
+  // leaves it off and is unchanged). The sideways range is measured from the
+  // rows (measureWidth), not estimated: the widest row seen so far plus
+  // `pad` px of room after it. It only grows per file (monotonic, so the
+  // measure can't oscillate) and resets on another file (resetX).
+  constructor(id, { horizontal = false } = {}) {
     this.id = id;
     this.top = 0;
     this.height = 0; // the viewport, in layout px
     this.sizes = null;
     this.offsets = [0];
     this.dragging = null;
+    this.horizontal = horizontal;
+    this.left = 0; // the sideways offset, in layout px
+    this.vw = 0; // the viewport's width, in layout px
+    this.contentW = 0; // the widest row measured so far
+    this.pad = 0; // room after the widest row (set by the owner)
+  }
+
+  // The sideways range: the widest row plus its room, never less than the
+  // viewport (so a file that fits never scrolls).
+  range() {
+    return Math.max(this.contentW + this.pad, this.vw);
+  }
+
+  clampX() {
+    this.left = Math.max(0, Math.min(this.left, this.range() - this.vw));
+  }
+
+  // Room to leave after the widest row (the diff's "2 columns").
+  setPad(pad) {
+    if (pad === this.pad) return;
+    this.pad = pad;
+    this.clampX();
+  }
+
+  // A drawn row's natural width (layout px). Monotonic: only a wider row
+  // grows the range, so measure -> notify -> redraw -> measure can't loop.
+  // Returns true when the range grew.
+  measureWidth(px, cx) {
+    const w = unzoom(px);
+    if (!(w > this.contentW)) return false;
+    this.contentW = w;
+    this.clampX();
+    cx?.notify();
+    return true;
+  }
+
+  // Sideways by `px` (negative: left); returns true when it moved.
+  scrollBy(px) {
+    const before = this.left;
+    this.left += px;
+    this.clampX();
+    return this.left !== before;
+  }
+
+  // Another file: start sideways from 0 with a fresh range.
+  resetX() {
+    this.left = 0;
+    this.contentW = 0;
   }
 
   // Item heights.
@@ -87,6 +140,10 @@ export class Scroller {
     const over = total > this.height + 1 && this.height > 0;
     const thumb = over ? Math.max(24, (this.height * this.height) / total) : 0;
     const thumbTop = over ? ((this.height - thumb) * this.top) / (total - this.height) : 0;
+    const range = this.range();
+    const overX = this.horizontal && range > this.vw + 1 && this.vw > 0;
+    const thumbX = overX ? Math.max(24, (this.vw * this.vw) / range) : 0;
+    const thumbLeft = overX ? ((this.vw - thumbX) * this.left) / (range - this.vw) : 0;
     return div()
       .id(this.id)
       .relative()
@@ -96,22 +153,40 @@ export class Scroller {
       .overflow_hidden()
       .on_size_change((size, cx) => {
         const height = unzoom(size.height);
-        if (height === this.height) return;
+        const width = unzoom(size.width);
+        if (height === this.height && !(this.horizontal && width !== this.vw)) return;
         this.height = height;
+        this.vw = width;
         this.clamp();
+        this.clampX();
         cx.notify();
       })
       .on_scroll_wheel((e, cx) => {
-        const before = this.top;
-        this.top -= unzoom(e.delta.y);
+        const beforeTop = this.top;
+        const beforeLeft = this.left;
+        const dy = unzoom(e.delta.y);
+        // Sideways: a trackpad's delta.x, or shift+wheel (a mouse's vertical
+        // wheel turned sideways). Everything else moves vertically.
+        if (this.horizontal && e.modifiers?.shift) {
+          this.left -= dy;
+        } else {
+          this.top -= dy;
+          if (this.horizontal) this.left -= unzoom(e.delta.x ?? 0);
+        }
         this.clamp();
-        if (this.top !== before) cx.notify();
+        this.clampX();
+        if (this.top !== beforeTop || this.left !== beforeLeft) cx.notify();
       })
       .on_mouse_move((e, cx) => {
         if (!this.dragging) return;
         const d = this.dragging;
-        this.top = d.top + (unzoom(e.position.y - d.y) * (total - this.height)) / Math.max(1, this.height - thumb);
-        this.clamp();
+        if (d.axis === "x") {
+          this.left = d.left + (unzoom(e.position.x - d.x) * (range - this.vw)) / Math.max(1, this.vw - thumbX);
+          this.clampX();
+        } else {
+          this.top = d.top + (unzoom(e.position.y - d.y) * (total - this.height)) / Math.max(1, this.height - thumb);
+          this.clamp();
+        }
         cx.notify();
       })
       .on_mouse_up("left", () => { this.dragging = null; })
@@ -129,7 +204,25 @@ export class Scroller {
             .bg(t.border)
             .hover((s) => s.bg(t.input ?? t.muted))
             .on_mouse_down("left", (ev, cx) => {
-              this.dragging = { y: ev.position.y, top: this.top };
+              this.dragging = { axis: "y", y: ev.position.y, top: this.top };
+              cx.stop_propagation();
+            }),
+        ),
+      )
+      .when(overX, (e) =>
+        e.child(
+          div()
+            .id(`${this.id}-thumb-x`)
+            .absolute()
+            .bottom(1)
+            .h(BAR)
+            .left(thumbLeft)
+            .w(thumbX)
+            .rounded(3)
+            .bg(t.border)
+            .hover((s) => s.bg(t.input ?? t.muted))
+            .on_mouse_down("left", (ev, cx) => {
+              this.dragging = { axis: "x", x: ev.position.x, left: this.left };
               cx.stop_propagation();
             }),
         ),

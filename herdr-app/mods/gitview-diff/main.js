@@ -46,6 +46,7 @@ const KEYS = [
   { caps: ["j", "k"], label: "move", on: { j: inDiff((v) => v.line(1)), down: inDiff((v) => v.line(1)), k: inDiff((v) => v.line(-1)), up: inDiff((v) => v.line(-1)) } },
   { caps: ["pageup", "pagedown"], label: "a page", on: { pagedown: inDiff((v) => v.line(v.page())), space: inDiff((v) => v.line(v.page())), pageup: inDiff((v) => v.line(-v.page())) } },
   { caps: ["g", "G"], label: "top / bottom", on: { g: inDiff((v) => v.line(-Infinity)), home: inDiff((v) => v.line(-Infinity)), G: inDiff((v) => v.line(Infinity)), end: inDiff((v) => v.line(Infinity)) } },
+  { caps: ["h", "l"], label: "scroll sideways", on: { h: inDiff((v, cx) => v.scrollX(-1, cx)), left: inDiff((v, cx) => v.scrollX(-1, cx)), l: inDiff((v, cx) => v.scrollX(1, cx)), right: inDiff((v, cx) => v.scrollX(1, cx)) } },
   { caps: ["s"], label: "stage", rank: 1, on: { s: (v, cx) => v.act("stage", cx) } },
   { caps: ["u"], label: "unstage", rank: 2, on: { u: (v, cx) => v.act("unstage", cx) } },
   { caps: ["m"], label: "diff / preview", rank: 4, when: (v) => Boolean(previewKind(v.view)), on: { m: (v, cx) => v.togglePreview(cx) } },
@@ -75,7 +76,8 @@ export default class GitDiff extends View {
     this.tr.start(cx);
     this.place = panePlacement(props()); // props(): read here only (placement.js)
     this.handle = cx.focus_handle();
-    this.scroll = new Scroller("gitview-diff-rows");
+    this.scroll = new Scroller("gitview-diff-rows", { horizontal: true });
+    this.col = 7; // one column's width (px), until the probe measures it
     this.composer = TextareaState.new({ placeholder: "Note for the agent", rows: 3 });
     this.composer.on("submit", (_e, cx) => this.saveNote(this.composer.value(), cx));
     this.view = null; // what's shown (a view from the list), null: nothing
@@ -281,7 +283,7 @@ export default class GitDiff extends View {
       if (line || !keep || another) {
         const at = line ? diff.rows.findIndex((r) => r.n === line) : diff.rows.findIndex((r) => r.k === "add" || r.k === "del");
         this.cursor = Math.max(0, at);
-        if (another) this.scroll.top = 0;
+        if (another) { this.scroll.top = 0; this.scroll.resetX(); }
         this.pendingReveal = { row: this.cursor, center: true }; // once `display` has these rows
       } else if (keepLines) {
         const at = this.rowOf(keepLines.cursor);
@@ -357,6 +359,12 @@ export default class GitDiff extends View {
     this.cursor = Math.min(n - 1, Math.max(0, this.cursor + delta));
     this.pendingReveal = { row: this.cursor, margin: diffs.ROW * 2 };
     this.publishCursor();
+  }
+
+  // h/l and ←/→: scroll the rows sideways by 4 columns a press (the cursor
+  // stays on its line; only the view moves).
+  scrollX(dir, cx) {
+    if (this.scroll.scrollBy(dir * 4 * this.col)) cx?.notify();
   }
 
   // J/K: the next or previous file of the list.
@@ -634,6 +642,12 @@ export default class GitDiff extends View {
       composer: this.composer,
       pending: this.pendingNote,
       uiFont: settings().ui_font ?? "Geist",
+      // Sideways scrolling: how far the rows are pushed left, how wide they
+      // paint (the measured range, never under the pane), and where a row
+      // reports its natural width.
+      scrollX: this.scroll.left,
+      contentW: Math.max(this.scroll.range(), this.width),
+      onWidth: (px, cx) => this.scroll.measureWidth(px, cx),
       onDown: (i, e, cx) => this.down(i, e, cx),
       onMove: (i, cx) => this.over(i, cx),
       onDeleteNote: (n, cx) => { removeNotes(key, [n.id]); cx.notify(); },
@@ -657,6 +671,7 @@ export default class GitDiff extends View {
           .font_family(settings().font_family ?? "JetBrains Mono")
           .text_size(12)
           .child(this.scroll.view(t, (i) => diffs.renderRow(display[i], ctx)))
+          .child(diffs.columnProbe((px) => { const c = unzoom(px) / 10; if (c > 0) { this.col = c; this.scroll.setPad(2 * c); } }))
           .when(Boolean(this.diff.error || this.diff.empty || this.diff.binary), (e) =>
             e.child(div().absolute().top(10).px(14).text_color(this.diff.error ? t.ansi1 : t.dim).child(this.diff.error ? `Couldn't load the diff: ${this.diff.error}` : this.diff.binary ? "Binary file" : "No text changes")),
           )
