@@ -719,7 +719,11 @@ enum Named<'a> {
     File(&'a FileEntry),
     /// A folder (`src`, `src/`, `.`): the entries under it in the section.
     Folder(Vec<&'a FileEntry>),
-    /// Neither: passed to git as given.
+    /// Neither: passed to git as given. git now runs with
+    /// `--literal-pathspecs`, so this raw path is taken verbatim, not as a
+    /// glob. A user-typed `src/*.rs` names a literal file, it does not expand
+    /// — the correct trade, since globs were never documented and letting
+    /// them through is exactly how unselected files got staged/discarded.
     Other,
 }
 
