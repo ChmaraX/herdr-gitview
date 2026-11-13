@@ -86,7 +86,7 @@ export default class GitDiff extends View {
     this.anchor = null;
     this.dragging = false;
     this.unfold = false;
-    this.rawWidth = shared("gitview.paneWidth") ?? 0; // the last pane's width in zoomed px (see zoom.js): a new pane lays out right away
+    this.width = shared("gitview.paneWidth") ?? 0; // the last pane's: a new pane lays out right away
     this.preview = null; // {view, kind, …} (preview.js), or {view, failed}
     this.diffView = null; // the view `diff` is of
     this.lastBody = null; // "diff" | "preview": what the body showed last
@@ -104,12 +104,6 @@ export default class GitDiff extends View {
 
   tab() {
     return this.place.tab();
-  }
-
-  // The pane's width in layout px (the unit the breakpoints and the footer
-  // compare against), from on_size_change's zoomed px (see zoom.js).
-  get width() {
-    return unzoom(this.rawWidth);
   }
 
   // This copy's pane (null: not yet in the app's lists).
@@ -680,9 +674,10 @@ export default class GitDiff extends View {
       .on_mouse_down("left", (_e, cx) => { this.focusHere(cx); cx.notify(); })
       .on_mouse_up("left", (_e, cx) => this.up(cx))
       .on_size_change((size, cx) => {
-        if (size.width === this.rawWidth) return;
-        this.rawWidth = size.width;
-        if (Math.abs((shared("gitview.paneWidth") ?? 0) - size.width) > 20) setShared("gitview.paneWidth", Math.round(size.width));
+        const width = unzoom(size.width);
+        if (width === this.width) return;
+        this.width = width;
+        if (Math.abs((shared("gitview.paneWidth") ?? 0) - width) > 20) setShared("gitview.paneWidth", Math.round(width));
         cx.notify();
       })
       .on_key_down((e, cx) => {

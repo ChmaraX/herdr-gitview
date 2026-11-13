@@ -14,16 +14,10 @@ export class Scroller {
   constructor(id) {
     this.id = id;
     this.top = 0;
-    this.rawHeight = 0; // on_size_change's height, in zoomed px (see zoom.js)
+    this.height = 0; // the viewport, in layout px
     this.sizes = null;
     this.offsets = [0];
     this.dragging = null;
-  }
-
-  // The viewport height in layout px, the unit `top`, `offsets` and the
-  // layout APIs (.top()/.h()) all speak.
-  get height() {
-    return unzoom(this.rawHeight);
   }
 
   // Item heights.
@@ -101,8 +95,9 @@ export class Scroller {
       .w_full()
       .overflow_hidden()
       .on_size_change((size, cx) => {
-        if (size.height === this.rawHeight) return;
-        this.rawHeight = size.height;
+        const height = unzoom(size.height);
+        if (height === this.height) return;
+        this.height = height;
         this.clamp();
         cx.notify();
       })

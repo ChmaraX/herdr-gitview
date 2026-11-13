@@ -59,7 +59,7 @@ export default class GitList extends View {
       cx.notify();
     });
     this.commitInput.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
-    this.rawWidth = 0; // on_size_change's width, in zoomed px (see zoom.js)
+    this.width = 0; // layout px
     this.mode = "files";
     this.scope = "worktree";
     this.work = null; // FileList: the changed files
@@ -140,12 +140,6 @@ export default class GitList extends View {
   // The tab whose diff pane this list drives.
   tab() {
     return this.place.tab(this.ctx);
-  }
-
-  // The panel's width in layout px (the unit the breakpoints and the footer
-  // compare against), from on_size_change's zoomed px (see zoom.js).
-  get width() {
-    return unzoom(this.rawWidth);
   }
 
   // The file list the shown view acts on (none in history and notes).
@@ -962,6 +956,7 @@ export default class GitList extends View {
       spinner: this.loads.shown(),
       header: this.mode === "files" ? `${this.work?.status.scope ?? "-"} ${this.work?.files() ?? 0} files` : this.mode,
       selected: list?.row()?.key ?? null,
+      width: Math.round(this.width),
     };
   }
 
@@ -1004,8 +999,9 @@ export default class GitList extends View {
       .track_focus(this.handle)
       .on_mouse_down("left", (_e, cx) => { this.focusHere(cx); cx.notify(); })
       .on_size_change((size, cx) => {
-        if (size.width === this.rawWidth) return;
-        this.rawWidth = size.width;
+        const width = unzoom(size.width);
+        if (width === this.width) return;
+        this.width = width;
         cx.notify();
       })
       .on_key_down((e, cx) => {
