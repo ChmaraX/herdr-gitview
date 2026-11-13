@@ -44,8 +44,9 @@
 //   list saw nvim's pane. When that pane goes, the list brings the diff
 //   back (main.js followHandoff).
 // - "gitview.previewOff": [kind]: kinds of file shown as Diff, not Preview.
-// - "gitview.paneWidth": px: the diff pane's last width (a new one lays out
-//   at it right away).
+// - "gitview.paneWidth": px: the diff pane's last width in zoomed px (as
+//   on_size_change reports it; see zoom.js), so a new pane seeds its rawWidth
+//   from it and lays out right away.
 // - "gitview.tree": the list shows folders as a tree.
 // - "gitview.own": {<space>: <tab>}: the space's gitview tab (cmd-g).
 // - "gitview.origins": {<space>: <tab>}: where cmd-g was pressed (it goes
