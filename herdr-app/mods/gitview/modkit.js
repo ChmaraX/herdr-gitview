@@ -5,7 +5,7 @@
 import { closeOverlay, focused, nextCommand, notify, panes, props, watchFolder } from "herdr";
 import { message } from "./engine.js";
 import { changedAt, ignoredDirs, stampChanged, stampOf } from "./shared.js";
-import { Tracer, tracer } from "./telemetry.js";
+import { shortCommand, Tracer, tracer } from "./telemetry.js";
 
 // At most one "gitview.changed" stamp per repo this often.
 const STAMP_MS = 250;
@@ -322,10 +322,13 @@ export function commandLoop(cx, { loads, before, handle, flash, name, tr = trace
       if (!queue.length) await new Promise((resolve) => (wake = resolve));
       wake = null;
       const command = queue.shift();
+      // What the trace may hold: commit messages and note bodies are dropped
+      // (shortCommand); the handler below still gets the original `command`.
+      const safe = shortCommand(command);
       try {
         // Focus doesn't wait for loads: the keys must arrive with it.
         if (command === "focus" || command.startsWith("focus:")) {
-          tr.line("input", { command });
+          tr.line("input", { command: safe });
           handle(command, cx);
           cx.notify();
           continue;
@@ -337,14 +340,14 @@ export function commandLoop(cx, { loads, before, handle, flash, name, tr = trace
         await loads.idle(cx, () => {
           if (said || Date.now() - asked < 3000) return;
           said = true;
-          tr.warn(`${name}: ${command} is waiting for ${loads.names()}`, { waiting: command });
+          tr.warn(`${name}: ${safe} is waiting for ${loads.names()}`, { waiting: safe });
         });
-        tr.line("input", { command, busy, waited: Date.now() - asked });
+        tr.line("input", { command: safe, busy, waited: Date.now() - asked });
         handle(command, cx);
         cx.notify();
       } catch (e) {
-        console.error(`${name}: ${command}: ${message(e)}\n${e?.stack ?? ""}`);
-        tr.warn(`${name}: ${command}: ${message(e)}`, { level: "error" });
+        console.error(`${name}: ${safe}: ${message(e)}\n${e?.stack ?? ""}`);
+        tr.warn(`${name}: ${safe}: ${message(e)}`, { level: "error" });
         flash?.set(message(e));
       }
     }
