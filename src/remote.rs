@@ -5,7 +5,7 @@
 //! checks which machine it is on.
 
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
@@ -83,12 +83,16 @@ const MEASURE_BATCH: usize = 200;
 
 /// Exit code of [`READ`] for a file that isn't there.
 const MISSING: i32 = 44;
-const READ: &str = r#"[ -e "$1" ] || exit 44; exec cat -- "$1""#;
+/// A symlink (`-L`) reads as its target path (git's view, mode `120000`),
+/// never the file it points at; only then is a real file read.
+const READ: &str = r#"[ -L "$1" ] && { printf %s "$(readlink -- "$1")"; exit 0; }; [ -e "$1" ] || exit 44; exec cat -- "$1""#;
 
 /// Exit code of [`READ_AT_MOST`] for a file over the limit (its size on
 /// stdout).
 const TOO_BIG: i32 = 45;
-const READ_AT_MOST: &str = r#"[ -f "$1" ] || exit 44; n=$(($(wc -c < "$1"))) || exit 1; [ "$n" -le "$2" ] || { echo "$n"; exit 45; }; exec cat -- "$1""#;
+/// A symlink reads as its target path string (bounded by `$2` like any
+/// read), so a worktree read never follows a link out of the repo.
+const READ_AT_MOST: &str = r#"if [ -L "$1" ]; then t=$(readlink -- "$1") || exit 1; n=$(printf %s "$t" | wc -c); n=$((n)); [ "$n" -le "$2" ] || { echo "$n"; exit 45; }; printf %s "$t"; exit 0; fi; [ -f "$1" ] || exit 44; n=$(($(wc -c < "$1"))) || exit 1; [ "$n" -le "$2" ] || { echo "$n"; exit 45; }; exec cat -- "$1""#;
 
 /// A file's bytes, read only up to a limit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,10 +104,85 @@ pub enum Contents {
     Bytes(Vec<u8>),
 }
 
+/// What a worktree read finds at a repo-relative path on *this* machine,
+/// without ever following a symlink. Git stores a symlink as a `120000`
+/// blob holding its target path string; gitview matches that — it shows the
+/// target text and never dereferences the link, so a worktree read can't
+/// cross the repo boundary into an unrelated file. Containment is by *not
+/// following*, not by a canonicalize-then-read check (which races, and
+/// can't reach the remote arm at all).
+enum WorktreeEntry {
+    /// A regular file at this full path, this many bytes.
+    File(PathBuf, u64),
+    /// A symlink; its content is its target path (these bytes), as git has it.
+    Link(Vec<u8>),
+    /// Nothing to read here: missing, a directory, or a path that would have
+    /// to traverse a symlinked directory to reach.
+    Missing,
+}
+
+/// Classify `dir`/`path` for a local worktree read without following any
+/// symlink. `path` is repo-relative with only normal components (see
+/// `appfile::inside`). A symlink as the final component reads as its target
+/// text; a symlink as an intermediate component is never traversed (git
+/// tracks no path reached through one), so it reads as missing.
+fn worktree_entry(dir: &Path, path: &Path) -> WorktreeEntry {
+    let names: Vec<&OsStr> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(n) => Some(n),
+            _ => None, // CurDir; inside() guarantees nothing else
+        })
+        .collect();
+    let Some((last, parents)) = names.split_last() else {
+        return WorktreeEntry::Missing;
+    };
+    let mut full = dir.to_path_buf();
+    for name in parents {
+        full.push(name);
+        match std::fs::symlink_metadata(&full) {
+            Ok(meta) if meta.is_dir() => {}     // a real directory: keep walking
+            _ => return WorktreeEntry::Missing, // missing, a file, or a symlink
+        }
+    }
+    full.push(last);
+    let Ok(meta) = std::fs::symlink_metadata(&full) else {
+        return WorktreeEntry::Missing;
+    };
+    if meta.file_type().is_symlink() {
+        return match std::fs::read_link(&full) {
+            Ok(target) => WorktreeEntry::Link(link_bytes(&target)),
+            Err(_) => WorktreeEntry::Missing,
+        };
+    }
+    if meta.is_file() {
+        WorktreeEntry::File(full, meta.len())
+    } else {
+        WorktreeEntry::Missing
+    }
+}
+
+/// A symlink target's bytes, as git stores them: the raw path, no newline.
+fn link_bytes(target: &Path) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        target.as_os_str().as_bytes().to_vec()
+    }
+    #[cfg(not(unix))]
+    {
+        target.to_string_lossy().into_owned().into_bytes()
+    }
+}
+
 /// One process for sizes, one for line counts, however many files: `wc -c`
 /// gives sizes, `grep -c -I` counts lines (an unterminated last one too)
-/// and gives 0 for a binary file. Rust lines the answers up by name.
-const MEASURE: &str = r#"wc -c -- "$@" 2>/dev/null; echo '--gitview--'; grep -H -c -I -e '' -- "$@" 2>/dev/null; exit 0"#;
+/// and gives 0 for a binary file. A leading `--links--` section names each
+/// symlink and its target length, so Rust reports a symlink as git does
+/// (its target string, one line) instead of following it; `wc`/`grep`
+/// values for those names are then ignored. Rust lines the answers up by
+/// name.
+const MEASURE: &str = r#"for f; do [ -L "$f" ] && { n=$(printf %s "$(readlink -- "$f")" | wc -c); printf '%s %s\n' "$((n))" "$f"; }; done; echo '--links--'; wc -c -- "$@" 2>/dev/null; echo '--gitview--'; grep -H -c -I -e '' -- "$@" 2>/dev/null; exit 0"#;
 
 impl Machine {
     /// `--on` as given: `None` or `""` is this machine.
@@ -183,7 +262,11 @@ impl Machine {
     /// call is an error (not a deleted file).
     pub fn read(&self, dir: &Path, path: &Path) -> Result<Option<Vec<u8>>> {
         match self {
-            Machine::Local => Ok(std::fs::read(dir.join(path)).ok()),
+            Machine::Local => Ok(match worktree_entry(dir, path) {
+                WorktreeEntry::Missing => None,
+                WorktreeEntry::Link(target) => Some(target),
+                WorktreeEntry::File(full, _) => std::fs::read(full).ok(),
+            }),
             Machine::On(m) => {
                 let name = path.to_string_lossy();
                 let cmd =
@@ -207,24 +290,25 @@ impl Machine {
     /// size before reading; a failed call is an error.
     pub fn read_at_most(&self, dir: &Path, path: &Path, max: u64) -> Result<Contents> {
         match self {
-            Machine::Local => {
-                let full = dir.join(path);
-                let Ok(meta) = std::fs::metadata(&full) else {
-                    return Ok(Contents::Missing);
-                };
-                if !meta.is_file() {
-                    return Ok(Contents::Missing);
+            Machine::Local => match worktree_entry(dir, path) {
+                WorktreeEntry::Missing => Ok(Contents::Missing),
+                WorktreeEntry::Link(target) => Ok(if target.len() as u64 > max {
+                    Contents::TooBig(target.len() as u64)
+                } else {
+                    Contents::Bytes(target)
+                }),
+                WorktreeEntry::File(full, len) => {
+                    if len > max {
+                        return Ok(Contents::TooBig(len));
+                    }
+                    let bytes = std::fs::read(&full)
+                        .with_context(|| format!("reading {}", full.display()))?;
+                    Ok(match bytes.len() as u64 {
+                        n if n > max => Contents::TooBig(n), // grew meanwhile
+                        _ => Contents::Bytes(bytes),
+                    })
                 }
-                if meta.len() > max {
-                    return Ok(Contents::TooBig(meta.len()));
-                }
-                let bytes =
-                    std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?;
-                Ok(match bytes.len() as u64 {
-                    n if n > max => Contents::TooBig(n), // grew meanwhile
-                    _ => Contents::Bytes(bytes),
-                })
-            }
+            },
             Machine::On(m) => {
                 let name = path.to_string_lossy();
                 let max = max.to_string();
@@ -257,7 +341,7 @@ impl Machine {
     /// process; there, every batch is one `hc exec` running two programs.
     pub fn measure(&self, dir: &Path, paths: &[&Path]) -> Vec<Option<FileFacts>> {
         match self {
-            Machine::Local => paths.iter().map(|p| measure_local(&dir.join(p))).collect(),
+            Machine::Local => paths.iter().map(|p| measure_local(dir, p)).collect(),
             Machine::On(m) => {
                 let mut facts = Vec::with_capacity(paths.len());
                 for (names, asked) in batches(paths) {
@@ -381,14 +465,26 @@ fn unknown() -> String {
     )
 }
 
-/// [`FileFacts`] for a file here: lines counted only up to
-/// [`MAX_COUNTED`] bytes and without a NUL in the first 8 KiB.
-fn measure_local(path: &Path) -> Option<FileFacts> {
-    let size = std::fs::metadata(path).ok()?.len();
+/// [`FileFacts`] for a repo-relative file here: lines counted only up to
+/// [`MAX_COUNTED`] bytes and without a NUL in the first 8 KiB. A symlink is
+/// measured as git has it — its target path string, counted as one line —
+/// never the file it points at.
+fn measure_local(dir: &Path, path: &Path) -> Option<FileFacts> {
+    let (full, size) = match worktree_entry(dir, path) {
+        WorktreeEntry::Missing => return None,
+        WorktreeEntry::Link(target) => {
+            let size = target.len() as u64;
+            return Some(FileFacts {
+                size,
+                lines: Some(if size == 0 { 0 } else { 1 }),
+            });
+        }
+        WorktreeEntry::File(full, len) => (full, len),
+    };
     if size > MAX_COUNTED {
         return Some(FileFacts { size, lines: None });
     }
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = std::fs::read(&full).ok()?;
     if bytes.iter().take(8192).any(|b| *b == 0) {
         return Some(FileFacts { size, lines: None });
     }
@@ -402,17 +498,21 @@ fn measure_local(path: &Path) -> Option<FileFacts> {
     })
 }
 
-/// Line [`MEASURE`]'s answers up with `names`: `wc -c` lines are
-/// `<size> <name>` (plus a `total`), `grep -c` lines `<name>:<count>`. A
-/// name missing from either answer was unreadable there.
+/// Line [`MEASURE`]'s answers up with `names`: a `--links--` section lists
+/// each symlink as `<target-len> <name>`, `wc -c` lines are `<size> <name>`
+/// (plus a `total`), `grep -c` lines `<name>:<count>`. A symlink is
+/// reported by its target string (one line), ignoring its `wc`/`grep`
+/// values; a name missing from the size/count answers was unreadable there.
 fn parse_measure(out: &str, names: &[String]) -> Vec<Option<FileFacts>> {
-    let (sizes, counts) = out.split_once("--gitview--\n").unwrap_or((out, ""));
-    let size_of = |name: &str| {
-        sizes.lines().find_map(|l| {
+    let (links, rest) = out.split_once("--links--\n").unwrap_or(("", out));
+    let (sizes, counts) = rest.split_once("--gitview--\n").unwrap_or((rest, ""));
+    let sized_in = |section: &str, name: &str| {
+        section.lines().find_map(|l| {
             let (n, rest) = l.trim_start().split_once(' ')?;
             (rest == name).then(|| n.parse::<u64>().ok()).flatten()
         })
     };
+    let size_of = |name: &str| sized_in(sizes, name);
     let count_of = |name: &str| {
         counts.lines().find_map(|l| {
             let (rest, n) = l.rsplit_once(':')?;
@@ -424,6 +524,13 @@ fn parse_measure(out: &str, names: &[String]) -> Vec<Option<FileFacts>> {
     names
         .iter()
         .map(|name| {
+            if let Some(target_len) = sized_in(links, name) {
+                // A symlink: git's size is its target string, one line.
+                return Some(FileFacts {
+                    size: target_len,
+                    lines: Some(if target_len == 0 { 0 } else { 1 }),
+                });
+            }
             let size = size_of(name)?;
             let count = count_of(name)?;
             // grep counts no line in a binary file; an empty file has none.
@@ -475,6 +582,28 @@ mod tests {
         assert_eq!(
             remote_error("fatal: not a git repository (or any parent)\nmore"),
             "fatal: not a git repository (or any parent)"
+        );
+    }
+
+    #[test]
+    fn a_measured_symlink_counts_as_its_target_string() {
+        // review.md is a symlink to ../outside.txt (16 bytes); its wc/grep
+        // values (from following it) must be ignored for the link length.
+        let names = ["review.md", "real.txt"].map(String::from).to_vec();
+        let out = "16 review.md\n--links--\n     99 review.md\n      4 real.txt\n    103 total\n--gitview--\nreview.md:9\nreal.txt:1\n";
+        let facts = parse_measure(out, &names);
+        assert_eq!(
+            facts,
+            [
+                Some(FileFacts {
+                    size: 16,
+                    lines: Some(1)
+                }),
+                Some(FileFacts {
+                    size: 4,
+                    lines: Some(1)
+                }),
+            ]
         );
     }
 

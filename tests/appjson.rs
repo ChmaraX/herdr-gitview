@@ -673,10 +673,10 @@ fn a_worktree_symlink_to_an_outside_file_is_not_dereferenced() {
     use std::os::unix::fs::symlink;
     let repo = fixture("json-symlink-outside");
     let d = &repo.dir;
-    let outside = d
-        .parent()
-        .unwrap()
-        .join(format!("gitview-symlink-outside-{}.txt", std::process::id()));
+    let outside = d.parent().unwrap().join(format!(
+        "gitview-symlink-outside-{}.txt",
+        std::process::id()
+    ));
     std::fs::write(&outside, "SYNTHETIC_OUTSIDE_SECRET\n").unwrap();
 
     // review.md -> ../<outside>, committed so git knows it as a symlink.
@@ -703,7 +703,11 @@ fn a_worktree_symlink_to_an_outside_file_is_not_dereferenced() {
         );
         // The git-object sides already store the link blob; they must keep it.
         let head = gv(d, &["file", "--path", path, "--side", "head"]);
-        assert_eq!(head["text"].as_str().unwrap_or(""), target, "{path} head: {head}");
+        assert_eq!(
+            head["text"].as_str().unwrap_or(""),
+            target,
+            "{path} head: {head}"
+        );
     }
     let _ = std::fs::remove_file(&outside);
 }
