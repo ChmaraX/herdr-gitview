@@ -3,7 +3,7 @@ import { world, reset } from "./stub.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdir, readFile, rm } from "node:fs/promises";
-const { Tracer, shortArgs, traceDir } = await import("../mods/gitview/telemetry.js");
+const { Tracer, shortArgs, shortCommand, traceDir } = await import("../mods/gitview/telemetry.js");
 
 const lines = async () => {
   const out = [];
@@ -65,6 +65,23 @@ test("snapshots carry sizes and counts, never note text; commit messages are cut
   assert.ok(!JSON.stringify(mark).includes("SECRET"));
   assert.equal(shortArgs(["commit", "--repo", "/r", "--", "my secret message"]), "commit --repo /r -- …");
   assert.equal(shortArgs(["stage", "--section", "changes", "--", "a.rs"]), "stage --section changes -- a.rs");
+});
+
+// Round 23: the programmatic commit/note commands carry text (a message, a
+// note body). Their logged representation keeps the op, drops the payload.
+test("shortCommand: text-carrying app commands keep the op, drop the payload; the rest is kept whole", () => {
+  assert.equal(shortCommand("commit:fix: a secret\n\nbody"), "commit:<redacted>");
+  assert.equal(shortCommand("note:correct horse battery staple"), "note:<redacted>");
+  assert.equal(shortCommand("commit:a:b"), "commit:<redacted>"); // everything after the first colon is text
+  assert.equal(shortCommand("commit:"), "commit:<redacted>");
+  assert.equal(shortCommand("commit"), "commit"); // no payload, nothing to redact
+  // Paths, keys, counts and targets are the point of the trace: kept whole.
+  assert.equal(shortCommand("file:src/a.rs"), "file:src/a.rs");
+  assert.equal(shortCommand("button:stage:section:1"), "button:stage:section:1");
+  assert.equal(shortCommand("key:j"), "key:j");
+  assert.equal(shortCommand("focus:panel"), "focus:panel");
+  assert.equal(shortCommand("focus"), "focus");
+  assert.equal(shortCommand("drag:3:7"), "drag:3:7");
 });
 
 test("renders: one summary per 10 s with count and max, a line for a render over 16 ms", async () => {
