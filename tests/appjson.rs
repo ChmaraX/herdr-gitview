@@ -376,74 +376,87 @@ fn after_a_double_dash_everything_is_positional() {
     );
 }
 
-/// A filename that is a git glob (`*`, a Next.js `[slug]` route, `?`) must
-/// act on exactly the selected file, never on everything the glob matches.
-/// git treats operands after `--` as pathspecs and still globs them, so the
-/// engine runs with `--literal-pathspecs`. Before that flag, staging one row
-/// also staged its unselected siblings and discarding it destroyed their
-/// edits. Mirrors issue #21's three scenarios plus the don't-over-fix control.
+/// A filename that is a git glob (`*`, a Next.js `[slug]` route) must act on
+/// exactly the selected file, never on everything the glob matches: git
+/// still globs operands after `--`. Before the fix, staging one row also
+/// staged its unselected siblings and discarding it destroyed their edits
+/// (issue #21).
 #[test]
 fn glob_named_files_act_only_on_the_selected_file() {
     let repo = fixture("json-literal-pathspec");
-    // Two siblings where `app/s/page.tsx` matches the `[slug]` char class.
+    let read = |rel: &str| std::fs::read_to_string(repo.dir.join(rel)).unwrap();
+    // `app/s/page.tsx` matches the `[slug]` character class.
     write(&repo.dir, "app/[slug]/page.tsx", "bracket v1\n");
     write(&repo.dir, "app/s/page.tsx", "sibling v1\n");
-    common::git(&repo.dir, &["add", "-A"]);
-    common::git(&repo.dir, &["commit", "-q", "-m", "routes"]);
-
-    // Scenario A: stage ONLY the bracket file -> only it is staged.
-    write(&repo.dir, "app/[slug]/page.tsx", "bracket v2\n");
-    write(&repo.dir, "app/s/page.tsx", "sibling v2\n");
-    gv(&repo.dir, &["stage", "--", "app/[slug]/page.tsx"]);
-    let status = gv(&repo.dir, &["status"]);
-    assert_eq!(
-        section(&status, "staged"),
-        ["app/[slug]/page.tsx"],
-        "the bracket glob must not stage its sibling"
-    );
-    assert_eq!(section(&status, "changes"), ["app/s/page.tsx"]);
-
-    // Scenario B: discard ONLY the bracket file -> the sibling edit survives.
-    gv(&repo.dir, &["unstage", "--", "app/[slug]/page.tsx"]);
-    gv(&repo.dir, &["discard", "--", "app/[slug]/page.tsx"]);
-    assert_eq!(
-        std::fs::read_to_string(repo.dir.join("app/[slug]/page.tsx")).unwrap(),
-        "bracket v1\n",
-        "the selected file is reverted"
-    );
-    assert_eq!(
-        std::fs::read_to_string(repo.dir.join("app/s/page.tsx")).unwrap(),
-        "sibling v2\n",
-        "the unselected sibling keeps its edit"
-    );
-
-    // Scenario C: the reporter's literal `*` filename (APFS/ext4 allow it).
     write(&repo.dir, "*", "star v1\n");
     write(&repo.dir, "victim.txt", "victim v1\n");
     common::git(&repo.dir, &["add", "-A"]);
-    common::git(&repo.dir, &["commit", "-q", "-m", "star"]);
-    write(&repo.dir, "*", "star v2\n");
-    write(&repo.dir, "victim.txt", "victim v2\n");
+    common::git(&repo.dir, &["commit", "-q", "-m", "routes"]);
+    for (rel, text) in [
+        ("app/[slug]/page.tsx", "bracket v2\n"),
+        ("app/s/page.tsx", "sibling v2\n"),
+        ("*", "star v2\n"),
+        ("victim.txt", "victim v2\n"),
+    ] {
+        write(&repo.dir, rel, text);
+    }
+
+    // Stage: only the selected file.
+    gv(&repo.dir, &["stage", "--", "app/[slug]/page.tsx"]);
     gv(&repo.dir, &["stage", "--", "*"]);
     let status = gv(&repo.dir, &["status"]);
-    assert_eq!(
-        section(&status, "staged"),
-        ["*"],
-        "`*` must stage only the file literally named `*`"
-    );
+    assert_eq!(section(&status, "staged"), ["*", "app/[slug]/page.tsx"]);
 
-    // Control: a real folder pathspec is not a glob and must still expand.
+    // Unstage: the sibling staged by hand stays staged.
+    common::git(&repo.dir, &["add", "app/s/page.tsx", "victim.txt"]);
+    gv(&repo.dir, &["unstage", "--", "app/[slug]/page.tsx"]);
+    gv(&repo.dir, &["unstage", "--", "*"]);
+    let status = gv(&repo.dir, &["status"]);
+    assert_eq!(section(&status, "staged"), ["app/s/page.tsx", "victim.txt"]);
+    common::git(&repo.dir, &["reset", "-q"]);
+
+    // Discard: the unselected files keep their edits.
+    gv(&repo.dir, &["discard", "--", "app/[slug]/page.tsx"]);
+    gv(&repo.dir, &["discard", "--", "*"]);
+    assert_eq!(read("app/[slug]/page.tsx"), "bracket v1\n");
+    assert_eq!(read("*"), "star v1\n");
+    assert_eq!(read("app/s/page.tsx"), "sibling v2\n");
+    assert_eq!(read("victim.txt"), "victim v2\n");
+
+    // A typed glob that names no changed file stages nothing.
+    let _ = json(&repo.dir, &["stage", "--", "*.txt"]);
+    assert!(section(&gv(&repo.dir, &["status"]), "staged").is_empty());
+
+    // The app's folder expansion still covers everything under a folder.
     write(&repo.dir, "pkg/a.rs", "a\n");
     write(&repo.dir, "pkg/b.rs", "b\n");
-    let done = gv(&repo.dir, &["stage", "--", "pkg/"]);
-    assert_eq!(
-        done["count"], 2,
-        "the folder still covers both files under it"
+    assert_eq!(gv(&repo.dir, &["stage", "--", "pkg/"])["count"], 2);
+}
+
+/// The person's commit hooks see git as they configured it: a hook that
+/// lists the staged files with a glob still finds them when gitview commits.
+#[test]
+fn commit_hooks_keep_their_own_globs() {
+    let repo = fixture("json-hook-globs");
+    write(&repo.dir, "a.rs", "fn a() {}\n");
+    common::git(&repo.dir, &["add", "a.rs"]);
+    common::git(&repo.dir, &["config", "core.hooksPath", ".git/hooks"]);
+    write(
+        &repo.dir,
+        ".git/hooks/pre-commit",
+        "#!/bin/sh\ngit diff --cached --name-only -- '*.rs' > .git/hook-saw\n",
     );
-    let status = gv(&repo.dir, &["status"]);
-    let staged = section(&status, "staged");
-    assert!(staged.contains(&"pkg/a.rs"));
-    assert!(staged.contains(&"pkg/b.rs"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let hook = repo.dir.join(".git/hooks/pre-commit");
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    gv(&repo.dir, &["commit", "--", "add a"]);
+    assert_eq!(
+        std::fs::read_to_string(repo.dir.join(".git/hook-saw")).unwrap(),
+        "a.rs\n"
+    );
 }
 
 #[test]

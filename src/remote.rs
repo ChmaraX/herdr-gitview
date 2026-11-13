@@ -150,15 +150,6 @@ impl Machine {
     /// `git <args>` in the repo (or folder) `dir`. Reads never take optional
     /// locks: a poll holding the index lock made the person's own
     /// merge/commit fail ("Unable to write index").
-    ///
-    /// `--literal-pathspecs` is a global flag before the subcommand, so every
-    /// path we hand git (stage/unstage/discard operands, diff/show previews)
-    /// is taken verbatim, never as a glob. A file named `*`, `app/[slug]/x`,
-    /// or `?` then acts on exactly that file instead of everything the glob
-    /// matches. Directory and whole-repo pathspecs (`src/`, `.`) are not
-    /// globs, so the app's own folder expansion keeps working. It must be a
-    /// flag, not `GIT_LITERAL_PATHSPECS`: env vars don't cross `hc exec` to a
-    /// remote machine.
     pub fn git(&self, dir: &Path, args: &[&str], run: Run) -> Command {
         crate::trace::count_git();
         match self {
@@ -166,13 +157,12 @@ impl Machine {
                 let mut cmd = Command::new(git_bin());
                 cmd.arg("-C")
                     .arg(dir)
-                    .arg("--literal-pathspecs")
                     .env("GIT_OPTIONAL_LOCKS", "0")
                     .args(args);
                 cmd
             }
             Machine::On(m) => {
-                let mut argv = vec!["git", "--no-optional-locks", "--literal-pathspecs"];
+                let mut argv = vec!["git", "--no-optional-locks"];
                 argv.extend(args);
                 Machine::hc_exec(m, dir, run, &argv)
             }
