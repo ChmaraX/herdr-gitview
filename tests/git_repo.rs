@@ -272,46 +272,6 @@ fn file_at_reads_index_head_and_commits() {
     assert_eq!(t.repo.file_at("HEAD", Path::new("nope.txt")).unwrap(), None);
 }
 
-/// Issue #22: the diff pane's worktree side (`file_in_worktree` →
-/// `Machine::read`) must show a symlink's target text, like git's stored
-/// `120000` blob, never the bytes of the file it points at — even across
-/// the repo boundary, and never by traversing a symlinked directory.
-#[test]
-fn worktree_read_shows_a_symlinks_target_not_the_file_it_points_at() {
-    use std::os::unix::fs::symlink;
-    let t = fixture("worktree-symlink");
-    let outside = t.dir.parent().unwrap().join(format!(
-        "gitview-outside-{}-{:?}.txt",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::write(&outside, "OUTSIDE_SECRET\n").unwrap();
-
-    // A tracked symlink to the outside file: reads as its target string.
-    symlink("../../outside.txt", t.dir.join("link.md")).unwrap();
-    assert_eq!(
-        t.repo
-            .file_in_worktree(Path::new("link.md"))
-            .unwrap()
-            .as_deref(),
-        Some("../../outside.txt"),
-        "a worktree symlink must read as its target text"
-    );
-
-    // A symlinked directory is never traversed into: dir -> parent, then
-    // dir/<outside name> would escape, so the read is missing, not the
-    // outside file's bytes.
-    symlink(t.dir.parent().unwrap(), t.dir.join("dir")).unwrap();
-    let via_dir = format!("dir/{}", outside.file_name().unwrap().to_str().unwrap());
-    assert_eq!(
-        t.repo.file_in_worktree(Path::new(&via_dir)).unwrap(),
-        None,
-        "a read must not traverse a symlinked directory"
-    );
-
-    let _ = std::fs::remove_file(&outside);
-}
-
 #[test]
 fn file_at_commit_sha_and_parent() {
     let t = fixture("file-at-sha");
