@@ -12,10 +12,10 @@ const BAR = 6;
 
 export class Scroller {
   // `horizontal`: opt-in sideways scrolling (the diff pane; the file list
-  // leaves it off and is unchanged). The sideways range is measured from the
-  // rows (measureWidth), not estimated: the widest row seen so far plus
-  // `pad` px of room after it. It only grows per file (monotonic, so the
-  // measure can't oscillate) and resets on another file (resetX).
+  // leaves it off and is unchanged). The sideways range is the content width
+  // the owner sets (setContent), from the data, not measured from the drawn
+  // rows; it resets on another file (resetX). Mutators (setContent, scrollBy,
+  // resetX) return whether something changed; the caller redraws.
   constructor(id, { horizontal = false } = {}) {
     this.id = id;
     this.top = 0;
@@ -26,36 +26,25 @@ export class Scroller {
     this.horizontal = horizontal;
     this.left = 0; // the sideways offset, in layout px
     this.vw = 0; // the viewport's width, in layout px
-    this.contentW = 0; // the widest row measured so far
-    this.pad = 0; // room after the widest row (set by the owner)
+    this.content = 0; // the content's width, in layout px (the owner sets it)
   }
 
-  // The sideways range: the widest row plus its room, never less than the
-  // viewport (so a file that fits never scrolls).
+  // The sideways range: the content width, never under the viewport (so a
+  // file that fits never scrolls).
   range() {
-    return Math.max(this.contentW + this.pad, this.vw);
+    return Math.max(this.content, this.vw);
   }
 
   clampX() {
     this.left = Math.max(0, Math.min(this.left, this.range() - this.vw));
   }
 
-  // Room to leave after the widest row (the diff's "2 columns").
-  setPad(pad) {
-    if (pad === this.pad) return;
-    this.pad = pad;
+  // The content's width (the widest line plus its room, in layout px), from
+  // the data. Returns true when the range or the clamped offset changed.
+  setContent(px) {
+    if (px === this.content) return false;
+    this.content = px;
     this.clampX();
-  }
-
-  // A drawn row's natural width (layout px). Monotonic: only a wider row
-  // grows the range, so measure -> notify -> redraw -> measure can't loop.
-  // Returns true when the range grew.
-  measureWidth(px, cx) {
-    const w = unzoom(px);
-    if (!(w > this.contentW)) return false;
-    this.contentW = w;
-    this.clampX();
-    cx?.notify();
     return true;
   }
 
@@ -67,10 +56,13 @@ export class Scroller {
     return this.left !== before;
   }
 
-  // Another file: start sideways from 0 with a fresh range.
+  // Another file: start sideways from 0 with a fresh range. Returns true
+  // when something moved (so the caller can redraw).
   resetX() {
+    const changed = this.left !== 0 || this.content !== 0;
     this.left = 0;
-    this.contentW = 0;
+    this.content = 0;
+    return changed;
   }
 
   // Item heights.
@@ -121,6 +113,19 @@ export class Scroller {
     this.clamp();
   }
 
+  // One scrollbar thumb: the same look on either axis, the axis setting which
+  // edge it hugs and which way it slides. `start(ev)` is the drag it begins.
+  thumb(t, axis, pos, size, start) {
+    const e = div()
+      .id(`${this.id}-thumb${axis === "x" ? "-x" : ""}`)
+      .absolute()
+      .rounded(3)
+      .bg(t.border)
+      .hover((s) => s.bg(t.input ?? t.muted))
+      .on_mouse_down("left", (ev, cx) => { this.dragging = start(ev); cx.stop_propagation(); });
+    return axis === "x" ? e.bottom(1).left(pos).h(BAR).w(size) : e.right(1).top(pos).w(BAR).h(size);
+  }
+
   // The element: `render(i)` builds item i. Wheel, size and the thumb are
   // handled here; `cx.notify()` redraws.
   view(t, render) {
@@ -154,7 +159,8 @@ export class Scroller {
       .on_size_change((size, cx) => {
         const height = unzoom(size.height);
         const width = unzoom(size.width);
-        if (height === this.height && !(this.horizontal && width !== this.vw)) return;
+        const changed = height !== this.height || (this.horizontal && width !== this.vw);
+        if (!changed) return;
         this.height = height;
         this.vw = width;
         this.clamp();
@@ -164,14 +170,18 @@ export class Scroller {
       .on_scroll_wheel((e, cx) => {
         const beforeTop = this.top;
         const beforeLeft = this.left;
+        const dx = unzoom(e.delta.x ?? 0);
         const dy = unzoom(e.delta.y);
-        // Sideways: a trackpad's delta.x, or shift+wheel (a mouse's vertical
-        // wheel turned sideways). Everything else moves vertically.
-        if (this.horizontal && e.modifiers?.shift) {
-          this.left -= dy;
-        } else {
+        if (!this.horizontal) {
           this.top -= dy;
-          if (this.horizontal) this.left -= unzoom(e.delta.x ?? 0);
+        } else if (e.modifiers?.shift && dx === 0) {
+          // A mouse wheel turned with shift, on a host that leaves the amount
+          // on delta.y (macOS moves it to delta.x; this covers the rest).
+          this.left -= dy;
+        } else if (Math.abs(dx) > Math.abs(dy)) {
+          this.left -= dx; // sideways dominates (a sideways swipe, or a swapped shift+wheel)
+        } else {
+          this.top -= dy; // vertical dominates: axis-locked, so a straight swipe doesn't drift sideways
         }
         this.clamp();
         this.clampX();
@@ -191,41 +201,7 @@ export class Scroller {
       })
       .on_mouse_up("left", () => { this.dragging = null; })
       .child(v_flex().absolute().left(0).right(0).top(this.offsets[start] - this.top).children(items))
-      .when(over, (e) =>
-        e.child(
-          div()
-            .id(`${this.id}-thumb`)
-            .absolute()
-            .right(1)
-            .w(BAR)
-            .top(thumbTop)
-            .h(thumb)
-            .rounded(3)
-            .bg(t.border)
-            .hover((s) => s.bg(t.input ?? t.muted))
-            .on_mouse_down("left", (ev, cx) => {
-              this.dragging = { axis: "y", y: ev.position.y, top: this.top };
-              cx.stop_propagation();
-            }),
-        ),
-      )
-      .when(overX, (e) =>
-        e.child(
-          div()
-            .id(`${this.id}-thumb-x`)
-            .absolute()
-            .bottom(1)
-            .h(BAR)
-            .left(thumbLeft)
-            .w(thumbX)
-            .rounded(3)
-            .bg(t.border)
-            .hover((s) => s.bg(t.input ?? t.muted))
-            .on_mouse_down("left", (ev, cx) => {
-              this.dragging = { axis: "x", x: ev.position.x, left: this.left };
-              cx.stop_propagation();
-            }),
-        ),
-      );
+      .when(over, (e) => e.child(this.thumb(t, "y", thumbTop, thumb, (ev) => ({ axis: "y", y: ev.position.y, top: this.top }))))
+      .when(overX, (e) => e.child(this.thumb(t, "x", thumbLeft, thumbX, (ev) => ({ axis: "x", x: ev.position.x, left: this.left }))));
   }
 }
