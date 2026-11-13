@@ -116,6 +116,40 @@ expect '"$APP" do gitview.file:agent.txt >/dev/null && [ "$(view_of $TAB path)" 
 do_ gitview.click:config.toml
 expect '[ "$(view_of $TAB path)" = config.toml ]' "(config.toml in the pane again)"
 
+step "long lines: l / → scroll the diff sideways, so the tail of a clipped line comes into view (#26)"
+# A file with one line far wider than the pane (all glyphs, a tail token) and
+# a short control line, both added (the whole line is green insert tint).
+LONGLINE='{"a":"0000000000","b":"1111111111","c":"2222222222","d":"3333333333","e":"4444444444","f":"5555555555","g":"6666666666","h":"7777777777","i":"8888888888","j":"9999999999","TAILZZZEND":1}'
+printf '%s\n{"short":1}\n' "$LONGLINE" >"$S/wide.json"
+do_ gitview.key:r
+expect '"$APP" do gitview.click:wide.json >/dev/null && pane_on $TAB wide.json' "wide.json in the diff pane" 15
+do_ gitview-diff.key:g # the top, where the long line is
+# The keys always run (the handler is the same path a keypress takes); the
+# pixels can only be compared when the window is drawing frames.
+if [ -n "${E2E_FOREGROUND:-}" ] && until_ drawn 5; then
+  shot 02c-wide-clipped 1.2
+  BEFORE=$(shasum "$ART/02c-wide-clipped.png" | cut -c1-40)
+  for _ in 1 2 3 4 5 6 7 8 9 10; do do_ gitview-diff.key:l; done
+  shot 02c-wide-scrolled 1.2
+  SCROLLED=$(shasum "$ART/02c-wide-scrolled.png" | cut -c1-40)
+  [ "$BEFORE" != "$SCROLLED" ] && ok "l scrolls the long line sideways: the diff pane changed (the tail is reachable)" \
+    || fail "l did not move the long line (the diff pane is byte-identical): $BEFORE"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do do_ gitview-diff.key:h; done
+  shot 02c-wide-back 1.2
+  BACK=$(shasum "$ART/02c-wide-back.png" | cut -c1-40)
+  [ "$BACK" != "$SCROLLED" ] && ok "h scrolls back: the diff pane changed again" || fail "h did not scroll back"
+  [ "$BACK" = "$BEFORE" ] && ok "h all the way back lands on the same view as the start" || echo "note: back view differs slightly from start ($BACK vs $BEFORE)" | tee -a "$LOG"
+else
+  skip "the sideways scroll pixels (no frames: E2E_FOREGROUND=1 and a drawing window)"
+  for _ in 1 2 3 4; do do_ gitview-diff.key:l; done # still exercise the handler (do_ fails on an error)
+  do_ gitview-diff.key:h
+  ok "l / h ran without error (the diff pane's key table binds them)"
+fi
+rm -f "$S/wide.json"
+do_ gitview.key:r
+do_ gitview.click:config.toml
+expect '[ "$(view_of $TAB path)" = config.toml ]' "(config.toml in the pane again)"
+
 step "keys: the footer's ? (or the key ?) opens every key; ? or esc closes it"
 do_ gitview.key:?
 expect 'overlay_open gitview-keys' "? in the list opens the keys card"
