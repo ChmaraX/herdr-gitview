@@ -33,6 +33,11 @@ import { loadPreview, previewBody, previewKind } from "./preview.js";
 import * as diffs from "./diffview.js";
 
 const EMPTY = { rows: [] };
+// One column's width (px) before the probe measures it (JetBrains Mono at
+// 12 px); replaced by the measured value on the first draw.
+const COL_FALLBACK = 7;
+// Room after the widest line, in columns (the sideways range's "+ pad").
+const PAD_COLS = 2;
 
 // Keys that act on the diff's lines: in Preview they say so instead, and
 // while the next file's diff is on its way (the old one still shows) they
@@ -46,7 +51,7 @@ const KEYS = [
   { caps: ["j", "k"], label: "move", on: { j: inDiff((v) => v.line(1)), down: inDiff((v) => v.line(1)), k: inDiff((v) => v.line(-1)), up: inDiff((v) => v.line(-1)) } },
   { caps: ["pageup", "pagedown"], label: "a page", on: { pagedown: inDiff((v) => v.line(v.page())), space: inDiff((v) => v.line(v.page())), pageup: inDiff((v) => v.line(-v.page())) } },
   { caps: ["g", "G"], label: "top / bottom", on: { g: inDiff((v) => v.line(-Infinity)), home: inDiff((v) => v.line(-Infinity)), G: inDiff((v) => v.line(Infinity)), end: inDiff((v) => v.line(Infinity)) } },
-  { caps: ["h", "l"], label: "scroll sideways", on: { h: inDiff((v, cx) => v.scrollX(-1, cx)), left: inDiff((v, cx) => v.scrollX(-1, cx)), l: inDiff((v, cx) => v.scrollX(1, cx)), right: inDiff((v, cx) => v.scrollX(1, cx)) } },
+  { caps: ["h", "l"], label: "scroll sideways", on: { h: inDiff((v) => v.sideways(-1)), left: inDiff((v) => v.sideways(-1)), l: inDiff((v) => v.sideways(1)), right: inDiff((v) => v.sideways(1)) } },
   { caps: ["s"], label: "stage", rank: 1, on: { s: (v, cx) => v.act("stage", cx) } },
   { caps: ["u"], label: "unstage", rank: 2, on: { u: (v, cx) => v.act("unstage", cx) } },
   { caps: ["m"], label: "diff / preview", rank: 4, when: (v) => Boolean(previewKind(v.view)), on: { m: (v, cx) => v.togglePreview(cx) } },
@@ -77,7 +82,8 @@ export default class GitDiff extends View {
     this.place = panePlacement(props()); // props(): read here only (placement.js)
     this.handle = cx.focus_handle();
     this.scroll = new Scroller("gitview-diff-rows", { horizontal: true });
-    this.col = 7; // one column's width (px), until the probe measures it
+    this.col = COL_FALLBACK; // one column's width (px), until the probe measures it
+    this.maxCols = 0; // the widest row in display columns (from the diff data)
     this.composer = TextareaState.new({ placeholder: "Note for the agent", rows: 3 });
     this.composer.on("submit", (_e, cx) => this.saveNote(this.composer.value(), cx));
     this.view = null; // what's shown (a view from the list), null: nothing
@@ -265,6 +271,7 @@ export default class GitDiff extends View {
         this.diffArgs = JSON.stringify(args);
       } catch (e) {
         if (sameFile(this.view, view) && !sameFile(this.diffView, view)) {
+          this.resetScroll(); // another file (its load failed): don't keep the old one's sideways offset
           this.diff = { rows: [], error: message(e) }; // said in the body, after the flash too
           this.diffView = view;
         }
@@ -283,7 +290,7 @@ export default class GitDiff extends View {
       if (line || !keep || another) {
         const at = line ? diff.rows.findIndex((r) => r.n === line) : diff.rows.findIndex((r) => r.k === "add" || r.k === "del");
         this.cursor = Math.max(0, at);
-        if (another) { this.scroll.top = 0; this.scroll.resetX(); }
+        if (another) this.resetScroll();
         this.pendingReveal = { row: this.cursor, center: true }; // once `display` has these rows
       } else if (keepLines) {
         const at = this.rowOf(keepLines.cursor);
@@ -362,9 +369,31 @@ export default class GitDiff extends View {
   }
 
   // h/l and ←/→: scroll the rows sideways by 4 columns a press (the cursor
-  // stays on its line; only the view moves).
-  scrollX(dir, cx) {
-    if (this.scroll.scrollBy(dir * 4 * this.col)) cx?.notify();
+  // stays on its line; only the view moves). on_key_down redraws after a
+  // handled key, so this one doesn't notify.
+  sideways(dir) {
+    this.scroll.scrollBy(dir * 4 * this.col);
+  }
+
+  // Another file is now shown: start vertical and sideways scroll at the
+  // top-left. Used by both the success and the error path of loadDiff.
+  resetScroll() {
+    this.scroll.top = 0;
+    this.scroll.resetX();
+  }
+
+  // The sideways content width, from the data: the widest row's display
+  // columns plus room, at one column's width. Redraws when it changed.
+  sizeContent(cx) {
+    if (this.scroll.setContent((this.maxCols + PAD_COLS) * this.col)) cx?.notify();
+  }
+
+  // One column's measured width (px), from the probe: on a font, size or
+  // zoom change it re-sizes the content and redraws.
+  setColumn(col, cx) {
+    if (!(col > 0) || col === this.col) return;
+    this.col = col;
+    this.sizeContent(cx);
   }
 
   // J/K: the next or previous file of the list.
@@ -590,6 +619,12 @@ export default class GitDiff extends View {
       mode: v && previewKind(v) ? (this.inPreview() ? "preview" : "diff") : "diff",
       spinner: this.loads.shown(),
       header: v ? `${v.letter ?? ""} ${v.path} +${v.add ?? 0} -${v.del ?? 0} ${v.scope}` : "Diff",
+      // The sideways scroll state (#26), so the e2e can watch it without
+      // hashing frames: the offset, the range, and the viewport width (the
+      // offset clamps at range - width, the tail at the right edge).
+      offsetX: Math.round(this.scroll.left),
+      rangeX: Math.round(this.scroll.range()),
+      viewW: Math.round(this.scroll.vw),
     };
   }
 
@@ -615,6 +650,10 @@ export default class GitDiff extends View {
     if (!this.dispKey || dispKey.some((k, i) => k !== this.dispKey[i])) {
       this.display = diffs.displayRows(this.diff, notes, dispKey[2]);
       this.scroll.measure(this.display.map(diffs.rowSize));
+      // The sideways range from the data: recomputed each time the diff
+      // changes, so it shrinks after a reload or a smaller font too.
+      this.maxCols = diffs.widestColumns(this.diff.rows);
+      this.scroll.setContent((this.maxCols + PAD_COLS) * this.col);
       this.dispKey = dispKey;
     }
     if (this.pendingAnchor) {
@@ -642,12 +681,9 @@ export default class GitDiff extends View {
       composer: this.composer,
       pending: this.pendingNote,
       uiFont: settings().ui_font ?? "Geist",
-      // Sideways scrolling: how far the rows are pushed left, how wide they
-      // paint (the measured range, never under the pane), and where a row
-      // reports its natural width.
-      scrollX: this.scroll.left,
-      contentW: Math.max(this.scroll.range(), this.width),
-      onWidth: (px, cx) => this.scroll.measureWidth(px, cx),
+      // Sideways scrolling: how far the text is pushed left (the tint,
+      // selection and cursor bar stay in the visible width).
+      offsetX: this.scroll.left,
       onDown: (i, e, cx) => this.down(i, e, cx),
       onMove: (i, cx) => this.over(i, cx),
       onDeleteNote: (n, cx) => { removeNotes(key, [n.id]); cx.notify(); },
@@ -671,7 +707,7 @@ export default class GitDiff extends View {
           .font_family(settings().font_family ?? "JetBrains Mono")
           .text_size(12)
           .child(this.scroll.view(t, (i) => diffs.renderRow(display[i], ctx)))
-          .child(diffs.columnProbe((px) => { const c = unzoom(px) / 10; if (c > 0) { this.col = c; this.scroll.setPad(2 * c); } }))
+          .child(diffs.columnProbe((col, cx) => this.setColumn(col, cx)))
           .when(Boolean(this.diff.error || this.diff.empty || this.diff.binary), (e) =>
             e.child(div().absolute().top(10).px(14).text_color(this.diff.error ? t.ansi1 : t.dim).child(this.diff.error ? `Couldn't load the diff: ${this.diff.error}` : this.diff.binary ? "Binary file" : "No text changes")),
           )
