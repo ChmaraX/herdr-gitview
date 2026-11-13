@@ -254,6 +254,19 @@ tab_id() { "$APP" ls | python3 -c "import json,sys; d=json.load(sys.stdin); prin
 shared() { python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); v=eval(sys.argv[2]); print(v if isinstance(v,str) else json.dumps(v))' "$HERDR_APP_HOME/shared.json" "$1" 2>/dev/null; }
 # The diff pane's view of a tab: a field of shared gitview.views[<tab>].
 view_of() { shared "s.get('gitview.views',{}).get('$1',{}).get('$2')"; }
+# The last value a diff pane drew for a traceFields field in a tab (from its
+# "draw" trace lines); empty when it never drew the field. Used to watch the
+# sideways scroll state (offsetX / rangeX / viewW) without hashing frames.
+diff_drew() { draws | python3 -c '
+import json, sys
+field, tab = sys.argv[1], sys.argv[2]
+val = ""
+for l in sys.stdin:
+    try: d = json.loads(l)
+    except ValueError: continue
+    if d.get("mod") == "pane" and d.get("tab") == tab and field in d:
+        val = d[field]
+print(val)' "$1" "$2"; }
 # The file an nvim terminal shows, asked of nvim itself over its socket.
 nvim_buf() {
   local fg sock pid
