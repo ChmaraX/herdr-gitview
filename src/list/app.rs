@@ -482,8 +482,8 @@ impl App {
     /// lines — a click on either of them selects that note.
     pub fn row_at(&self, offset_y: u16) -> Option<usize> {
         let mut y = 0usize;
-        for idx in self.list_offset..self.rows.len() {
-            y += self.rows[idx].height();
+        for (idx, row) in self.rows.iter().enumerate().skip(self.list_offset) {
+            y += row.height();
             if (offset_y as usize) < y {
                 return Some(idx);
             }
