@@ -979,7 +979,7 @@ impl Repo {
         if paths.is_empty() {
             return Ok(());
         }
-        let owned: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into()).collect();
+        let owned: Vec<String> = paths.iter().map(|p| pathspec(p)).collect();
         let mut args = vec!["add", "--"];
         args.extend(owned.iter().map(String::as_str));
         self.git(&args)?;
@@ -989,7 +989,7 @@ impl Repo {
     /// Throw away a path's worktree changes, keeping what's staged
     /// (`git restore -- <path>`).
     pub fn restore_worktree(&self, p: &Path) -> Result<()> {
-        self.git(&["restore", "--", &p.to_string_lossy()])?;
+        self.git(&["restore", "--", &pathspec(p)])?;
         Ok(())
     }
 
@@ -998,7 +998,7 @@ impl Repo {
         if paths.is_empty() {
             return Ok(());
         }
-        let owned: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into()).collect();
+        let owned: Vec<String> = paths.iter().map(|p| pathspec(p)).collect();
         let mut args = vec!["restore", "--staged", "--"];
         args.extend(owned.iter().map(String::as_str));
         self.git(&args)?;
@@ -1007,7 +1007,7 @@ impl Repo {
 
     /// Throw away all changes to this entry (worktree + index), per kind.
     pub fn discard(&self, e: &FileEntry) -> Result<()> {
-        let path = e.path.to_string_lossy().to_string();
+        let path = pathspec(&e.path);
         match e.kind {
             ChangeKind::Conflicted => {
                 bail!("resolve the conflict in the editor first")
@@ -1021,7 +1021,7 @@ impl Repo {
                 let orig = e
                     .orig_path
                     .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
+                    .map(|p| pathspec(p))
                     .unwrap_or_else(|| path.clone());
                 self.git(&["restore", "--staged", "--", &orig, &path])?;
                 self.git(&["restore", "--", &orig])?;
@@ -1078,6 +1078,16 @@ impl Repo {
 }
 
 // ---- parsers (pure functions, unit-testable) ------------------------------
+
+/// A path operand that git takes as exactly this path. After `--` git still
+/// globs `*`, `?` and `[...]`, so `app/[slug]/page.tsx` would also hit
+/// `app/s/page.tsx`. Folders (`src/`, `.`) still cover what's under them.
+/// Per path, not the global `--literal-pathspecs`: that flag exports
+/// `GIT_LITERAL_PATHSPECS=1` to hooks and filters, whose own globs would then
+/// match nothing.
+fn pathspec(p: &Path) -> String {
+    format!(":(literal){}", p.to_string_lossy())
+}
 
 /// First line of a multi-line git error — git puts the news on top and the
 /// advice underneath, and a footer only has room for the news.
