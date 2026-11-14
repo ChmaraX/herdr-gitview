@@ -28,6 +28,7 @@ import { FileList } from "./filelist.js";
 import { History } from "./history.js";
 import { knowEditor, openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
+import { unzoom } from "./zoom.js";
 import { footer } from "./chrome.js";
 import { chipsFor, handleKey, runCommand, showKeys } from "./keys.js";
 import { MODES } from "./modes.js";
@@ -58,7 +59,7 @@ export default class GitList extends View {
       cx.notify();
     });
     this.commitInput.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
-    this.width = 0;
+    this.width = 0; // layout px
     this.mode = "files";
     this.scope = "worktree";
     this.work = null; // FileList: the changed files
@@ -955,6 +956,7 @@ export default class GitList extends View {
       spinner: this.loads.shown(),
       header: this.mode === "files" ? `${this.work?.status.scope ?? "-"} ${this.work?.files() ?? 0} files` : this.mode,
       selected: list?.row()?.key ?? null,
+      width: Math.round(this.width),
     };
   }
 
@@ -997,8 +999,9 @@ export default class GitList extends View {
       .track_focus(this.handle)
       .on_mouse_down("left", (_e, cx) => { this.focusHere(cx); cx.notify(); })
       .on_size_change((size, cx) => {
-        if (size.width === this.width) return;
-        this.width = size.width;
+        const width = unzoom(size.width);
+        if (width === this.width) return;
+        this.width = width;
         cx.notify();
       })
       .on_key_down((e, cx) => {

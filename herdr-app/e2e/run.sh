@@ -703,6 +703,39 @@ for w in 280 300 900; do
   status_has '"errors": \[\]' && ok "no mod errors at $w px (list and tree)" || fail "mod errors at $w px: $("$APP" status)"
   shot "20-width-$w" 1.2
 done
+# Zoom: the host measures in zoomed px and the list must lay out in layout
+# px, so its width (its draw lines in the trace) is the same at every zoom.
+# Off by the zoom, the list stops short of its area and the width
+# breakpoints switch at the wrong panel width.
+list_width() {
+  cat "$TRD"/*-list-*.jsonl | python3 -c '
+import json, sys
+w = None
+for line in sys.stdin:
+    try: d = json.loads(line)
+    except ValueError: continue
+    if d.get("kind") == "draw" and d.get("tab") == sys.argv[1] and "width" in d: w = d["width"]
+print(w)' "$TAB"
+}
+if drawn; then
+  do_ layout.resize '{"id":"panel","px":340}'
+  expect '[ "$(panel_px)" = 340 ] && [ "$(list_width)" != None ]' "the panel is 340 px and the list traced its width" 5
+  sleep 1.5 # the trace's 1 s flush
+  W1=$(list_width)
+  for z in 0.9 1.25; do
+    echo "{\"zoom\": $z, \"theme\": \"graphite\", \"appearance\": \"dark\"}" >"$HERDR_APP_HOME/settings.json"
+    # Away and back, so the list is measured again at this zoom.
+    do_ layout.resize '{"id":"panel","px":380}'
+    expect '[ "$(list_width)" != "$W1" ]' "at zoom $z the list measured the panel again" 5
+    do_ layout.resize '{"id":"panel","px":340}'
+    expect 'w=$(list_width) && [ "$w" != None ] && [ $((w - W1)) -le 1 ] && [ $((W1 - w)) -le 1 ]' "at zoom $z the list lays out $W1 px wide at a 340 px panel, as at zoom 1" 5
+    echo "zoom $z: list width $(list_width) (zoom 1: $W1)" | tee -a "$LOG"
+    shot "20-zoom-$z" 1.2
+  done
+  echo '{"zoom": 1, "theme": "graphite", "appearance": "dark"}' >"$HERDR_APP_HOME/settings.json"
+else
+  echo "note: the private window isn't drawn, so the list isn't laid out: zoom step skipped" | tee -a "$LOG"
+fi
 do_ layout.resize '{"id":"panel","px":300}'
 do_ gitview.key:t
 echo '{"zoom": 1, "theme": "paper", "appearance": "light"}' >"$HERDR_APP_HOME/settings.json"

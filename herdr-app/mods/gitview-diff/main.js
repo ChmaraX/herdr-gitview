@@ -26,6 +26,7 @@ import { Flash, Loads, commandLoop, debounced, keyEvent, keyName, takeKeyboard }
 import { panePlacement } from "./placement.js";
 import { editorLabel, knowEditor, openNvim } from "./nvim.js";
 import { Scroller } from "./scroller.js";
+import { unzoom } from "./zoom.js";
 import { diffHeader, footer } from "./chrome.js";
 import { actionFor, chipsOf, toggleKeys } from "./keymap.js";
 import { loadPreview, previewBody, previewKind } from "./preview.js";
@@ -673,9 +674,10 @@ export default class GitDiff extends View {
       .on_mouse_down("left", (_e, cx) => { this.focusHere(cx); cx.notify(); })
       .on_mouse_up("left", (_e, cx) => this.up(cx))
       .on_size_change((size, cx) => {
-        if (size.width === this.width) return;
-        this.width = size.width;
-        if (Math.abs((shared("gitview.paneWidth") ?? 0) - size.width) > 20) setShared("gitview.paneWidth", Math.round(size.width));
+        const width = unzoom(size.width);
+        if (width === this.width) return;
+        this.width = width;
+        if (Math.abs((shared("gitview.paneWidth") ?? 0) - width) > 20) setShared("gitview.paneWidth", Math.round(width));
         cx.notify();
       })
       .on_key_down((e, cx) => {

@@ -6,6 +6,7 @@
 
 import { div } from "gpui-kit";
 import { v_flex } from "gpui-base";
+import { unzoom } from "./zoom.js";
 
 const BAR = 6;
 
@@ -13,7 +14,7 @@ export class Scroller {
   constructor(id) {
     this.id = id;
     this.top = 0;
-    this.height = 0;
+    this.height = 0; // the viewport, in layout px
     this.sizes = null;
     this.offsets = [0];
     this.dragging = null;
@@ -94,21 +95,22 @@ export class Scroller {
       .w_full()
       .overflow_hidden()
       .on_size_change((size, cx) => {
-        if (size.height === this.height) return;
-        this.height = size.height;
+        const height = unzoom(size.height);
+        if (height === this.height) return;
+        this.height = height;
         this.clamp();
         cx.notify();
       })
       .on_scroll_wheel((e, cx) => {
         const before = this.top;
-        this.top -= e.delta.y;
+        this.top -= unzoom(e.delta.y);
         this.clamp();
         if (this.top !== before) cx.notify();
       })
       .on_mouse_move((e, cx) => {
         if (!this.dragging) return;
         const d = this.dragging;
-        this.top = d.top + ((e.position.y - d.y) * (total - this.height)) / Math.max(1, this.height - thumb);
+        this.top = d.top + (unzoom(e.position.y - d.y) * (total - this.height)) / Math.max(1, this.height - thumb);
         this.clamp();
         cx.notify();
       })
