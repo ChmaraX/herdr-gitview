@@ -864,11 +864,14 @@ impl Repo {
             .context("spawning git cat-file")?;
         // A few short lines fit the pipe buffer, so writing them all before
         // reading can't deadlock against git's output.
-        child
+        // A git that exits early (on another machine: hc lost the
+        // connection) closes its input, so the write can fail with a broken
+        // pipe. Its exit status and stderr say why; report that, not the pipe.
+        let wrote = child
             .stdin
             .take()
             .context("git cat-file stdin")?
-            .write_all(format!("{lines}\n").as_bytes())?;
+            .write_all(format!("{lines}\n").as_bytes());
         let out = child.wait_with_output()?;
         if !out.status.success() {
             bail!(
@@ -876,6 +879,7 @@ impl Repo {
                 crate::remote::remote_error(&String::from_utf8_lossy(&out.stderr))
             );
         }
+        wrote.context("writing to git cat-file")?;
         Ok(out.stdout)
     }
 
