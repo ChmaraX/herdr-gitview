@@ -3,7 +3,7 @@ import { world, reset } from "./stub.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdir, readFile, rm } from "node:fs/promises";
-const { Tracer, shortArgs, traceDir } = await import("../mods/gitview/telemetry.js");
+const { Tracer, shortArgs, tracedCommand, traceDir } = await import("../mods/gitview/telemetry.js");
 
 const lines = async () => {
   const out = [];
@@ -65,6 +65,17 @@ test("snapshots carry sizes and counts, never note text; commit messages are cut
   assert.ok(!JSON.stringify(mark).includes("SECRET"));
   assert.equal(shortArgs(["commit", "--repo", "/r", "--", "my secret message"]), "commit --repo /r -- …");
   assert.equal(shortArgs(["stage", "--section", "changes", "--", "a.rs"]), "stage --section changes -- a.rs");
+});
+
+// Round 23: the programmatic commit/note commands carry text (a message, a
+// note body). Only commands with plain arguments keep them in the trace.
+test("tracedCommand: text and unknown commands keep only their name; paths, keys and targets stay", () => {
+  assert.equal(tracedCommand("commit:fix: a secret\n\nbody"), "commit:…");
+  assert.equal(tracedCommand("note:correct horse battery staple"), "note:…");
+  assert.equal(tracedCommand("rename:a new command's text"), "rename:…"); // unknown: dropped by default
+  assert.equal(tracedCommand("commit"), "commit"); // no argument
+  assert.equal(tracedCommand("file:src/a.rs"), "file:src/a.rs");
+  assert.equal(tracedCommand("button:stage:section:1"), "button:stage:section:1");
 });
 
 test("renders: one summary per 10 s with count and max, a line for a render over 16 ms", async () => {

@@ -4,12 +4,12 @@
 // are in the repo.
 import { registerHooks } from "node:module";
 
-export const world = { shared: {}, spaces: [], panes: [], focused: null, props: null, runs: [], terminals: [] };
+export const world = { shared: {}, spaces: [], panes: [], focused: null, props: null, runs: [], terminals: [], nextCommand: null };
 globalThis.__gvWorld = world;
 
 // Fresh state per test.
 export function reset({ spaces = [], panes = [], focused = null, props = null, layout = null } = {}) {
-  Object.assign(world, { shared: {}, spaces, panes, focused, props, layout, runs: [], terminals: [] });
+  Object.assign(world, { shared: {}, spaces, panes, focused, props, layout, runs: [], terminals: [], nextCommand: null });
 }
 
 const HERDR = `
@@ -30,7 +30,7 @@ export const agents = () => [];
 export const appHome = () => "/tmp/gv-test-home";
 export const exec = async () => { throw new Error("no exec in unit tests"); };
 export const watchFolder = () => new Promise(() => {});
-export const nextCommand = () => new Promise(() => {});
+export const nextCommand = () => (w.nextCommand ? w.nextCommand() : new Promise(() => {}));
 export const readTextFile = async () => "";
 export const openOverlay = () => {};
 export const closeOverlay = () => {};

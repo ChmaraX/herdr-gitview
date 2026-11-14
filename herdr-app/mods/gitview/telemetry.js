@@ -216,3 +216,14 @@ export function shortArgs(args) {
   const s = cut.join(" ");
   return s.length > 300 ? `${s.slice(0, 300)}…` : s;
 }
+
+// A `<mod>.<command>` string as commandLoop traces it. Only commands whose
+// argument is a path, key, target or line range keep it; any other (a
+// commit message, a note body, a command added later) keeps just its name,
+// so text can't reach the trace by default.
+const PLAIN_ARGS = new Set(["focus", "hidden", "discard", "key", "file", "click", "dblclick", "button", "drag"]);
+export function tracedCommand(command) {
+  const colon = command.indexOf(":");
+  const what = colon < 0 ? command : command.slice(0, colon);
+  return colon < 0 || PLAIN_ARGS.has(what) ? command : `${what}:…`;
+}
