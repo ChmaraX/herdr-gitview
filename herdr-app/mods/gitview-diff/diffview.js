@@ -6,6 +6,7 @@
 import { div } from "gpui-kit";
 import { h_flex, v_flex, Textarea } from "gpui-base";
 import { iconButton, noteLines } from "./chrome.js";
+import { unzoom } from "./zoom.js";
 
 export const ROW = 18;
 const NOTE_LINE = 16;
@@ -106,9 +107,60 @@ function readable(fg, behind, t) {
   return out;
 }
 
+// An invisible probe: ten "0"s in the diff's font (inherited here). It
+// reports one column's width in layout px (its measured width over ten);
+// `report(col, cx)` is called again on a font, size or zoom change.
+export function columnProbe(report) {
+  return div().absolute().top_0().left_0().opacity(0).flex_none().child("0".repeat(10)).on_size_change((size, cx) => report(unzoom(size.width) / 10, cx));
+}
+
+// The columns a glyph draws in a monospace font: most are one, East Asian
+// wide / full-width and emoji are two. A rough range test (no Unicode
+// tables): enough to keep a line of them from being cut on the right.
+function glyphColumns(cp) {
+  const wide =
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    cp === 0x2329 || cp === 0x232a ||
+    (cp >= 0x2e80 && cp <= 0x303e) || // CJK radicals, Kangxi, punctuation
+    (cp >= 0x3041 && cp <= 0x33ff) || // Hiragana..CJK symbols
+    (cp >= 0x3400 && cp <= 0x4dbf) || // CJK Ext A
+    (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified
+    (cp >= 0xa000 && cp <= 0xa4cf) || // Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK compatibility
+    (cp >= 0xfe10 && cp <= 0xfe19) || // vertical forms
+    (cp >= 0xfe30 && cp <= 0xfe6f) || // CJK compatibility forms
+    (cp >= 0xff00 && cp <= 0xff60) || // full-width forms
+    (cp >= 0xffe0 && cp <= 0xffe6) || // full-width signs
+    (cp >= 0x1f300 && cp <= 0x1faff) || // emoji and pictographs
+    (cp >= 0x20000 && cp <= 0x3fffd); // CJK Ext B and beyond
+  return wide ? 2 : 1;
+}
+
+// The display columns of a string: each code point's glyph columns summed.
+export function displayColumns(text) {
+  let n = 0;
+  for (const ch of text) n += glyphColumns(ch.codePointAt(0));
+  return n;
+}
+
+// The widest row in display columns (its spans' text summed): what the
+// sideways range is built from, straight from the data (tabs reach the
+// spans already expanded to spaces, so a code-point count is exact for
+// them). Folds and empty rows count 0.
+export function widestColumns(rows) {
+  let max = 0;
+  for (const row of rows) {
+    let cols = 0;
+    for (const [text] of row.s ?? []) cols += displayColumns(text);
+    if (cols > max) max = cols;
+  }
+  return max;
+}
+
 // ctx: {t, cursor, selection: [a, b] | null, focused, composer (TextareaState),
-// pending (the note being written), onDown(index, event, cx), onMove(index, cx),
-// onDeleteNote(note, cx)}
+// pending (the note being written), offsetX (sideways offset px),
+// onDown(index, event, cx), onMove(index, cx), onDeleteNote(note, cx)}
 export function renderRow(item, ctx) {
   const { t } = ctx;
   if (item.note) return noteCard(item.note, ctx);
@@ -117,6 +169,7 @@ export function renderRow(item, ctx) {
   const { row, index } = item;
   const selected = ctx.selection && index >= ctx.selection[0] && index <= ctx.selection[1];
   const cursor = index === ctx.cursor ? cursorTint(t, ctx.focused) : null;
+  const offset = ctx.offsetX ?? 0;
   return h_flex()
     .id(`d${index}`)
     .relative()
@@ -129,22 +182,36 @@ export function renderRow(item, ctx) {
     .when(selected, (e) => e.bg(t.selection))
     // The cursor: a faint wash of the text colour over the whole row (on top
     // of a green or red row too) and a 2 px bar, both laid over the row so
-    // nothing moves. Painted before the text, so the text stays on top.
+    // nothing moves. Painted before the text, so the text stays on top. The
+    // row tint, selection and bar stay in the visible width; only the text
+    // moves sideways.
     .when(Boolean(cursor), (e) =>
       e
         .child(div().absolute().inset_0().bg(cursor))
         .child(div().absolute().top_0().bottom_0().left_0().w(2).bg(ctx.focused ? t.accent : t.dim)))
     .on_mouse_down("left", (e, cx) => ctx.onDown(index, e, cx))
     .on_mouse_move((_e, cx) => ctx.onMove(index, cx))
-    .children(
-      row.s.map(([text, fg, bg]) => {
-        // A span tinted like its row is painted once: twice would stack the
-        // translucent tint (darker boxes behind the text).
-        const own = Boolean(bg) && !selected && bg !== row.bg;
-        const behind = [selected ? t.selection : row.bg && color(row.bg, t), cursor, own && color(bg, t)].filter(Boolean);
-        const span = div().flex_none().child(text.replace(/ /g, "\u00a0"));
-        return span.when(Boolean(fg), (e) => e.text_color(readable(color(fg, t), behind, t))).when(own, (e) => e.bg(color(bg, t)));
-      }),
+    // The text sits in a layer pushed left by the sideways offset, so the
+    // tail of a line wider than the pane comes into view; the row clips it.
+    // Note cards and the composer aren't in this layer, so they keep the
+    // pane's width.
+    .child(
+      h_flex()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(-offset)
+        .items_center()
+        .children(
+          row.s.map(([text, fg, bg]) => {
+            // A span tinted like its row is painted once: twice would stack the
+            // translucent tint (darker boxes behind the text).
+            const own = Boolean(bg) && !selected && bg !== row.bg;
+            const behind = [selected ? t.selection : row.bg && color(row.bg, t), cursor, own && color(bg, t)].filter(Boolean);
+            const span = div().flex_none().child(text.replace(/ /g, "\u00a0"));
+            return span.when(Boolean(fg), (e) => e.text_color(readable(color(fg, t), behind, t))).when(own, (e) => e.bg(color(bg, t)));
+          }),
+        ),
     );
 }
 
