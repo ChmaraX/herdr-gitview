@@ -743,3 +743,54 @@ fn branch_scope_and_history_before_the_first_commit_say_so() {
     let err = gv_err(d, &["log", "--merge-base", "nosuchrev"]);
     assert!(err.contains("nosuchrev"), "{err}");
 }
+
+/// Issue #22: a tracked symlink whose target is a file OUTSIDE the repo must
+/// not have its target's bytes read back as worktree content. Git stores a
+/// symlink as mode 120000 whose blob is the target path string; a worktree
+/// preview must stay consistent with that (show the target text), not cross
+/// the repo boundary and disclose unrelated local content. Covers the
+/// relative and absolute cases and confirms the git-object sides are
+/// unaffected.
+#[test]
+fn a_worktree_symlink_to_an_outside_file_is_not_dereferenced() {
+    use std::os::unix::fs::symlink;
+    let repo = fixture("json-symlink-outside");
+    let d = &repo.dir;
+    let outside = d.parent().unwrap().join(format!(
+        "gitview-symlink-outside-{}.txt",
+        std::process::id()
+    ));
+    std::fs::write(&outside, "SYNTHETIC_OUTSIDE_SECRET\n").unwrap();
+
+    // review.md -> ../<outside>, committed so git knows it as a symlink.
+    let rel_target = format!("../{}", outside.file_name().unwrap().to_str().unwrap());
+    symlink(&rel_target, d.join("review.md")).unwrap();
+    // abs.md -> /abs/path/outside, an absolute link.
+    symlink(&outside, d.join("abs.md")).unwrap();
+    common::git(d, &["add", "-A"]);
+    common::git(d, &["commit", "-qm", "symlinks"]);
+
+    for (path, target) in [
+        ("review.md", rel_target.as_str()),
+        ("abs.md", outside.to_str().unwrap()),
+    ] {
+        let v = gv(d, &["file", "--path", path, "--side", "worktree"]);
+        let text = v["text"].as_str().unwrap_or("");
+        assert!(
+            !v.to_string().contains("OUTSIDE_SECRET"),
+            "{path}: worktree read dereferenced the symlink and disclosed outside content: {v}"
+        );
+        assert_eq!(
+            text, target,
+            "{path}: a symlink should read as its target text (git's behaviour), got {v}"
+        );
+        // The git-object sides already store the link blob; they must keep it.
+        let head = gv(d, &["file", "--path", path, "--side", "head"]);
+        assert_eq!(
+            head["text"].as_str().unwrap_or(""),
+            target,
+            "{path} head: {head}"
+        );
+    }
+    let _ = std::fs::remove_file(&outside);
+}

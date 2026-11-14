@@ -28,6 +28,9 @@
 //! - `json file` there: an image that doesn't arrive byte for byte (from
 //!   the worktree or from git), or text, binary, too big and missing told
 //!   apart differently from here, or a failed read there taken as missing;
+//! - a worktree symlink followed out of the repo (its target's bytes read,
+//!   measured or hashed) instead of shown as its target text, or a path
+//!   through a symlinked folder read, here or there;
 //! - a diff whose git reads fail there (the machine dropped) shown as a
 //!   whole file added or as no change, instead of the error;
 //! - `--root` (the top level status gave) looked up there again anyway, or
@@ -734,6 +737,89 @@ fn a_file_for_the_preview_arrives_from_the_machine_byte_for_byte() {
     for call in w.shim_log() {
         assert!(call.starts_with(&prefix), "unexpected hc call: {call}");
     }
+}
+
+/// A symlink in the worktree is its target text, as git stores it, here and
+/// there alike: the preview, the diff, the untracked line counts and the
+/// reload revs never follow it out of the repo, and a path through a
+/// symlinked folder reads as missing (issue #22).
+#[test]
+fn a_worktree_symlink_is_its_target_text_here_and_there() {
+    use std::os::unix::fs::symlink;
+    let w = world("links");
+    for repo in [&w.here, &w.remote_real] {
+        let outside = repo.parent().unwrap().join("outside.txt");
+        std::fs::write(&outside, "OUTSIDE_SECRET\n").unwrap();
+        symlink("../outside.txt", repo.join("review.md")).unwrap();
+        git(repo, &["add", "review.md"]);
+        git(repo, &["commit", "-q", "-m", "link"]);
+        // Retargeted (a change) to another outside file; plus untracked
+        // links: one out of the repo, one dangling, one to the parent folder.
+        std::fs::write(repo.parent().unwrap().join("other.txt"), "OTHER_SECRET\n").unwrap();
+        std::fs::remove_file(repo.join("review.md")).unwrap();
+        symlink("../other.txt", repo.join("review.md")).unwrap();
+        symlink("../outside.txt", repo.join("loose.md")).unwrap();
+        symlink("nowhere", repo.join("dangling")).unwrap();
+        symlink("..", repo.join("up")).unwrap();
+    }
+
+    for (path, text) in [
+        ("review.md", "../other.txt"),
+        ("loose.md", "../outside.txt"),
+        ("dangling", "nowhere"),
+    ] {
+        let file = w.both(&["file", "--path", path]);
+        assert_eq!(file["text"], text, "{path}: {file}");
+    }
+    let small = w.both(&["file", "--path", "review.md", "--max-bytes", "4"]);
+    assert_eq!(
+        (&small["kind"], &small["bytes"]),
+        (&"too_big".into(), &12.into())
+    );
+    assert_eq!(
+        w.both(&["file", "--path", "up/outside.txt"])["kind"],
+        "missing"
+    );
+
+    let diff = w.both(&["diff", "--path", "review.md", "--kind", "modified"]);
+    let shown = diff.to_string();
+    assert!(shown.contains("../other.txt"), "{shown}");
+    assert!(!shown.contains("SECRET"), "{shown}");
+
+    let status = w.both(&["status"]);
+    let file = |s: &Value, path: &str| {
+        s["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|s| s["files"].as_array().unwrap())
+            .find(|f| f["path"] == path)
+            .cloned()
+            .unwrap_or_else(|| panic!("{path} in {s}"))
+    };
+    assert_eq!(
+        file(&status, "loose.md")["add"],
+        1,
+        "one line: the target text"
+    );
+
+    // Retargeted to another dangling target, the link's rev moves; an edit
+    // to the file it points at doesn't move it.
+    let rev = |path: &str| {
+        let here = file(&w.run(&["status"], false), path)["rev"].clone();
+        assert_eq!(here, file(&w.run(&["status"], true), path)["rev"]);
+        here
+    };
+    let before = rev("dangling");
+    let loose = rev("loose.md");
+    for repo in [&w.here, &w.remote_real] {
+        std::fs::remove_file(repo.join("dangling")).unwrap();
+        symlink("elsewhere", repo.join("dangling")).unwrap();
+        std::fs::write(repo.parent().unwrap().join("outside.txt"), "CHANGED\n").unwrap();
+    }
+    assert_ne!(rev("dangling"), before);
+    assert_eq!(rev("loose.md"), loose);
+    assert_eq!(w.trap_log(), "", "a local git ran");
 }
 
 #[test]
