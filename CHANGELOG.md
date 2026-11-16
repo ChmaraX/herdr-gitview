@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0](https://github.com/ChmaraX/herdr-gitview/compare/v0.5.0...v0.6.0) (2026-11-14)
+
+
+### Features
+
+* **gitview:** scroll the diff pane sideways to reach long lines ([#35](https://github.com/ChmaraX/herdr-gitview/issues/35)) ([35ad2b9](https://github.com/ChmaraX/herdr-gitview/commit/35ad2b9c9f40916f9544ae940a07925a0bd7adfd))
+
+
+### Bug Fixes
+
+* **git:** report why cat-file failed, not the broken pipe to it ([#36](https://github.com/ChmaraX/herdr-gitview/issues/36)) ([815346b](https://github.com/ChmaraX/herdr-gitview/commit/815346b09c4c866c49a262bf39824b5853cf510e))
+* **gitview:** fill the file list and diff pane at any app zoom ([#29](https://github.com/ChmaraX/herdr-gitview/issues/29)) ([904fc3f](https://github.com/ChmaraX/herdr-gitview/commit/904fc3f9f6edb8bcdd5ac4c35c7193d95b74a8bf))
+* **gitview:** keep commit and note text out of the command trace ([#32](https://github.com/ChmaraX/herdr-gitview/issues/32)) ([7a290dd](https://github.com/ChmaraX/herdr-gitview/commit/7a290ddf3e6b36051580f01fa24652631652b1de))
+* **list:** iterate rows directly in row_at (clippy needless_range_loop) ([#33](https://github.com/ChmaraX/herdr-gitview/issues/33)) ([675fb3d](https://github.com/ChmaraX/herdr-gitview/commit/675fb3de54d09e11cda4cad7fb8583b0351049ea))
+* show a worktree symlink as its target path, never the file behind it ([#31](https://github.com/ChmaraX/herdr-gitview/issues/31)) ([018c186](https://github.com/ChmaraX/herdr-gitview/commit/018c18644fcc20cdf9bd2faf1fdd0b7714164f6c))
+* stage and discard act only on the selected file, even with glob characters in its name ([#28](https://github.com/ChmaraX/herdr-gitview/issues/28)) ([64588a2](https://github.com/ChmaraX/herdr-gitview/commit/64588a2572f6c882d3da751dbed01492abe000dd))
+
 ## [0.5.0](https://github.com/ChmaraX/herdr-gitview/compare/v0.4.0...v0.5.0) (2026-11-06)
 
 
