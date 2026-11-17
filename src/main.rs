@@ -19,6 +19,28 @@ fn main() -> anyhow::Result<()> {
             let args: Vec<String> = std::env::args().skip(2).collect();
             herdr_gitview::appjson::run(&args)
         }
+        // `env K=V... program args`: `/usr/bin/env` for the mods where
+        // there is none (Windows): the program's exit code and output.
+        Some("env") => {
+            let mut args = std::env::args_os().skip(2);
+            let mut vars = Vec::new();
+            let program = loop {
+                let Some(a) = args.next() else {
+                    anyhow::bail!("env: no program")
+                };
+                match a.to_str().and_then(|s| s.split_once('=')) {
+                    Some((k, v)) if !k.is_empty() && !k.starts_with('-') => {
+                        vars.push((k.to_string(), v.to_string()))
+                    }
+                    _ => break a,
+                }
+            };
+            let status = std::process::Command::new(program)
+                .args(args)
+                .envs(vars)
+                .status()?;
+            std::process::exit(status.code().unwrap_or(1));
+        }
         Some("app-setup") => {
             let args: Vec<String> = std::env::args().skip(2).collect();
             herdr_gitview::appsetup::run(&args)

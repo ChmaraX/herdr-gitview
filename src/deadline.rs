@@ -3,6 +3,7 @@
 //! nvim's `--remote-expr`), so an op the mods wait on always ends.
 
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
@@ -17,15 +18,15 @@ use anyhow::{Context, Result, anyhow};
 pub fn output_within(cmd: &mut Command, input: Option<&[u8]>, limit: Duration) -> Result<Output> {
     let program = cmd.get_program().to_string_lossy().into_owned();
     let deadline = Instant::now() + limit;
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    new_group(cmd);
     let mut child = cmd
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
         .spawn()
         .with_context(|| format!("cannot run {program}"))?;
     let (tx, rx) = mpsc::channel::<(bool, Vec<u8>)>();
@@ -85,14 +86,38 @@ pub fn output_within(cmd: &mut Command, input: Option<&[u8]>, limit: Duration) -
     }
 }
 
+/// Make `cmd` its own process group's leader (Unix) / without a console
+/// window, so [`kill_group`] can take it and its children down (Windows).
+pub fn new_group(cmd: &mut Command) {
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 /// Kill `child` and its process group, and reap it. The child must have
 /// been spawned as its group's leader (`process_group(0)`), and not reaped
 /// yet (so its id is still its own).
 pub fn kill_group(child: &mut std::process::Child) {
     // SAFETY: kill(2) with a negative pid signals that process group: the
     // child's own, which nothing else of ours belongs to.
+    #[cfg(unix)]
     unsafe {
         libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+    }
+    // Windows: the child and its whole tree.
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
     let _ = child.kill();
     let _ = child.wait();

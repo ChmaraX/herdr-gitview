@@ -51,6 +51,7 @@ impl App {
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 std::env::var_os("HOME")
+                    .or_else(|| std::env::var_os("USERPROFILE"))
                     .map(PathBuf::from)
                     .unwrap_or_default()
                     .join(".config/herdr-app")

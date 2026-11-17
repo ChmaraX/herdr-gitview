@@ -8,7 +8,9 @@ import { shortArgs, traceDir, tracer, tracing } from "./telemetry.js";
 
 let config = null;
 
-// Written by install: { bin, herdr_app, hc }.
+// Written by install: { bin, herdr_app, hc, env? }. `env`: the argv that
+// runs `env K=V... program` (default /usr/bin/env; Windows has none, so
+// there it's [bin, "env"]).
 async function loadConfig() {
   if (config) return config;
   const text = await readTextFile(`${appHome()}/mods/gitview/config.json`);
@@ -18,6 +20,11 @@ async function loadConfig() {
 }
 
 // The environment the binary needs under the app (it can't see appHome()).
+function withEnv(cfg, program, args) {
+  const [envBin, ...envArgs] = cfg.env ?? ["/usr/bin/env"];
+  return exec(envBin, [...envArgs, ...hostEnv(cfg), program, ...args]);
+}
+
 function hostEnv(cfg) {
   const env = ["GITVIEW_HOST=app", `HERDR_APP_HOME=${appHome()}`];
   if (cfg.herdr_app) env.push(`GITVIEW_HERDR_APP=${cfg.herdr_app}`);
@@ -35,7 +42,7 @@ export async function gv(args) {
   const tr = tracer();
   try {
     const cfg = await loadConfig();
-    const r = await exec("/usr/bin/env", [...hostEnv(cfg), cfg.bin, "json", ...args]);
+    const r = await withEnv(cfg, cfg.bin, ["json", ...args]);
     let out = null;
     try { out = JSON.parse(r.stdout); } catch { /* reported below */ }
     if (r.code !== 0 || !out || out.error) throw new Error(out?.error ?? (r.stderr || r.stdout || `exit ${r.code}`).trim());
@@ -55,7 +62,7 @@ export async function appCli(args) {
     const cfg = await loadConfig();
     if (!cfg.herdr_app) return null;
     const t0 = Date.now();
-    const r = await exec("/usr/bin/env", [...hostEnv(cfg), cfg.herdr_app, ...args]);
+    const r = await withEnv(cfg, cfg.herdr_app, args);
     tracer().line("exec", { op: `app ${args[0]}`, start: t0, ms: Date.now() - t0, ok: r.code === 0 });
     return JSON.parse(r.stdout);
   } catch {

@@ -11,7 +11,58 @@
 //! away.
 
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(windows)]
+use winsock::{UnixListener, UnixStream};
+
+/// Windows has no Unix sockets in std; only the TUI plugin's two panes use
+/// them (the Herdr app's `json` ops don't), so they fail there.
+#[cfg(windows)]
+mod winsock {
+    use std::io::{Error, ErrorKind, Read, Result, Write};
+    use std::path::Path;
+    fn no<T>() -> Result<T> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "unix sockets aren't supported on Windows",
+        ))
+    }
+    pub struct UnixStream;
+    pub struct UnixListener;
+    impl UnixStream {
+        pub fn connect(_: &Path) -> Result<UnixStream> {
+            no()
+        }
+        pub fn pair() -> Result<(UnixStream, UnixStream)> {
+            no()
+        }
+        pub fn try_clone(&self) -> Result<UnixStream> {
+            no()
+        }
+    }
+    impl UnixListener {
+        pub fn bind(_: &Path) -> Result<UnixListener> {
+            no()
+        }
+        pub fn accept(&self) -> Result<(UnixStream, ())> {
+            no()
+        }
+    }
+    impl Read for UnixStream {
+        fn read(&mut self, _: &mut [u8]) -> Result<usize> {
+            no()
+        }
+    }
+    impl Write for UnixStream {
+        fn write(&mut self, _: &[u8]) -> Result<usize> {
+            no()
+        }
+        fn flush(&mut self) -> Result<()> {
+            no()
+        }
+    }
+}
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};

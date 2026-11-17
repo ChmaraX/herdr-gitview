@@ -209,8 +209,11 @@ of it out and brings back the stock Changes panel.
 - `exec` has a 30s limit and no stdin; every call the engine makes to
   herdr-core, herdr-app or nvim has its own deadline.
 - macOS is tested end to end; the app version is untested on Linux (the
-  release ships a Linux bundle, and CI tests the engine there); Windows
-  isn't supported.
+  release ships a Linux bundle, and CI tests the engine there). On Windows
+  the app version builds from source (`install-windows.py`, `keys.windows.json`):
+  there's no `/usr/bin/env`, so the mods run the binary through its own
+  `env` mode (`config.json`'s `env`); Git's msys `env.exe` would rewrite
+  remote `/home/...` paths. The TUI plugin's Unix sockets don't exist there.
 
 ## Done when
 
