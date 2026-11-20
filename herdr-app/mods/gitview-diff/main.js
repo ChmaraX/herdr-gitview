@@ -20,7 +20,7 @@ import { Tracer, run } from "./telemetry.js";
 import { gv, message } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
-import { addNote, answerIn, ask, cursorIn, liveView, notesKey, notesOf, previewOff, removeNotes, setCursor, setPreviewOff, viewIn } from "./shared.js";
+import { addNote, answerIn, ask, cursorIn, liveView, notesKey, notesForView, previewOff, removeNotes, setCursor, setPreviewOff, viewIn } from "./shared.js";
 import { diffPane } from "./layout.js";
 import { Flash, Loads, commandLoop, debounced, keyEvent, keyName, takeKeyboard } from "./modkit.js";
 import { panePlacement } from "./placement.js";
@@ -67,10 +67,6 @@ const KEYS = [
 ];
 const NOTE_KEYS = [{ caps: ["enter"], label: "save the note", rank: 1, on: {} }, { caps: ["escape"], label: "cancel", rank: 2, on: {} }];
 
-// Notes are written on staged or unstaged changes, as the TUI's: the side
-// (cached or not) of a view that takes them, null for a commit's or the
-// branch's diff.
-const noteSide = (v) => (!v || v.commit || v.section === "branch" ? null : Boolean(v.cached));
 
 export default class GitDiff extends View {
   init(_props, cx) {
@@ -288,7 +284,7 @@ export default class GitDiff extends View {
       this.lastBody = "diff";
       const n = diff.rows.length;
       if (line || !keep || another) {
-        const at = line ? diff.rows.findIndex((r) => r.n === line) : diff.rows.findIndex((r) => r.k === "add" || r.k === "del");
+        const at = line ? this.rowOf(typeof line === "number" ? { n: line } : line) : diff.rows.findIndex((r) => r.k === "add" || r.k === "del");
         this.cursor = Math.max(0, at);
         if (another) this.resetScroll();
         this.pendingReveal = { row: this.cursor, center: true }; // once `display` has these rows
@@ -474,17 +470,15 @@ export default class GitDiff extends View {
     return this.anchor === null ? null : [Math.min(this.anchor, this.cursor), Math.max(this.anchor, this.cursor)];
   }
 
-  // As the TUI: notes are about staged or unstaged changes, the lines as
-  // they are now; not a commit's or the branch's.
   annotate() {
     const v = this.view;
     if (!v) return;
     if (this.inPreview()) return this.flash.set("notes work in Diff: m switches");
-    if (v.commit || v.section === "branch") return this.flash.set("notes work on staged/unstaged changes only");
+    if (!v.commit && v.section === "branch") return this.flash.set("notes work on staged/unstaged changes or historical commits");
     const [a, b] = this.selection() ?? [this.cursor, this.cursor];
     const range = diffs.noteRange(this.diff, a, b);
     if (!range) return this.flash.set("select some code to note (v or drag)");
-    this.pendingNote = { file: v.path, section: v.section, cached: noteSide(v), ...range, after: b };
+    this.pendingNote = { file: v.path, section: v.section, cached: Boolean(v.cached), commit: v.commit ?? null, ...range, after: b };
     this.composer.set_value("");
     this.composer.focus();
     this.pendingReveal = { row: b, margin: diffs.COMPOSER + 8, after: true };
@@ -493,7 +487,7 @@ export default class GitDiff extends View {
   saveNote(value, cx) {
     const text = String(value ?? "").trim();
     const p = this.pendingNote;
-    if (p && text) addNote(this.notesKey(), { file: p.file, section: p.section, cached: p.cached, start: p.start, end: p.end, snippet: p.snippet, text });
+    if (p && text) addNote(this.notesKey(), { file: p.file, section: p.section, cached: p.cached, commit: p.commit, side: p.side, start: p.start, end: p.end, snippet: p.snippet, text });
     this.pendingNote = null;
     this.anchor = null;
     this.focusHere(cx);
@@ -640,10 +634,7 @@ export default class GitDiff extends View {
     // The body shows the shown file, or (just switched) the one before.
     const b = this.bodyNow();
     const of = b.old ? (b.kind === "preview" ? this.preview?.view : this.diffView) : this.view;
-    // A note's card shows on the side it was written on (notes from before
-    // `cached` are the unstaged side's).
-    const side = noteSide(of);
-    const notes = key && of && side !== null ? notesOf(key).filter((n) => n.file === of.path && Boolean(n.cached) === side) : [];
+    const notes = key && of ? notesForView(key, of) : [];
     // The display rows and their heights only when what they're made of
     // changed (a render comes on every wheel tick and any shared write).
     const dispKey = [this.diff, notes.map((n) => `${n.id}:${n.text.length}`).join(), this.pendingNote ? this.pendingNote.after : -1];

@@ -75,15 +75,17 @@ export function logMove(v, delta) {
 }
 
 // A commit's files, as a file list of their own; the first one's diff shows.
-export function openCommit(v, c, cx) {
+export function openCommit(v, c, cx, target = null) {
   const where = v.work?.where;
   if (!c || !where) return;
-  v.loads.run(cx, "commit-files", async (cx) => {
+  return v.loads.run(cx, "commit-files", async (cx) => {
     const r = await gv(["commit-files", "--repo", where.root, "--root", "--sha", c.sha, ...onArgs(where.on)]);
     const list = new FileList({ sections: [{ id: "commit", title: "", cached: false, files: r.files ?? [] }] },
       { ...where, base: null, commit: c.sha, short: c.short, subject: c.subject });
     list.rebuild(treeMode());
-    v.setMode("commit", cx, { list });
+    const row = target ? list.findFile(target.path) : null;
+    if (target && !row) return v.flash.set(`${target.path} is not in commit ${c.short}`);
+    v.setMode("commit", cx, { list, row, line: target?.line ?? null });
   });
 }
 

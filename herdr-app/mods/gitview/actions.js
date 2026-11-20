@@ -55,13 +55,20 @@ export function takeDiscard(mod, command) {
   return rec.payload;
 }
 
+// The installed engine predates commit notes; include the revision in the
+// text it formats so the agent never mistakes historical code for the worktree.
+export function noteForAgent({ id, section, commit, ...note }) {
+  return { ...note, cached: Boolean(note.cached),
+    text: commit ? `[Historical commit ${commit}; line numbers refer to that diff]\n${note.text}` : note.text };
+}
+
 // The send dialog for a repo's notes (`key`: shared.js notesKey). Resolves
 // false when there are none.
 export async function sendNotes(key, space) {
   const notes = key ? notesOf(key) : [];
   if (!notes.length) return false;
   // The engine takes each note's side (`cached`), not our id or section.
-  const plain = notes.map(({ id, section, ...note }) => ({ ...note, cached: Boolean(note.cached) }));
+  const plain = notes.map(noteForAgent);
   const { message } = await gv(["notes", "--", JSON.stringify(plain)]);
   const height = Math.min(420, 140 + 32 * Math.max(1, agents().length));
   openOverlay({ mod: "gitview-agents", kind: "dialog", modal: true, width: 460, height, props: { message, count: notes.length, space, key, ids: notes.map((n) => n.id) } });

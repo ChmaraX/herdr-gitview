@@ -221,6 +221,14 @@ export function notesOf(key) {
   return (shared("gitview.notes") ?? {})[key] ?? [];
 }
 
+// A historical note belongs to one revision, independently of the index.
+export function notesForView(key, view) {
+  if (!view || (!view.commit && view.section === "branch")) return [];
+  return notesOf(key).filter((n) => n.file === view.path &&
+    (n.commit ?? null) === (view.commit ?? null) &&
+    (view.commit || Boolean(n.cached) === Boolean(view.cached)));
+}
+
 function setNotes(key, list) {
   const all = { ...(shared("gitview.notes") ?? {}) };
   if (list.length) all[key] = list;

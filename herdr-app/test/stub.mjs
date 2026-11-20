@@ -9,7 +9,7 @@ globalThis.__gvWorld = world;
 
 // Fresh state per test.
 export function reset({ spaces = [], panes = [], focused = null, props = null, layout = null } = {}) {
-  Object.assign(world, { shared: {}, spaces, panes, focused, props, layout, runs: [], terminals: [], nextCommand: null });
+  Object.assign(world, { shared: {}, spaces, panes, focused, props, layout, runs: [], terminals: [], nextCommand: null, exec: null, readTextFile: null });
 }
 
 const HERDR = `
@@ -28,10 +28,10 @@ export const theme = () => ({});
 export const settings = () => ({});
 export const agents = () => [];
 export const appHome = () => "/tmp/gv-test-home";
-export const exec = async () => { throw new Error("no exec in unit tests"); };
+export const exec = async (...args) => { if (w.exec) return w.exec(...args); throw new Error("no exec in unit tests"); };
 export const watchFolder = () => new Promise(() => {});
 export const nextCommand = () => (w.nextCommand ? w.nextCommand() : new Promise(() => {}));
-export const readTextFile = async () => "";
+export const readTextFile = async (...args) => w.readTextFile ? w.readTextFile(...args) : "";
 export const openOverlay = () => {};
 export const closeOverlay = () => {};
 `;
