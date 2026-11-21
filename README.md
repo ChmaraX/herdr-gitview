@@ -132,8 +132,8 @@ these apply: `editor`, `base`, `context_lines`, `show_untracked` and
 - **nvim is the editor gitview knows** - with herdr-nvim's nvim or your own
   nvim, gitview checks for unsaved changes and closes it for you. Other
   editors open the file too; you close them yourself.
-- **Notes attach to working-tree changes** - you can't annotate historical
-  commits.
+- **Notes attach to working-tree or historical commit diffs** - historical
+  questions include the commit SHA and selected diff snippet.
 - **herdr-nvim on remote spaces** - in a space on another machine, Enter
   starts a plain editor there instead.
 

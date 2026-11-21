@@ -87,13 +87,13 @@ export const MODES = {
   commit: {
     title: "A commit's files",
     list: (v) => v.commitFiles,
-    // `list`: the commit's files; the first one shows.
-    enter: (v, cx, { list } = {}) => {
+    // `list`: the commit's files; a note targets its row and line.
+    enter: (v, cx, { list, row, line } = {}) => {
       if (!list) return;
       v.commitFiles = list;
       v.scroll.top = 0;
-      const first = list.shownFile();
-      if (first) v.select(first, cx);
+      const first = row ?? list.shownFile();
+      if (first) v.select(first, cx, { line });
     },
     header: (v, t) => {
       const c = v.commitFiles;

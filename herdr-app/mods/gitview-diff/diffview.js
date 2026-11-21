@@ -13,17 +13,16 @@ const NOTE_LINE = 16;
 export const COMPOSER = 104;
 
 // Diff rows, note cards and the composer in display order. A card follows
-// the last row of its range (new-side numbers), a whole-file note goes
-// first; the composer follows the selection's last row; a cut diff ends
-// with {cut: rows}.
+// the last row of its range on its saved side (new for legacy notes).
+// Whole-file notes go first; the composer follows the selection's last
+// row; a cut diff ends with {cut: rows}.
 export function displayRows(diff, notes, composerAfter) {
   const out = [];
   const pending = notes.filter((n) => n.end > 0);
   for (const n of notes.filter((n) => n.end === 0)) out.push({ note: n });
   diff.rows.forEach((row, i) => {
     out.push({ row, index: i });
-    const here = row.n ?? null;
-    if (here !== null) for (const n of pending.filter((n) => n.end === here)) out.push({ note: n });
+    for (const n of pending.filter((n) => n.end === (n.side === "old" ? row.o : row.n))) out.push({ note: n });
     if (i === composerAfter) out.push({ composer: true });
   });
   // The engine sends 5 000 rows at most: say where it stopped.
@@ -277,18 +276,21 @@ function composer(ctx) {
     );
 }
 
-// The selection's anchor for a note: new-side numbers of the rows in
-// [a, b], and the TUI's snippet (marker + text, at most 40 lines).
+// Anchor on the new side when present; deletion-only selections use the
+// old side. Never mix the two coordinate systems in one range.
+// Include the TUI's snippet (marker + text, at most 40 lines).
 export function noteRange(diff, a, b) {
-  const nums = [];
+  const nums = { new: [], old: [] };
   let snippet = "";
   for (let i = a; i <= b; i++) {
     const r = diff.rows[i];
     if (!r || r.k === "fold") continue;
-    nums.push(r.n ?? r.o ?? 0);
+    if (r.n > 0) nums.new.push(r.n);
+    if (r.o > 0) nums.old.push(r.o);
     if (r.m && snippet.split("\n").length <= 40) snippet += `${r.m}\n`;
   }
-  const real = nums.filter((n) => n > 0);
+  const side = nums.new.length ? "new" : "old";
+  const real = nums[side];
   if (!real.length) return null;
-  return { start: Math.min(...real), end: Math.max(...real), snippet };
+  return { side, start: Math.min(...real), end: Math.max(...real), snippet };
 }

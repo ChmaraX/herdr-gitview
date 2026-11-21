@@ -5,6 +5,7 @@ import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { iconButton, noteLines, pathLabel } from "./chrome.js";
 import { removeNotes } from "./shared.js";
+import { openCommit } from "./history.js";
 
 export const NOTE_ROW = 44;
 
@@ -24,13 +25,16 @@ export function deleteNote(v, note) {
 // The section a note was written in (notes from before `section`: by side).
 const noteSection = (note) => note.section ?? (note.cached ? "staged" : "changes");
 
-// The note's file in the diff pane, its cursor on the note: the side it was
-// written on, else (staged or unstaged since) wherever the file is now.
+// Historical notes reopen their commit; working notes use their saved
+// section, else wherever the file is now. Keep the anchor's line side.
 export function jumpToNote(v, note, cx) {
   if (!note || !v.work) return;
+  const end = note.end || note.start || null;
+  const line = end && note.side === "old" ? { o: end } : end;
+  if (note.commit) return openCommit(v, { sha: note.commit, short: note.commit.slice(0, 7) }, cx, { path: note.file, line });
   const row = v.work.findFile(note.file, noteSection(note)) ?? v.work.findFile(note.file);
   if (!row) return v.flash.set(`${note.file} has no changes now`);
-  v.setMode("files", cx, { row, line: note.end || note.start || null });
+  v.setMode("files", cx, { row, line });
 }
 
 // ctx: {t, selected (index), hover (id), focused, onClick(i, event, cx), onHover, onDelete}
