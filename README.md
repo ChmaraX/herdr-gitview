@@ -119,6 +119,23 @@ The footer shows the keys that work right now; `?` lists them all.
 | `m` | diff | Diff or Preview |
 | `?` | list, diff | All keys |
 
+### Vim motions (opt-in)
+
+Press `V` in the diff pane, or click `vim` in its footer, to turn them on
+or off (off by default; the choice is kept). The diff pane then also takes:
+
+| Key | What |
+| --- | --- |
+| `5j` / `5k` | Move that many rows (any count; the gutter shows relative numbers) |
+| `gg` / `G`, `42G`, `:42` | Top / bottom, line 42 |
+| `]c` / `[c` | Next / previous change |
+| `ctrl-d` / `ctrl-u` | Half a page down / up |
+| `zz` / `zt` / `zb` | Cursor line to the middle / top / bottom |
+| `0` / `$` | Scroll sideways to the start / end |
+| `y` | Copy the selected lines (or the cursor's), without `+`/`-` |
+| `/text`, `n` / `N` | Search (smart case), next / previous match |
+| `:set rnu` / `:set nornu` | Relative or absolute line numbers |
+
 ## Configuration
 
 gitview reads the same `config.toml` as the TUI plugin,
