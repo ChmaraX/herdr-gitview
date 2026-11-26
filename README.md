@@ -121,8 +121,8 @@ The footer shows the keys that work right now; `?` lists them all.
 
 ### Vim motions (opt-in)
 
-Click `vim` in the diff pane's footer to turn them on (off by default; the
-choice is kept). The diff pane then also takes:
+Press `V` in the diff pane, or click `vim` in its footer, to turn them on
+or off (off by default; the choice is kept). The diff pane then also takes:
 
 | Key | What |
 | --- | --- |

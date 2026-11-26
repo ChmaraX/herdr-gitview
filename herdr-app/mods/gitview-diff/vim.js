@@ -1,5 +1,5 @@
-// Vim motions for the diff pane: an opt-in bundle, off by default. The
-// footer's `vim` toggle (or shared "gitview.vim") turns it on; with it off
+// Vim motions for the diff pane: an opt-in bundle, off by default. V or the
+// footer's `vim` switch (shared "gitview.vim") turns it on; with it off
 // the pane's keys are exactly KEYS in main.js.
 //
 // With it on, before KEYS:

@@ -10,7 +10,7 @@
 // saves, esc cancels); enter opens nvim at the cursor (on a fold: unfolds);
 // s/u/x stage, unstage, discard the file; J/K next/previous file of the
 // list; m Diff or Preview (markdown, images, SVGs: preview.js); p sends the
-// notes; esc clears. The footer's `vim` switch adds vim motions, off by
+// notes; esc clears. V (or the footer's switch) adds vim motions, off by
 // default (vim.js: counts, gg, :<line>, ]c, ctrl-d/u, zz, 0/$, y, /search,
 // relative numbers). Commands: `gitview-diff.key:<key>`, `gitview-diff.note:<text>`,
 // `gitview-diff.drag:<line>:<line>`, `gitview-diff.close`.
@@ -66,6 +66,7 @@ const KEYS = [
   { caps: ["p"], label: "send notes", rank: 9, on: { p: (v, cx) => v.send(cx) } },
   { caps: ["r"], label: "reload", on: { r: (v, cx) => v.reload(cx) } },
   { caps: ["escape"], label: "clear the selection", on: { escape: (v) => { v.anchor = null; } } },
+  { caps: ["V"], label: "vim motions on / off", on: { V: (v) => v.toggleVim() } },
   { caps: ["5j", "gg", ":42"], label: "count, top, go to line 42", when: vimOn, on: {} },
   { caps: ["]c", "[c"], label: "next / previous change", when: vimOn, on: {} },
   { caps: ["ctrl-d", "ctrl-u"], label: "half a page", when: vimOn, on: {} },
@@ -538,6 +539,12 @@ export default class GitDiff extends View {
     return true;
   }
 
+  // V and the footer's switch: vim motions on or off (vim.js).
+  toggleVim() {
+    this.vim.reset();
+    setVim(!vimOn());
+  }
+
   unfoldAll(cx) {
     this.unfold = true;
     if (this.view) this.loadDiff(cx, { keep: true });
@@ -765,7 +772,7 @@ export default class GitDiff extends View {
         width: this.width,
         onKeys: (cx) => { KEYS.at(-1).on["?"](this, cx); },
         id: "gitview-diff-keys-button",
-        toggle: { id: "gitview-diff-vim", label: "vim", on: vimOn(), tooltip: vimOn() ? "Vim motions on (click: off)" : "Vim motions off (click: on)", onClick: () => { this.vim.reset(); setVim(!vimOn()); } },
+        toggle: { id: "gitview-diff-vim", cap: "V", label: "vim", on: vimOn(), tooltip: vimOn() ? "Vim motions on (V or click: off)" : "Vim motions off (V or click: on)", onClick: () => this.toggleVim() },
       }));
   }
 }
