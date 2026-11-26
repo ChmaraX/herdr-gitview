@@ -765,7 +765,7 @@ export default class GitDiff extends View {
         width: this.width,
         onKeys: (cx) => { KEYS.at(-1).on["?"](this, cx); },
         id: "gitview-diff-keys-button",
-        toggle: { id: "gitview-diff-vim", label: vimOn() ? "vim on" : "vim off", on: vimOn(), tooltip: vimOn() ? "Vim motions on (click: off)" : "Vim motions off (click: on)", onClick: () => { this.vim.reset(); setVim(!vimOn()); } },
+        toggle: { id: "gitview-diff-vim", label: "vim", on: vimOn(), tooltip: vimOn() ? "Vim motions on (click: off)" : "Vim motions off (click: on)", onClick: () => { this.vim.reset(); setVim(!vimOn()); } },
       }));
   }
 }

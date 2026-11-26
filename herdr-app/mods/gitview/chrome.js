@@ -268,7 +268,8 @@ const chipWidth = (e) => e.caps.reduce((w, k) => w + Math.max(16, capText(k).len
 // The footer: a message (`flash`) for a moment, else the most useful keys
 // of the view as keycaps, as many as fit `width`; always a `?` keycap at the
 // right edge that opens every key (`onKeys(cx)`). `toggle` ({id, label, on,
-// tooltip, onClick}) adds a small switch before it (the diff pane's `vim`).
+// tooltip, onClick}) adds a switch before it, drawn like a chip (the diff
+// pane's `vim`).
 export function footer(t, { flash, chips = [], width = 0, onKeys, id = "gitview-keys-button", toggle = null }) {
   let room = (width || 300) - 28 - 30 - (toggle ? 60 : 0);
   const shown = [];
@@ -292,22 +293,16 @@ export function footer(t, { flash, chips = [], width = 0, onKeys, id = "gitview-
         ? div().flex_1().min_w(0).truncate().text_color(t.blocked).child(flash)
         : h_flex().flex_1().min_w(0).gap(12).overflow_hidden().children(shown.map((c) => keyChip(t, c))),
     )
+    // The switch, drawn like a key chip: its keycap, then "on" / "off".
     .when(Boolean(toggle), (e) =>
       e.child(
-        div()
+        h_flex()
           .id(toggle.id)
           .flex_none()
-          .h(16)
-          .px(6)
-          .flex()
+          .gap(4)
           .items_center()
           .cursor_pointer()
           .rounded(4)
-          .border_1()
-          .border_color(toggle.on ? t.accent : t.border)
-          .when(toggle.on, (s) => s.bg(`${String(t.accent).slice(0, 7)}33`))
-          .text_size(10.5)
-          .text_color(toggle.on ? t.accent : t.muted)
           .hover((s) => s.bg(t.hover))
           .tooltip(toggle.tooltip ?? toggle.label)
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
@@ -315,7 +310,8 @@ export function footer(t, { flash, chips = [], width = 0, onKeys, id = "gitview-
             cx.stop_propagation();
             toggle.onClick?.(cx);
           })
-          .child(toggle.label),
+          .child(keycap(t, toggle.label))
+          .child(div().flex_none().text_size(11).text_color(toggle.on ? t.accent : t.dim).child(toggle.on ? "on" : "off")),
       ),
     )
     .child(
