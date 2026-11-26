@@ -10,7 +10,9 @@
 // saves, esc cancels); enter opens nvim at the cursor (on a fold: unfolds);
 // s/u/x stage, unstage, discard the file; J/K next/previous file of the
 // list; m Diff or Preview (markdown, images, SVGs: preview.js); p sends the
-// notes; esc clears. Commands: `gitview-diff.key:<key>`, `gitview-diff.note:<text>`,
+// notes; esc clears. The footer's `vim` switch adds vim motions, off by
+// default (vim.js: counts, gg, :<line>, ]c, ctrl-d/u, zz, 0/$, y, /search,
+// relative numbers). Commands: `gitview-diff.key:<key>`, `gitview-diff.note:<text>`,
 // `gitview-diff.drag:<line>:<line>`, `gitview-diff.close`.
 
 import { View, div } from "gpui-kit";
@@ -31,6 +33,7 @@ import { diffHeader, footer } from "./chrome.js";
 import { actionFor, chipsOf, toggleKeys } from "./keymap.js";
 import { loadPreview, previewBody, previewKind } from "./preview.js";
 import * as diffs from "./diffview.js";
+import { Vim, relativeOn, setVim, vimOn } from "./vim.js";
 
 const EMPTY = { rows: [] };
 // One column's width (px) before the probe measures it (JetBrains Mono at
@@ -63,6 +66,14 @@ const KEYS = [
   { caps: ["p"], label: "send notes", rank: 9, on: { p: (v, cx) => v.send(cx) } },
   { caps: ["r"], label: "reload", on: { r: (v, cx) => v.reload(cx) } },
   { caps: ["escape"], label: "clear the selection", on: { escape: (v) => { v.anchor = null; } } },
+  { caps: ["5j", "gg", ":42"], label: "count, top, go to line 42", when: vimOn, on: {} },
+  { caps: ["]c", "[c"], label: "next / previous change", when: vimOn, on: {} },
+  { caps: ["ctrl-d", "ctrl-u"], label: "half a page", when: vimOn, on: {} },
+  { caps: ["zz", "zt", "zb"], label: "line to middle / top / bottom", when: vimOn, on: {} },
+  { caps: ["0", "$"], label: "sideways to start / end", when: vimOn, on: {} },
+  { caps: ["y"], label: "copy the lines", when: vimOn, on: {} },
+  { caps: ["/", "n", "N"], label: "search, next / previous", when: vimOn, on: {} },
+  { caps: [":set rnu"], label: "relative numbers (nornu: off)", when: vimOn, on: {} },
   { caps: ["?"], label: "all keys", on: { "?": (v) => toggleKeys("gitview: the diff pane", [{ title: "Diff pane", table: KEYS }], v) } },
 ];
 const NOTE_KEYS = [{ caps: ["enter"], label: "save the note", rank: 1, on: {} }, { caps: ["escape"], label: "cancel", rank: 2, on: {} }];
@@ -92,6 +103,7 @@ export default class GitDiff extends View {
     this.diff = EMPTY;
     this.cursor = 0;
     this.anchor = null;
+    this.vim = new Vim();
     this.dragging = false;
     this.unfold = false;
     this.width = shared("gitview.paneWidth") ?? 0; // the last pane's: a new pane lays out right away
@@ -512,13 +524,14 @@ export default class GitDiff extends View {
 
   key(e, cx) {
     const k = keyName(e);
-    if (!k) return false;
     if (this.pendingNote) {
       if (k !== "escape") return false; // the composer types
       this.pendingNote = null;
       this.focusHere(cx);
       return true;
     }
+    if (vimOn() && this.vim.key(this, e, k, cx)) return true;
+    if (!k) return false;
     const act = actionFor([KEYS], k);
     if (!act) return false;
     act(this, cx);
@@ -557,6 +570,7 @@ export default class GitDiff extends View {
 
   down(index, e, cx) {
     this.focusHere(cx);
+    this.vim.reset();
     this.flash.clear();
     if (this.diff.rows[index]?.k === "fold") return this.unfoldAll(cx);
     this.cursor = index;
@@ -676,6 +690,7 @@ export default class GitDiff extends View {
     const ctx = {
       t,
       cursor: this.cursor,
+      relative: relativeOn(),
       selection: this.selection(),
       focused,
       composer: this.composer,
@@ -745,11 +760,12 @@ export default class GitDiff extends View {
       }))
       .child(body)
       .child(footer(t, {
-        flash: this.flash.text,
+        flash: (vimOn() && this.vim.prompt()) || this.flash.text,
         chips: this.view ? chipsOf([this.pendingNote ? NOTE_KEYS : KEYS], this) : [], // nothing shown: no keys for it
         width: this.width,
         onKeys: (cx) => { KEYS.at(-1).on["?"](this, cx); },
         id: "gitview-diff-keys-button",
+        toggle: { id: "gitview-diff-vim", label: "vim", on: vimOn(), tooltip: vimOn() ? "Vim motions on (click: off)" : "Vim motions off (click: on)", onClick: () => { this.vim.reset(); setVim(!vimOn()); } },
       }));
   }
 }

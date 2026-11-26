@@ -96,6 +96,12 @@ of it out and brings back the stock Changes panel.
   (staged or unstaged diffs only); `s`/`u`/`x` act on the shown file; `J`/`K`
   the next or previous file (the list follows); `m` Diff or Preview; `enter`
   the editor at the cursor's line; `esc` clears the selection.
+- **Vim motions** (opt-in, `vim.js`): a `vim` switch in the diff pane's
+  footer (shared `gitview.vim`, off by default) adds counts (`5j`), `gg`,
+  `42G` / `:42`, `]c` / `[c`, `ctrl-d` / `ctrl-u`, `zz` / `zt` / `zb`,
+  `0` / `$`, `y` (copy lines without markers), `/` search with `n` / `N`,
+  and relative gutter numbers (`:set rnu` / `:set nornu`, shared
+  `gitview.vim.relative`, on with the bundle). Off, the keys are as above.
 - **Enter → the editor**, which takes the diff pane's place (as v1's diff
   pane became nvim):
   - the editor: herdr-nvim's nvim when it's installed; else an nvim already

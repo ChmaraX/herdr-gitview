@@ -48,6 +48,7 @@ function color(c, t) {
     case "@ins_emph": return `${t.ansi2}5c`;
     case "@del_emph": return `${t.ansi1}5c`;
     case "@gutter": return t.dim;
+    case "@gutter_now": return t.foreground;
     case "@fold": return t.raised;
     case "@fold_fg": return t.muted;
     default: return c;
@@ -158,7 +159,7 @@ export function widestColumns(rows) {
   return max;
 }
 
-// ctx: {t, cursor, selection: [a, b] | null, focused, composer (TextareaState),
+// ctx: {t, cursor, relative (relative numbers), selection: [a, b] | null, focused, composer (TextareaState),
 // pending (the note being written), offsetX (sideways offset px),
 // onDown(index, event, cx), onMove(index, cx), onDeleteNote(note, cx)}
 export function renderRow(item, ctx) {
@@ -204,6 +205,7 @@ export function renderRow(item, ctx) {
         .items_center()
         .children(
           row.s.map(([text, fg, bg]) => {
+            if (fg === "@gutter" && ctx.relative) [text, fg] = relativeGutter(text, index, ctx.cursor);
             // A span tinted like its row is painted once: twice would stack the
             // translucent tint (darker boxes behind the text).
             const own = Boolean(bg) && !selected && bg !== row.bg;
@@ -213,6 +215,14 @@ export function renderRow(item, ctx) {
           }),
         ),
     );
+}
+
+// The gutter in relative numbers (vim's relativenumber with number): the
+// cursor's row keeps its file line number, brighter; every other row says how
+// many rows away it is, what 5j counts. The engine's width, so nothing shifts.
+export function relativeGutter(text, index, cursor) {
+  if (index === cursor) return [text, "@gutter_now"];
+  return [`${String(Math.abs(index - cursor)).padStart(text.length - 1)} `, "@gutter"];
 }
 
 // The cursor row's wash: the theme's text colour at 10% (6% when the pane
