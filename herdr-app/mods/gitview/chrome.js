@@ -270,7 +270,7 @@ const chipWidth = (e) => e.caps.reduce((w, k) => w + Math.max(16, capText(k).len
 // right edge that opens every key (`onKeys(cx)`). `toggle` ({id, label, on,
 // tooltip, onClick}) adds a small switch before it (the diff pane's `vim`).
 export function footer(t, { flash, chips = [], width = 0, onKeys, id = "gitview-keys-button", toggle = null }) {
-  let room = (width || 300) - 28 - 30 - (toggle ? 40 : 0);
+  let room = (width || 300) - 28 - 30 - (toggle ? 60 : 0);
   const shown = [];
   for (const c of chips) {
     const w = chipWidth(c) + 12;
@@ -307,7 +307,7 @@ export function footer(t, { flash, chips = [], width = 0, onKeys, id = "gitview-
           .border_color(toggle.on ? t.accent : t.border)
           .when(toggle.on, (s) => s.bg(`${String(t.accent).slice(0, 7)}33`))
           .text_size(10.5)
-          .text_color(toggle.on ? t.accent : t.dim)
+          .text_color(toggle.on ? t.accent : t.muted)
           .hover((s) => s.bg(t.hover))
           .tooltip(toggle.tooltip ?? toggle.label)
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
