@@ -4,7 +4,7 @@
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { iconButton, noteLines, pathLabel } from "./chrome.js";
-import { removeNotes } from "./shared.js";
+import { noteShowsIn, removeNotes } from "./shared.js";
 import { openCommit } from "./history.js";
 
 export const NOTE_ROW = 44;
@@ -27,14 +27,28 @@ const noteSection = (note) => note.section ?? (note.cached ? "staged" : "changes
 
 // Historical notes reopen their commit; working notes use their saved
 // section, else wherever the file is now. Keep the anchor's line side.
+// A note only the other scope shows (shared.js noteShowsIn) says the way
+// there (`w` is the file list's key); the scope is the loaded list's.
 export function jumpToNote(v, note, cx) {
   if (!note || !v.work) return;
   const end = note.end || note.start || null;
   const line = end && note.side === "old" ? { o: end } : end;
   if (note.commit) return openCommit(v, { sha: note.commit, short: note.commit.slice(0, 7) }, cx, { path: note.file, line });
-  const row = v.work.findFile(note.file, noteSection(note)) ?? v.work.findFile(note.file);
-  if (!row) return v.flash.set(`${note.file} has no changes now`);
-  v.setMode("files", cx, { row, line });
+  const scope = v.work.status?.scope === "branch" ? "branch" : "worktree";
+  const row = noteShowsIn(note, scope) ? noteFile(v.work, note, scope) : null;
+  if (row) return v.setMode("files", cx, { row, line });
+  if (scope === "worktree" && noteShowsIn(note, "branch")) return v.flash.set("it's in vs base: esc, then w");
+  if (scope === "branch" && !noteShowsIn(note, "branch")) return v.flash.set("it's in uncommitted: esc, then w");
+  v.flash.set(`${note.file} has no changes now`);
+}
+
+// The note's file in that scope's list. "vs base" has one section; a note
+// written there is about the file on disk, so uncommitted shows it on the
+// unstaged side.
+function noteFile(work, note, scope) {
+  if (scope === "branch") return work.findFile(note.file);
+  if (note.section === "branch") return work.findFile(note.file, "changes") ?? work.findFile(note.file, "conflicts");
+  return work.findFile(note.file, noteSection(note)) ?? work.findFile(note.file);
 }
 
 // ctx: {t, selected (index), hover (id), focused, onClick(i, event, cx), onHover, onDelete}

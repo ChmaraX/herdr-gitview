@@ -474,11 +474,12 @@ export default class GitDiff extends View {
     const v = this.view;
     if (!v) return;
     if (this.inPreview()) return this.flash.set("notes work in Diff: m switches");
-    if (!v.commit && v.section === "branch") return this.flash.set("notes work on staged/unstaged changes or historical commits");
     const [a, b] = this.selection() ?? [this.cursor, this.cursor];
     const range = diffs.noteRange(this.diff, a, b);
     if (!range) return this.flash.set("select some code to note (v or drag)");
-    this.pendingNote = { file: v.path, section: v.section, cached: Boolean(v.cached), commit: v.commit ?? null, ...range, after: b };
+    // Removed lines of "vs base" are numbered in the merge-base: kept for the agent.
+    const base = v.section === "branch" && range.side === "old" ? v.base ?? null : null;
+    this.pendingNote = { file: v.path, section: v.section, cached: Boolean(v.cached), commit: v.commit ?? null, base, ...range, after: b };
     this.composer.set_value("");
     this.composer.focus();
     this.pendingReveal = { row: b, margin: diffs.COMPOSER + 8, after: true };
@@ -487,7 +488,7 @@ export default class GitDiff extends View {
   saveNote(value, cx) {
     const text = String(value ?? "").trim();
     const p = this.pendingNote;
-    if (p && text) addNote(this.notesKey(), { file: p.file, section: p.section, cached: p.cached, commit: p.commit, side: p.side, start: p.start, end: p.end, snippet: p.snippet, text });
+    if (p && text) addNote(this.notesKey(), { file: p.file, section: p.section, cached: p.cached, commit: p.commit, base: p.base, side: p.side, start: p.start, end: p.end, snippet: p.snippet, text });
     this.pendingNote = null;
     this.anchor = null;
     this.focusHere(cx);

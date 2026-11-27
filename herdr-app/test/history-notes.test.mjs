@@ -44,7 +44,7 @@ test("notes stay on their commit and working-tree side", () => {
   assert.deepEqual(texts({ commit: "abc" }), ["historical"]);
   assert.deepEqual(texts({}), ["unstaged"]);
   assert.deepEqual(texts({ cached: true }), ["staged"]);
-  assert.deepEqual(texts({ section: "branch" }), []);
+  assert.deepEqual(texts({ section: "branch" }), ["unstaged"]);
 });
 
 test("ordinary questions retain their existing message", () => {

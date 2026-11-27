@@ -55,11 +55,17 @@ export function takeDiscard(mod, command) {
   return rec.payload;
 }
 
-// The installed engine predates commit notes; include the revision in the
-// text it formats so the agent never mistakes historical code for the worktree.
-export function noteForAgent({ id, section, commit, ...note }) {
-  return { ...note, cached: Boolean(note.cached),
-    text: commit ? `[Historical commit ${commit}; line numbers refer to that diff]\n${note.text}` : note.text };
+// The engine formats only the text: it says what the line numbers refer to
+// when that isn't the file on disk (a commit; the merge-base, for removed
+// lines of "vs base").
+export function noteForAgent({ id, section, commit, base, ...note }) {
+  return { ...note, cached: Boolean(note.cached), text: `${noteContext({ section, commit, base, side: note.side })}${note.text}` };
+}
+
+function noteContext({ section, commit, base, side }) {
+  if (commit) return `[Historical commit ${commit}; line numbers refer to that diff]\n`;
+  if (section === "branch" && side === "old") return `[Removed lines; line numbers refer to ${base ? `${base.label} @ ${base.merge_base.slice(0, 7)}` : "the base branch"}]\n`;
+  return "";
 }
 
 // The send dialog for a repo's notes (`key`: shared.js notesKey). Resolves

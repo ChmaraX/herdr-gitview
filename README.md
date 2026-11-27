@@ -132,8 +132,10 @@ these apply: `editor`, `base`, `context_lines`, `show_untracked` and
 - **nvim is the editor gitview knows** - with herdr-nvim's nvim or your own
   nvim, gitview checks for unsaved changes and closes it for you. Other
   editors open the file too; you close them yourself.
-- **Notes attach to working-tree or historical commit diffs** - historical
-  questions include the commit SHA and selected diff snippet.
+- **Notes attach to any diff the desktop app shows** - uncommitted, "vs
+  base" and historical commits. Historical questions include the commit SHA
+  and selected diff snippet; removed lines of "vs base" name the merge-base.
+  In the TUI, notes attach to staged and unstaged changes only.
 - **herdr-nvim on remote spaces** - in a space on another machine, Enter
   starts a plain editor there instead.
 
