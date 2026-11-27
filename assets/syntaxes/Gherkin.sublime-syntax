@@ -1,0 +1,106 @@
+%YAML 1.2
+---
+# Gherkin, the language of Cucumber `.feature` files (English keywords).
+# Scope names follow Sublime Text's scope naming guide.
+# Language: https://cucumber.io/docs/gherkin/reference/
+name: Gherkin
+file_extensions: [feature]
+scope: source.gherkin
+
+variables:
+  section: (?:Feature|Business Need|Ability|Rule|Background|Scenario Outline|Scenario Template|Scenario|Examples|Example|Scenarios)
+  step: (?:Given|When|Then|And|But|\*)
+  # `<name>` of a Scenario Outline, not a `<` or `>` comparison in text.
+  placeholder: <[^<>\s](?:[^<>\n]*[^<>\s])?>
+
+contexts:
+  main:
+    - match: ^\s*(#).*$
+      scope: comment.line.number-sign.gherkin
+      captures:
+        1: punctuation.definition.comment.gherkin
+    - match: ^\s*("""|```)\s*(\S*)
+      captures:
+        1: punctuation.definition.string.begin.gherkin
+        2: storage.type.media-type.gherkin
+      push: docstring
+    - match: ^\s*({{section}})(:)
+      captures:
+        1: keyword.declaration.gherkin
+        2: punctuation.separator.key-value.gherkin
+      push: title
+    - match: ^\s*({{step}})(?=\s)
+      captures:
+        1: keyword.other.step.gherkin
+      push: step
+    - match: ^\s*(?=\|)
+      push: table
+    - match: ^\s*(?=@)
+      push: tags
+
+  # The name after `Feature:`, `Scenario:`, …; an outline's may hold
+  # placeholders.
+  title:
+    - meta_content_scope: entity.name.section.gherkin
+    - match: $
+      pop: true
+    - match: '{{placeholder}}'
+      scope: variable.parameter.gherkin
+
+  tags:
+    - match: (@)[^\s@]+
+      scope: entity.name.tag.gherkin
+      captures:
+        1: punctuation.definition.tag.gherkin
+    - match: (#).*$
+      scope: comment.line.number-sign.gherkin
+      captures:
+        1: punctuation.definition.comment.gherkin
+    - match: $
+      pop: true
+
+  step:
+    - match: $
+      pop: true
+    - match: '"'
+      scope: punctuation.definition.string.begin.gherkin
+      push: string
+    - include: values
+
+  table:
+    - match: \\[|\\n]
+      scope: constant.character.escape.gherkin
+    - match: \|
+      scope: punctuation.separator.table-cell.gherkin
+    - match: $
+      pop: true
+    - include: values
+
+  # What steps and table cells share. Quotes mean nothing in a table cell.
+  values:
+    - match: '{{placeholder}}'
+      scope: variable.parameter.gherkin
+    - match: (?<![\w.])-?\d+(?:\.\d+)?(?!\w|\.\d)
+      scope: constant.numeric.gherkin
+
+  # A quoted step argument. It never spans lines: an unclosed one ends with
+  # its line.
+  string:
+    - meta_scope: string.quoted.double.gherkin
+    - match: '"'
+      scope: punctuation.definition.string.end.gherkin
+      pop: true
+    - match: '{{placeholder}}'
+      scope: variable.parameter.gherkin
+    - match: $
+      pop: true
+
+  # Closed only by the delimiter that opened it (`\1`).
+  docstring:
+    - meta_scope: string.quoted.triple.gherkin
+    - match: ^\s*(\1)
+      captures:
+        1: punctuation.definition.string.end.gherkin
+      pop: true
+    - match: '{{placeholder}}'
+      scope: variable.parameter.gherkin
