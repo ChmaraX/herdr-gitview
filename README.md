@@ -115,6 +115,7 @@ The footer shows the keys that work right now; `?` lists them all.
 | `l` / `n` | list | History / notes |
 | `J` / `K` | diff | Next / previous file |
 | `v`, `a` | diff | Select lines, write a note |
+| `e`, `d` | diff | On a note's lines: edit it, delete it |
 | `p` | list, diff | Send the notes to an agent |
 | `m` | diff | Diff or Preview |
 | `?` | list, diff | All keys |
@@ -132,8 +133,10 @@ these apply: `editor`, `base`, `context_lines`, `show_untracked` and
 - **nvim is the editor gitview knows** - with herdr-nvim's nvim or your own
   nvim, gitview checks for unsaved changes and closes it for you. Other
   editors open the file too; you close them yourself.
-- **Notes attach to working-tree changes** - you can't annotate historical
-  commits.
+- **Notes attach to any diff the desktop app shows** - uncommitted, "vs
+  base" and historical commits. Historical questions include the commit SHA
+  and selected diff snippet; removed lines of "vs base" name the merge-base.
+  In the TUI, notes attach to staged and unstaged changes only.
 - **herdr-nvim on remote spaces** - in a space on another machine, Enter
   starts a plain editor there instead.
 

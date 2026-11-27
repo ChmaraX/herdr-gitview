@@ -221,6 +221,28 @@ export function notesOf(key) {
   return (shared("gitview.notes") ?? {})[key] ?? [];
 }
 
+// Whether a working note's card has a place in that scope's diffs
+// ("worktree": uncommitted, "branch": vs base). Both end at the file on
+// disk, so a note on new-side lines shows in either. The old sides differ
+// (the index, the merge-base): a note on removed lines stays where it was
+// written. A staged note is about the index, which only "worktree" shows.
+export function noteShowsIn(note, scope) {
+  const removed = note.side === "old";
+  const vsBase = note.section === "branch";
+  if (scope === "branch") return !note.cached && (!removed || vsBase);
+  return !removed || !vsBase;
+}
+
+// A historical note belongs to one revision, independently of the index;
+// a working note to the diffs noteShowsIn() says, on its side of the index.
+export function notesForView(key, view) {
+  if (!view) return [];
+  const commit = view.commit ?? null;
+  const scope = view.section === "branch" ? "branch" : "worktree";
+  const working = (n) => noteShowsIn(n, scope) && Boolean(n.cached) === Boolean(view.cached);
+  return notesOf(key).filter((n) => n.file === view.path && (n.commit ?? null) === commit && (commit || working(n)));
+}
+
 function setNotes(key, list) {
   const all = { ...(shared("gitview.notes") ?? {}) };
   if (list.length) all[key] = list;
@@ -231,6 +253,15 @@ function setNotes(key, list) {
 export function addNote(key, note) {
   const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   setNotes(key, [...notesOf(key), { ...note, id }]);
+}
+
+// A note's text, rewritten; where it's anchored stays. False when the note
+// isn't there any more.
+export function updateNote(key, id, text) {
+  const notes = notesOf(key);
+  if (!notes.some((n) => n.id === id)) return false;
+  setNotes(key, notes.map((n) => (n.id === id ? { ...n, text } : n)));
+  return true;
 }
 
 export function removeNotes(key, ids) {

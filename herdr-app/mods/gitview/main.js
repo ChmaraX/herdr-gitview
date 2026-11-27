@@ -1005,12 +1005,13 @@ export default class GitList extends View {
         cx.notify();
       })
       .on_key_down((e, cx) => {
+        const mark = this.flash.mark();
         if (this.typing) {
           if (e.key !== "escape") return;
           this.handle.focus(); // esc leaves the commit message
         } else if (!this.key(e, cx)) return;
         this.tr.line("input", { key: e.key, mode: this.mode, scope: this.scope, row: this.list()?.row()?.key ?? null });
-        this.flash.clear();
+        this.flash.clearOlder(mark);
         cx.stop_propagation();
         cx.notify();
       })

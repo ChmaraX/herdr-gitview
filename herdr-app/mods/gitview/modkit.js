@@ -217,6 +217,7 @@ export class Flash {
   constructor(cx) {
     this.text = null;
     this.at = 0;
+    this.sets = 0;
     cx.timer.every(2000, (cx) => {
       if (this.text && Date.now() - this.at > 5000) {
         this.text = null;
@@ -228,11 +229,22 @@ export class Flash {
   set(text) {
     this.text = text;
     this.at = Date.now();
+    this.sets += 1;
     if (text) tracer().line("state", { flash: String(text).slice(0, 200) });
   }
 
   clear() {
     this.text = null;
+  }
+
+  // For a key handler: `mark()` before the key runs, `clearOlder(mark)`
+  // after it. The message the key found goes; one the key set stays.
+  mark() {
+    return this.sets;
+  }
+
+  clearOlder(mark) {
+    if (this.sets === mark) this.text = null;
   }
 }
 

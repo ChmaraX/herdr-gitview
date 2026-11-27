@@ -55,13 +55,26 @@ export function takeDiscard(mod, command) {
   return rec.payload;
 }
 
+// The engine formats only the text: it says what the line numbers refer to
+// when that isn't the file on disk (a commit; the merge-base, for removed
+// lines of "vs base").
+export function noteForAgent({ id, section, commit, base, ...note }) {
+  return { ...note, cached: Boolean(note.cached), text: `${noteContext({ section, commit, base, side: note.side })}${note.text}` };
+}
+
+function noteContext({ section, commit, base, side }) {
+  if (commit) return `[Historical commit ${commit}; line numbers refer to that diff]\n`;
+  if (section === "branch" && side === "old") return `[Removed lines; line numbers refer to ${base ? `${base.label} @ ${base.merge_base.slice(0, 7)}` : "the base branch"}]\n`;
+  return "";
+}
+
 // The send dialog for a repo's notes (`key`: shared.js notesKey). Resolves
 // false when there are none.
 export async function sendNotes(key, space) {
   const notes = key ? notesOf(key) : [];
   if (!notes.length) return false;
   // The engine takes each note's side (`cached`), not our id or section.
-  const plain = notes.map(({ id, section, ...note }) => ({ ...note, cached: Boolean(note.cached) }));
+  const plain = notes.map(noteForAgent);
   const { message } = await gv(["notes", "--", JSON.stringify(plain)]);
   const height = Math.min(420, 140 + 32 * Math.max(1, agents().length));
   openOverlay({ mod: "gitview-agents", kind: "dialog", modal: true, width: 460, height, props: { message, count: notes.length, space, key, ids: notes.map((n) => n.id) } });
