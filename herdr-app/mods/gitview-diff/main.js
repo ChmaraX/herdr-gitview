@@ -723,9 +723,10 @@ export default class GitDiff extends View {
         cx.notify();
       })
       .on_key_down((e, cx) => {
+        const mark = this.flash.mark();
         if (!this.key(e, cx)) return;
         this.tr.line("input", { key: e.key, shift: Boolean(e.modifiers?.shift), file: this.view?.path ?? null, cursor: this.cursor });
-        this.flash.clear();
+        this.flash.clearOlder(mark);
         cx.stop_propagation();
         cx.notify();
       })

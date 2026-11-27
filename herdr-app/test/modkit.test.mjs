@@ -3,7 +3,23 @@
 import { world, reset } from "./stub.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-const { batchPaths, Loads, commandLoop } = await import("../mods/gitview/modkit.js");
+const { batchPaths, Flash, Loads, commandLoop } = await import("../mods/gitview/modkit.js");
+
+test("after a key that sets no message, the message it found is cleared", () => {
+  const flash = new Flash({ timer: { every() {} } });
+  flash.set("from the key before");
+  flash.clearOlder(flash.mark());
+  assert.equal(flash.text, null);
+});
+
+test("after a key that sets a message, that message stays", () => {
+  const flash = new Flash({ timer: { every() {} } });
+  flash.set("from the key before");
+  const mark = flash.mark();
+  flash.set("from this key");
+  flash.clearOlder(mark);
+  assert.equal(flash.text, "from this key");
+});
 
 test("watch batches: git's own churn and ignored folders don't count; the repo itself or 50+ paths is everything", () => {
   reset();
