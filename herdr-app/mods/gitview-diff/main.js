@@ -7,10 +7,11 @@
 //
 // Keys (KEYS below; `?` shows them all): j/k (arrows, wheel, click) move
 // the cursor; v or a drag selects; a writes a note on the selection (enter
-// saves, esc cancels); enter opens nvim at the cursor (on a fold: unfolds);
-// s/u/x stage, unstage, discard the file; J/K next/previous file of the
-// list; m Diff or Preview (markdown, images, SVGs: preview.js); p sends the
-// notes; esc clears. Commands: `gitview-diff.key:<key>`, `gitview-diff.note:<text>`,
+// saves, esc cancels); on a note's lines e rewrites it and d deletes it;
+// enter opens nvim at the cursor (on a fold: unfolds); s/u/x stage,
+// unstage, discard the file; J/K next/previous file of the list; m Diff or
+// Preview (markdown, images, SVGs: preview.js); p sends the notes; esc
+// clears. Commands: `gitview-diff.key:<key>`, `gitview-diff.note:<text>`,
 // `gitview-diff.drag:<line>:<line>`, `gitview-diff.close`.
 
 import { View, div } from "gpui-kit";
@@ -20,7 +21,7 @@ import { Tracer, run } from "./telemetry.js";
 import { gv, message } from "./engine.js";
 import { diffArgs, isDark, sameFile, sameShown } from "./model.js";
 import { allowed, confirmDiscard, sendNotes, takeDiscard } from "./actions.js";
-import { addNote, answerIn, ask, cursorIn, liveView, notesKey, notesForView, previewOff, removeNotes, setCursor, setPreviewOff, viewIn } from "./shared.js";
+import { addNote, answerIn, ask, cursorIn, liveView, notesKey, notesForView, previewOff, removeNotes, setCursor, setPreviewOff, updateNote, viewIn } from "./shared.js";
 import { diffPane } from "./layout.js";
 import { Flash, Loads, commandLoop, debounced, keyEvent, keyName, takeKeyboard } from "./modkit.js";
 import { panePlacement } from "./placement.js";
@@ -57,7 +58,9 @@ const KEYS = [
   { caps: ["m"], label: "diff / preview", rank: 4, when: (v) => Boolean(previewKind(v.view)), on: { m: (v, cx) => v.togglePreview(cx) } },
   { caps: ["v"], label: "select", rank: 5, when: diffShown, on: { v: inDiff((v) => { v.anchor = v.anchor === null ? v.cursor : null; }) } },
   { caps: ["a"], label: "note", rank: 6, when: diffShown, on: { a: inDiff((v) => v.annotate()) } },
-  { caps: ["enter"], label: (v) => editorLabel(v.view?.root, v.view?.on), rank: 3, on: { enter: (v, cx) => v.enterKey(cx), e: (v, cx) => v.edit(null, cx) } },
+  { caps: ["enter"], label: (v) => editorLabel(v.view?.root, v.view?.on), rank: 3, on: { enter: (v, cx) => v.enterKey(cx) } },
+  { caps: ["e"], label: "edit the note (else: the editor)", on: { e: (v, cx) => (v.editNote() ? null : v.edit(null, cx)) } },
+  { caps: ["d"], label: "delete the note", when: diffShown, on: { d: inDiff((v) => v.deleteNote()) } },
   { caps: ["J", "K"], label: "next / previous file", rank: 7, on: { J: (v, cx) => v.nextFile(1, cx), K: (v, cx) => v.nextFile(-1, cx) } },
   { caps: ["x"], label: "discard", rank: 8, on: { x: (v, cx) => v.act("discard", cx) } },
   { caps: ["p"], label: "send notes", rank: 9, on: { p: (v, cx) => v.send(cx) } },
@@ -485,10 +488,55 @@ export default class GitDiff extends View {
     this.pendingReveal = { row: b, margin: diffs.COMPOSER + 8, after: true };
   }
 
+  // The note on the cursor's line whose card shows here (the first of
+  // several); null in Preview and before this file's diff is the one shown.
+  noteAtCursor() {
+    const row = this.diff?.rows?.[this.cursor];
+    const key = this.notesKey();
+    if (!row || !key || this.inPreview() || !this.ready()) return null;
+    const at = (n) => (n.side === "old" ? row.o : row.n);
+    return notesForView(key, this.view).find((n) => at(n) >= n.start && at(n) <= n.end && this.noteRow(n) >= 0) ?? null;
+  }
+
+  // The row a note's card follows, -1 when this diff doesn't have it.
+  noteRow(note) {
+    return this.diff.rows.findIndex((r) => (note.side === "old" ? r.o : r.n) === note.end);
+  }
+
+  // `e` on a note's lines: its text in the composer, where its card was.
+  // False with no note there (`e` opens the editor then).
+  editNote() {
+    const note = this.noteAtCursor();
+    if (!note) return false;
+    const after = this.noteRow(note);
+    this.pendingNote = { ...note, edit: note.id, after };
+    this.anchor = null;
+    this.composer.set_value(note.text);
+    this.composer.focus();
+    this.pendingReveal = { row: after, margin: diffs.COMPOSER + 8, after: true };
+    return true;
+  }
+
+  deleteNote() {
+    const note = this.noteAtCursor();
+    if (!note) return this.flash.set("no note on this line");
+    removeNotes(this.notesKey(), [note.id]);
+  }
+
   saveNote(value, cx) {
     const text = String(value ?? "").trim();
     const p = this.pendingNote;
-    if (p && text) addNote(this.notesKey(), { file: p.file, section: p.section, cached: p.cached, commit: p.commit, base: p.base, side: p.side, start: p.start, end: p.end, snippet: p.snippet, text });
+    if (p && text) {
+      // A rewrite carries the whole note: its anchor is the new note's too.
+      const { id, edit, after, ...note } = p;
+      if (!edit) addNote(this.notesKey(), { ...note, text });
+      else if (!updateNote(this.notesKey(), edit, text)) {
+        // Sent or deleted while its text was in the composer: the rewrite
+        // isn't lost.
+        addNote(this.notesKey(), { ...note, text });
+        this.flash.set("the note was gone: saved as a new one");
+      }
+    }
     this.pendingNote = null;
     this.anchor = null;
     this.focusHere(cx);
@@ -635,10 +683,11 @@ export default class GitDiff extends View {
     // The body shows the shown file, or (just switched) the one before.
     const b = this.bodyNow();
     const of = b.old ? (b.kind === "preview" ? this.preview?.view : this.diffView) : this.view;
-    const notes = key && of ? notesForView(key, of) : [];
+    // The note being edited shows in the composer, not as a card too.
+    const notes = key && of ? notesForView(key, of).filter((n) => n.id !== this.pendingNote?.edit) : [];
     // The display rows and their heights only when what they're made of
     // changed (a render comes on every wheel tick and any shared write).
-    const dispKey = [this.diff, notes.map((n) => `${n.id}:${n.text.length}`).join(), this.pendingNote ? this.pendingNote.after : -1];
+    const dispKey = [this.diff, notes.map((n) => `${n.id}:${n.text}`).join(), this.pendingNote ? this.pendingNote.after : -1];
     if (!this.dispKey || dispKey.some((k, i) => k !== this.dispKey[i])) {
       this.display = diffs.displayRows(this.diff, notes, dispKey[2]);
       this.scroll.measure(this.display.map(diffs.rowSize));

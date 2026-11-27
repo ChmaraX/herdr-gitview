@@ -92,10 +92,11 @@ of it out and brings back the stock Changes panel.
   `g`/`G` first and last; `r` refresh; `?` all keys. Chords with cmd, ctrl
   or alt are left to the app.
 - **Diff pane keys**: `j`/`k`, page keys, `g`/`G`, the wheel and clicks move
-  the cursor; `v` or a drag selects; `a` writes a note on the selection;
-  `s`/`u`/`x` act on the shown file; `J`/`K` the next or previous file (the
-  list follows); `m` Diff or Preview; `enter` the editor at the cursor's
-  line; `esc` clears the selection.
+  the cursor; `v` or a drag selects; `a` writes a note on the selection; on
+  a note's lines `e` edits it and `d` deletes it; `s`/`u`/`x` act on the
+  shown file; `J`/`K` the next or previous file (the list follows); `m` Diff
+  or Preview; `enter` the editor at the cursor's line; `esc` clears the
+  selection.
 - **Enter → the editor**, which takes the diff pane's place (as v1's diff
   pane became nvim):
   - the editor: herdr-nvim's nvim when it's installed; else an nvim already

@@ -255,6 +255,15 @@ export function addNote(key, note) {
   setNotes(key, [...notesOf(key), { ...note, id }]);
 }
 
+// A note's text, rewritten; where it's anchored stays. False when the note
+// isn't there any more.
+export function updateNote(key, id, text) {
+  const notes = notesOf(key);
+  if (!notes.some((n) => n.id === id)) return false;
+  setNotes(key, notes.map((n) => (n.id === id ? { ...n, text } : n)));
+  return true;
+}
+
 export function removeNotes(key, ids) {
   setNotes(key, notesOf(key).filter((n) => !ids.includes(n.id)));
 }

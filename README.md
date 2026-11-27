@@ -115,6 +115,7 @@ The footer shows the keys that work right now; `?` lists them all.
 | `l` / `n` | list | History / notes |
 | `J` / `K` | diff | Next / previous file |
 | `v`, `a` | diff | Select lines, write a note |
+| `e`, `d` | diff | On a note's lines: edit it, delete it |
 | `p` | list, diff | Send the notes to an agent |
 | `m` | diff | Diff or Preview |
 | `?` | list, diff | All keys |

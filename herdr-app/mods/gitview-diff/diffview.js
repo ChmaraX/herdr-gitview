@@ -271,7 +271,7 @@ function composer(ctx) {
         .py(6)
         .gap(4)
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .child(div().text_size(11).text_color(t.accent).child(`new note · ${noteLines(ctx.pending, true)} · enter saves · esc cancels`))
+        .child(div().text_size(11).text_color(t.accent).child(`${ctx.pending.edit ? "edit note" : "new note"} · ${noteLines(ctx.pending, true)} · enter saves · esc cancels`))
         .child(Textarea.new(ctx.composer).h(52).text_size(12).text_color(t.foreground)),
     );
 }
