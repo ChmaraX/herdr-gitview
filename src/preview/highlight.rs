@@ -1,5 +1,6 @@
 //! Syntax highlighting via syntect + two-face (bat's broad syntax set),
-//! after persiyanov/herdr-reviewr's `highlight.rs` (MIT).
+//! after persiyanov/herdr-reviewr's `highlight.rs` (MIT), plus the
+//! grammars two-face lacks (Gherkin), embedded from `assets/syntaxes/`.
 //!
 //! Produces per-line runs of `(text, fg-rgb)`; the renderer adds diff
 //! backgrounds on top, so only token colors come from the syntax theme.
@@ -8,9 +9,12 @@ use std::sync::OnceLock;
 
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Theme;
-use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::parsing::{SyntaxDefinition, SyntaxReference, SyntaxSet, SyntaxSetBuilder};
 use syntect::util::LinesWithEndings;
 use two_face::theme::EmbeddedThemeName;
+
+/// Grammars two-face doesn't have, embedded as `.sublime-syntax` sources.
+const EXTRA_GRAMMARS: &[&str] = &[include_str!("../../assets/syntaxes/Gherkin.sublime-syntax")];
 
 /// Lines parsed above a hunk to prime the grammar state.
 const LEAD_IN: usize = 20;
@@ -29,6 +33,24 @@ pub struct Run {
 fn syntaxes() -> &'static SyntaxSet {
     static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
     SYNTAXES.get_or_init(two_face::syntax::extra_newlines)
+}
+
+/// `EXTRA_GRAMMARS`, compiled once per process into a set of their own:
+/// adding them to the broad set would rebuild all of it, and the app starts
+/// a new process for every op. A grammar is linked against its own set, so
+/// each lookup returns the set that holds it.
+fn extra_syntaxes() -> &'static SyntaxSet {
+    static EXTRA: OnceLock<SyntaxSet> = OnceLock::new();
+    EXTRA.get_or_init(|| {
+        let mut builder = SyntaxSetBuilder::new();
+        for source in EXTRA_GRAMMARS {
+            // Embedded at build time and covered by the tests below.
+            let grammar = SyntaxDefinition::load_from_str(source, true, None)
+                .expect("an embedded grammar parses");
+            builder.add(grammar);
+        }
+        builder.build()
+    })
 }
 
 /// The embedded theme set, deserialized once and shared.
@@ -62,14 +84,25 @@ impl Highlighter {
         Self::syntax_for(extension).is_some()
     }
 
-    /// The grammar for a file extension, if we know the language.
-    fn syntax_for(extension: Option<&str>) -> Option<&'static SyntaxReference> {
-        let syntaxes = syntaxes();
-        extension.and_then(|ext| {
-            syntaxes
-                .find_syntax_by_extension(ext)
-                .or_else(|| syntaxes.find_syntax_by_token(ext))
-        })
+    /// The grammar for a file extension and the set it belongs to, if we
+    /// know the language. An exact extension match in either set wins over
+    /// the broad set's looser token match; the extra set is only built when
+    /// the broad one has no such extension.
+    fn syntax_for(
+        extension: Option<&str>,
+    ) -> Option<(&'static SyntaxReference, &'static SyntaxSet)> {
+        let ext = extension?;
+        let broad = syntaxes();
+        if let Some(syntax) = broad.find_syntax_by_extension(ext) {
+            return Some((syntax, broad));
+        }
+        let extra = extra_syntaxes();
+        if let Some(syntax) = extra.find_syntax_by_extension(ext) {
+            return Some((syntax, extra));
+        }
+        broad
+            .find_syntax_by_token(ext)
+            .map(|syntax| (syntax, broad))
     }
 
     /// One line, uncolored: the fallback for unknown languages and errors.
@@ -95,7 +128,7 @@ impl Highlighter {
         keep_going: &mut dyn FnMut() -> bool,
     ) -> Option<Vec<(usize, Vec<Run>)>> {
         let mut out = Vec::with_capacity(wanted.len());
-        let Some(syntax) = Self::syntax_for(extension) else {
+        let Some((syntax, set)) = Self::syntax_for(extension) else {
             for &i in wanted {
                 out.push((i, self.plain(lines.get(i).copied().unwrap_or(""))));
             }
@@ -128,7 +161,7 @@ impl Highlighter {
                 if i % 32 == 0 && !keep_going() {
                     return None;
                 }
-                let runs = self.highlight_one(&mut h, line);
+                let runs = self.highlight_one(&mut h, line, set);
                 if want.peek() == Some(&i) {
                     want.next();
                     out.push((i, runs));
@@ -138,8 +171,8 @@ impl Highlighter {
         Some(out)
     }
 
-    fn highlight_one(&self, h: &mut HighlightLines, line: &str) -> Vec<Run> {
-        match h.highlight_line(line, syntaxes()) {
+    fn highlight_one(&self, h: &mut HighlightLines, line: &str, set: &SyntaxSet) -> Vec<Run> {
+        match h.highlight_line(line, set) {
             Ok(regions) => regions
                 .into_iter()
                 .map(|(style, text)| Run {
@@ -155,12 +188,12 @@ impl Highlighter {
     /// Highlight `content` line by line; each inner Vec is one line's runs.
     /// Unknown language → one plain run per line.
     pub fn highlight(&self, content: &str, extension: Option<&str>) -> Vec<Vec<Run>> {
-        let Some(syntax) = Self::syntax_for(extension) else {
+        let Some((syntax, set)) = Self::syntax_for(extension) else {
             return content.lines().map(|l| self.plain(l)).collect();
         };
         let mut h = HighlightLines::new(syntax, &self.theme);
         LinesWithEndings::from(content)
-            .map(|line| self.highlight_one(&mut h, line))
+            .map(|line| self.highlight_one(&mut h, line, set))
             .collect()
     }
 }
@@ -177,6 +210,133 @@ mod tests {
         assert!(lines[0].len() > 1, "rust should split into several runs");
         let joined: String = lines[0].iter().map(|r| r.text.as_str()).collect();
         assert_eq!(joined, "let x = 1;");
+    }
+
+    /// The color of the first run whose text is `word` on `line`.
+    fn color_of(line: &[Run], word: &str) -> Rgb {
+        line.iter()
+            .find(|r| r.text.trim() == word)
+            .unwrap_or_else(|| panic!("no run {word:?} in {line:?}"))
+            .color
+    }
+
+    /// `highlight` parses with the set that holds the grammar.
+    #[test]
+    fn gherkin_file_gets_colors() {
+        let h = Highlighter::new(crate::config::Theme::Dark);
+        let lines = h.highlight("Feature: x\n  Given a user\n", Some("feature"));
+        assert_ne!(color_of(&lines[1], "Given"), h.default_fg);
+    }
+
+    /// `highlight_lines` parses with the set that holds the grammar.
+    #[test]
+    fn gherkin_diff_lines_get_colors() {
+        let h = Highlighter::new(crate::config::Theme::Light);
+        let lines = ["Feature: x\n", "  Then done\n"];
+        let out = h
+            .highlight_lines(&lines, Some("feature"), &[1], &mut || true)
+            .expect("not abandoned");
+        assert_ne!(color_of(&out[0].1, "Then"), h.default_fg);
+    }
+
+    /// The scopes of the Gherkin grammar at the first `needle` on line
+    /// `line` (0-based) of `src`, outermost first. Theme-independent, so
+    /// the grammar tests below say what each token is, not how it looks.
+    fn gherkin_scopes(src: &str, line: usize, needle: &str) -> String {
+        use syntect::parsing::{ParseState, ScopeStack};
+        let set = extra_syntaxes();
+        let syntax = set.find_syntax_by_extension("feature").expect("gherkin");
+        let mut state = ParseState::new(syntax);
+        let mut stack = ScopeStack::new();
+        for (i, text) in LinesWithEndings::from(src).enumerate() {
+            let ops = state.parse_line(text, set).expect("parses");
+            // Other lines apply all their ops; this one those up to the needle.
+            let at = if i == line {
+                text.find(needle)
+                    .unwrap_or_else(|| panic!("no {needle:?} in {text:?}"))
+            } else {
+                usize::MAX
+            };
+            for (_, op) in ops.iter().take_while(|(pos, _)| *pos <= at) {
+                stack.apply(op).expect("valid scope op");
+            }
+            if i == line {
+                let names: Vec<String> =
+                    stack.as_slice().iter().map(|s| s.build_string()).collect();
+                return names.join(" ");
+            }
+        }
+        panic!("{src:?} has no line {line}");
+    }
+
+    #[track_caller]
+    fn assert_scope(src: &str, line: usize, needle: &str, scope: &str) {
+        let got = gherkin_scopes(src, line, needle);
+        assert!(got.contains(scope), "{needle:?}: want {scope}, got {got:?}");
+    }
+
+    #[track_caller]
+    fn assert_no_scope(src: &str, line: usize, needle: &str, scope: &str) {
+        let got = gherkin_scopes(src, line, needle);
+        assert!(
+            !got.contains(scope),
+            "{needle:?}: unwanted {scope} in {got:?}"
+        );
+    }
+
+    #[test]
+    fn gherkin_sections_are_keywords_with_a_title() {
+        let src = "Feature: Log in\n  Scenario Outline: as <role>\n  Feature : not one\n";
+        assert_scope(src, 0, "Feature", "keyword.declaration");
+        assert_scope(src, 0, "Log in", "entity.name.section");
+        assert_scope(src, 1, "<role>", "variable.parameter");
+        assert_no_scope(src, 2, "Feature", "keyword");
+    }
+
+    #[test]
+    fn gherkin_steps_start_with_a_keyword_and_a_space() {
+        let src = "Feature: x\n  Given a user\n  * any\n";
+        assert_scope(src, 1, "Given", "keyword.other.step");
+        assert_eq!(gherkin_scopes(src, 1, "a user"), "source.gherkin");
+        assert_scope(src, 2, "*", "keyword.other.step");
+    }
+
+    #[test]
+    fn gherkin_tags_start_a_line_and_may_end_in_a_comment() {
+        let src = "@smoke @c#d # flaky\nFeature: x\n  # Given y\n  Mail support@example.com\n";
+        assert_scope(src, 0, "#d", "entity.name.tag");
+        assert_scope(src, 0, "# flaky", "comment.line");
+        assert_scope(src, 2, "Given", "comment.line");
+        assert_no_scope(src, 3, "@example", "entity.name.tag");
+    }
+
+    #[test]
+    fn gherkin_step_arguments() {
+        let src = "Feature: x\n  Given \"bob\" has <n> items, x < 5 and y > 3 for user1 at 7.\n";
+        assert_scope(src, 1, "bob", "string.quoted.double");
+        assert_no_scope(src, 1, "has", "string");
+        assert_scope(src, 1, "<n>", "variable.parameter");
+        assert_no_scope(src, 1, "< 5", "variable.parameter");
+        assert_no_scope(src, 1, "1 at", "constant.numeric");
+        assert_scope(src, 1, "7.", "constant.numeric");
+    }
+
+    #[test]
+    fn gherkin_table_cells_split_on_unescaped_pipes() {
+        let src = "Feature: x\n  | a \\| b | 42 |\n  | 5\" | 7 |\n  Then y\n";
+        assert_scope(src, 1, "| b", "constant.character.escape");
+        assert_scope(src, 1, "| 42", "punctuation.separator.table-cell");
+        assert_scope(src, 2, "7", "constant.numeric");
+        assert_scope(src, 3, "Then", "keyword.other.step");
+    }
+
+    #[test]
+    fn gherkin_strings_end_with_their_line_and_docstrings_span_lines() {
+        let src = "Feature: x\n  Given \"open\n  When y\n    \"\"\"\n    Then inside\n    \"\"\"\n  Then out\n    ```json\n    \"\"\"\n    ```\n  And done\n";
+        assert_scope(src, 2, "When", "keyword.other.step");
+        assert_scope(src, 4, "Then", "string.quoted.triple");
+        assert_scope(src, 6, "Then", "keyword.other.step");
+        assert_scope(src, 10, "And", "keyword.other.step");
     }
 
     #[test]
